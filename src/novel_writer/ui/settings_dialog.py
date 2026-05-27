@@ -41,22 +41,25 @@ class ColorPicker(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
 
         self.label = QLabel(label)
         self.label.setFixedWidth(60)
         layout.addWidget(self.label)
 
         self.color_btn = QPushButton(t("color_pick"))
-        self.color_btn.setFixedSize(80, 32)
+        self.color_btn.setFixedSize(100, 38)
         self.color_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.color_btn.clicked.connect(self._pick_color)
         layout.addWidget(self.color_btn)
 
         self.hex_input = QLineEdit(default_color)
-        self.hex_input.setFixedWidth(100)
+        self.hex_input.setFixedWidth(120)
+        self.hex_input.setMinimumHeight(38)
         self.hex_input.setPlaceholderText("#rrggbb")
+        self.hex_input.setStyleSheet("QLineEdit { padding: 6px 10px; font-size: 14px; }")
         self.hex_input.textChanged.connect(self._on_hex_changed)
+        self.hex_input.returnPressed.connect(self._apply_hex_input)
         layout.addWidget(self.hex_input)
 
         layout.addStretch()
@@ -79,6 +82,12 @@ class ColorPicker(QWidget):
         except ValueError:
             return False
         return (r * 299 + g * 587 + b * 114) / 1000 > 128
+
+    def _apply_hex_input(self):
+        text = self.hex_input.text().strip()
+        if len(text) == 7 and text.startswith("#"):
+            self.set_color(text)
+            self.color_changed.emit(text)
 
     def _pick_color(self):
         color = QColorDialog.getColor(QColor(self._color), self, t("color_pick"))
