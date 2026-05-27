@@ -12,26 +12,19 @@ from PySide6.QtGui import QColor
 
 from .styles import THEMES, get_theme_colors
 from ..locales import t, get_languages
+from ..core.agents import load_default_agents
+from pathlib import Path
+import json
+
+_CONFIG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "config"
 
 
-DEFAULT_PROVIDERS = [
-    {"name": "DeepSeek", "type": "openai_compat", "base_url": "https://api.deepseek.com/v1"},
-    {"name": "Moonshot (Kimi)", "type": "openai_compat", "base_url": "https://api.moonshot.cn/v1"},
-    {"name": "智谱 GLM", "type": "openai_compat", "base_url": "https://open.bigmodel.cn/api/paas/v4"},
-    {"name": "通义千问", "type": "openai_compat", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-    {"name": "OpenAI", "type": "openai_compat", "base_url": "https://api.openai.com/v1"},
-    {"name": "Claude", "type": "claude", "base_url": ""},
-    {"name": "Ollama (本地)", "type": "ollama", "base_url": "http://localhost:11434"},
-]
-
-BUILTIN_AGENTS = {
-    "editor": {"emoji": "📋", "title": "主编", "skills": ["选题分析", "立意规划", "风格定位", "市场建议", "创作指导"]},
-    "planner": {"emoji": "🗺️", "title": "策划", "skills": ["故事结构", "章节规划", "人物设定", "世界观构建", "伏笔设计"]},
-    "writer": {"emoji": "✍️", "title": "写手", "skills": ["正文写作", "对话创作", "场景描写", "人物刻画", "剧情推进"]},
-    "proofreader": {"emoji": "🔍", "title": "校对", "skills": ["错别字检查", "语法校对", "标点规范", "一致性检查", "格式规范"]},
-    "reviewer": {"emoji": "✅", "title": "审核", "skills": ["剧情审查", "人物一致性", "节奏评估", "伏笔检查", "主题审核"]},
-    "polisher": {"emoji": "✨", "title": "润色", "skills": ["文笔润色", "场景强化", "对话优化", "情感渲染", "修辞提升"]},
-}
+def load_default_providers() -> list[dict]:
+    """从 default_providers.json 加载默认模型供应商列表。"""
+    path = _CONFIG_DIR / "default_providers.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return []
 
 
 class ColorPicker(QWidget):
@@ -295,6 +288,7 @@ class ModelDialog(QDialog):
         self.setWindowTitle(t("settings_tab_model"))
         self.setMinimumSize(500, 460)
         self.config = dict(config)
+        self._providers = load_default_providers()
         self._setup_ui()
         self._load_config()
 
@@ -308,7 +302,7 @@ class ModelDialog(QDialog):
         pg.setSpacing(10)
 
         self.provider_combo = QComboBox()
-        for p in DEFAULT_PROVIDERS:
+        for p in self._providers:
             self.provider_combo.addItem(p["name"])
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         pg.addRow(t("settings_provider"), self.provider_combo)
@@ -362,9 +356,9 @@ class ModelDialog(QDialog):
         self._on_provider_changed(0)
 
     def _on_provider_changed(self, index: int):
-        if index < 0 or index >= len(DEFAULT_PROVIDERS):
+        if index < 0 or index >= len(self._providers):
             return
-        provider = DEFAULT_PROVIDERS[index]
+        provider = self._providers[index]
         self.base_url_input.setText(provider["base_url"])
         is_ollama = provider["type"] == "ollama"
         self.ollama_group.setVisible(is_ollama)
@@ -394,7 +388,7 @@ class ModelDialog(QDialog):
 
     def _test_connection(self):
         provider_name = self.provider_combo.currentText()
-        provider = next((p for p in DEFAULT_PROVIDERS if p["name"] == provider_name), None)
+        provider = next((p for p in self._providers if p["name"] == provider_name), None)
         if not provider:
             return
         ptype = provider["type"]
@@ -466,7 +460,7 @@ class ModelDialog(QDialog):
 
     def _save(self):
         provider_name = self.provider_combo.currentText()
-        provider = next((p for p in DEFAULT_PROVIDERS if p["name"] == provider_name), None)
+        provider = next((p for p in self._providers if p["name"] == provider_name), None)
         if provider:
             self.config["current_provider"] = {
                 "name": provider_name,
@@ -493,6 +487,7 @@ class AgentDialog(QDialog):
         self.setWindowTitle(t("settings_tab_agent"))
         self.setMinimumSize(640, 500)
         self.config = dict(config)
+        self._builtin_agents = load_default_agents()
         self._setup_ui()
         self._load_config()
 
@@ -606,7 +601,7 @@ class AgentDialog(QDialog):
         name = names[row]
         info = agents[name]
         self.agent_name_input.setText(name)
-        self.agent_name_input.setEnabled(name not in BUILTIN_AGENTS)
+        self.agent_name_input.setEnabled(name not in self._builtin_agents)
         self.agent_title_input.setText(info.get("title", ""))
         emoji = info.get("emoji", "🤖")
         idx = self.agent_emoji_combo.findText(emoji)
@@ -656,7 +651,7 @@ class AgentDialog(QDialog):
         if row >= len(names):
             return
         name = names[row]
-        if name in BUILTIN_AGENTS:
+        if name in self._builtin_agents:
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_builtin_no_delete"))
             return
         if QMessageBox.question(self, t("dialog_confirm"),

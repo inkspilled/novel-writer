@@ -1,0 +1,9 @@
+[
+  {"name": "DeepSeek", "type": "openai_compat", "base_url": "https://api.deepseek.com/v1"},
+  {"name": "Moonshot (Kimi)", "type": "openai_compat", "base_url": "https://api.moonshot.cn/v1"},
+  {"name": "智谱 GLM", "type": "openai_compat", "base_url": "https://open.bigmodel.cn/api/paas/v4"},
+  {"name": "通义千问", "type": "openai_compat", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+  {"name": "OpenAI", "type": "openai_compat", "base_url": "https://api.openai.com/v1"},
+  {"name": "Claude", "type": "claude", "base_url": ""},
+  {"name": "Ollama (本地)", "type": "ollama", "base_url": "http://localhost:11434"}
+]

@@ -1,22 +1,21 @@
+"""智能体配置加载。"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
 from .base import AgentConfig, BaseAgent
-from .editor import create_editor
-from .planner import create_planner
-from .writer import create_writer
-from .proofreader import create_proofreader
-from .reviewer import create_reviewer
-from .polisher import create_polisher
 
-AGENT_CONFIGS = {
-    "editor": create_editor,
-    "planner": create_planner,
-    "writer": create_writer,
-    "proofreader": create_proofreader,
-    "reviewer": create_reviewer,
-    "polisher": create_polisher,
-}
+# 默认智能体配置文件路径
+DEFAULT_AGENTS_PATH = Path(__file__).resolve().parent.parent.parent.parent / "config" / "default_agents.json"
 
-__all__ = [
-    "AgentConfig", "BaseAgent", "AGENT_CONFIGS",
-    "create_editor", "create_planner", "create_writer",
-    "create_proofreader", "create_reviewer", "create_polisher",
-]
+
+def load_default_agents() -> dict:
+    """从 default_agents.json 加载默认智能体配置。"""
+    if DEFAULT_AGENTS_PATH.exists():
+        return json.loads(DEFAULT_AGENTS_PATH.read_text(encoding="utf-8"))
+    return {}
+
+
+__all__ = ["AgentConfig", "BaseAgent", "load_default_agents"]

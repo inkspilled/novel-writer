@@ -15,14 +15,14 @@ from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 from .sidebar import Sidebar
 from .editor_panel import EditorPanel
 from .agent_panel import AgentPanel
-from .settings_dialog import AppearanceDialog, ModelDialog, AgentDialog, BUILTIN_AGENTS
+from .settings_dialog import AppearanceDialog, ModelDialog, AgentDialog
 from .styles import build_style
 from ..locales import t, set_language
 from ..models.project import Project
 from ..models.chapter import Chapter, ChapterStatus
 from ..models.character import Character
 from ..core.llm import OpenAICompatLLM, ClaudeLLM, OllamaLLM
-from ..core.agents import AGENT_CONFIGS
+from ..core.agents import load_default_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 
 
@@ -30,16 +30,6 @@ CONFIG_PATH = Path.home() / ".novel-writer" / "config.json"
 PROJECTS_DIR = Path.home() / ".novel-writer" / "projects"
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 PROJECT_ROOT = ASSETS_DIR.parent.parent
-
-# 内置 Agent 的默认系统提示词
-DEFAULT_PROMPTS = {
-    "editor": "你是一位资深小说主编，拥有丰富的出版行业经验。你的职责：1.帮助作者确定小说的核心立意、题材、风格和目标读者 2.分析市场需求，给出选题建议 3.制定整体创作规划 4.在整个创作过程中提供方向性指导。尊重作者的创作意图，以引导为主，给出具体可执行的建议。",
-    "planner": "你是一位专业的小说策划/大纲师，擅长构建故事结构。你的职责：1.根据立意设计完整故事大纲 2.构建章节结构 3.设定主要人物 4.构建世界观 5.设计冲突线、伏笔和悬念。大纲要有层次感，人物设定要立体，注意伏笔的埋设和回收。",
-    "writer": "你是一位才华横溢的小说写手，文笔流畅。你的职责：1.根据章节大纲进行正文创作 2.保持人物一致性 3.通过对话、动作、心理描写推进剧情 4.注意场景转换和节奏。文笔自然流畅，对话有辨识度，场景有画面感。",
-    "proofreader": "你是一位严谨的校对员。你的职责：1.检查错别字、语法错误、标点符号 2.检查人称时态一致性 3.检查数字日期名称前后一致 4.检查格式规范。逐字逐句检查，保持作者原意，只修正错误不做大幅改动。",
-    "reviewer": "你是一位资深小说审核编辑。你的职责：1.审查剧情逻辑 2.检查人物行为是否符合设定 3.评估章节节奏 4.检查伏笔 5.评估主题表达。先给出总体评价，再逐项分析，最后给出修改建议。",
-    "polisher": "你是一位文字功底深厚的润色师。你的职责：1.提升文笔质量 2.增强场景描写画面感 3.优化对话 4.加强情感表达 5.适当运用修辞。保持作者风格，润色是锦上添花不是重写。",
-}
 
 
 class AgentWorker(QThread):
@@ -207,7 +197,7 @@ class MainWindow(QMainWindow):
         for action in to_remove:
             menu.removeAction(action)
         # 重新添加
-        agents_cfg = self.config.get("agents", BUILTIN_AGENTS)
+        agents_cfg = self.config.get("agents") or load_default_agents()
         for name, info in agents_cfg.items():
             emoji = info.get("emoji", "🤖")
             title = info.get("title", name)
@@ -259,16 +249,16 @@ class MainWindow(QMainWindow):
         # 从 config 读取 agents 配置，没有则用内置默认
         agents_cfg = self.config.get("agents", {})
         if not agents_cfg:
-            # 初始化默认 agents 到 config
-            for name, create_fn in AGENT_CONFIGS.items():
-                cfg = create_fn()
+            # 从 JSON 加载默认 agents 配置
+            default_agents = load_default_agents()
+            for name, defaults in default_agents.items():
                 agents_cfg[name] = {
-                    "title": cfg.title,
-                    "emoji": BUILTIN_AGENTS.get(name, {}).get("emoji", "🤖"),
-                    "skills": cfg.skills,
-                    "temperature": cfg.temperature,
-                    "max_tokens": cfg.max_tokens,
-                    "system_prompt": cfg.system_prompt,
+                    "title": defaults.get("title", name),
+                    "emoji": defaults.get("emoji", "🤖"),
+                    "skills": defaults.get("skills", []),
+                    "temperature": defaults.get("temperature", 0.7),
+                    "max_tokens": defaults.get("max_tokens", 4096),
+                    "system_prompt": defaults.get("system_prompt", ""),
                     "model": "",
                 }
             self.config["agents"] = agents_cfg
@@ -287,7 +277,7 @@ class MainWindow(QMainWindow):
             else:
                 llm = self.llm
 
-            prompt = info.get("system_prompt", "") or DEFAULT_PROMPTS.get(name, "")
+            prompt = info.get("system_prompt", "")
             agent_config = AgentConfig(
                 name=name,
                 role=info.get("title", name),
@@ -515,7 +505,7 @@ class MainWindow(QMainWindow):
     def _on_agent_finished(self, agent_name: str, response: str):
         self.agent_panel.set_working(False, agent_name)
         self.agent_panel.finalize_stream_message(agent_name)
-        agents_cfg = self.config.get("agents", BUILTIN_AGENTS)
+        agents_cfg = self.config.get("agents") or load_default_agents()
         title = agents_cfg.get(agent_name, {}).get("title", agent_name)
         self.statusBar().showMessage(t("status_agent_done", title))
 
