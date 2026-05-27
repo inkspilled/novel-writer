@@ -154,13 +154,22 @@ class MainWindow(QMainWindow):
         self._exit_action.triggered.connect(self.close)
         self._file_menu.addAction(self._exit_action)
 
-        # 外观（单项菜单，点击直接打开）
+        # 外观（点击直接打开）
         self._appearance_menu = menubar.addMenu(t("menu_appearance"))
-        self._appearance_menu.aboutToShow.connect(self._open_appearance)
+        self._appearance_action = QAction(t("menu_appearance"), self)
+        self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
+        self._appearance_action.triggered.connect(self._open_appearance)
+        self._appearance_menu.addAction(self._appearance_action)
+        self._appearance_menu.aboutToShow.connect(
+            lambda: (self._appearance_menu.close(), self._open_appearance()))
 
-        # 模型（单项菜单，点击直接打开）
+        # 模型（点击直接打开）
         self._model_menu = menubar.addMenu(t("menu_model"))
-        self._model_menu.aboutToShow.connect(self._open_model_settings)
+        self._model_action = QAction(t("menu_model"), self)
+        self._model_action.triggered.connect(self._open_model_settings)
+        self._model_menu.addAction(self._model_action)
+        self._model_menu.aboutToShow.connect(
+            lambda: (self._model_menu.close(), self._open_model_settings()))
 
         # 智能体
         self._agent_menu = menubar.addMenu(t("menu_agent"))
@@ -170,9 +179,13 @@ class MainWindow(QMainWindow):
         self._agent_menu.addSeparator()
         self._rebuild_agent_menu(self._agent_menu)
 
-        # 关于（单项菜单，点击直接打开）
+        # 关于（点击直接打开）
         self._about_menu = menubar.addMenu(t("menu_about"))
-        self._about_menu.aboutToShow.connect(self._show_about)
+        self._about_action = QAction(t("menu_about"), self)
+        self._about_action.triggered.connect(self._show_about)
+        self._about_menu.addAction(self._about_action)
+        self._about_menu.aboutToShow.connect(
+            lambda: (self._about_menu.close(), self._show_about()))
 
     def _setup_menubar_icon(self):
         """在状态栏左侧显示应用小图标。"""
@@ -584,10 +597,13 @@ class MainWindow(QMainWindow):
         self._save_action.setText(t("menu_save_project"))
         self._exit_action.setText(t("menu_exit"))
         self._appearance_menu.setTitle(t("menu_appearance"))
+        self._appearance_action.setText(t("menu_appearance"))
         self._model_menu.setTitle(t("menu_model"))
+        self._model_action.setText(t("menu_model"))
         self._agent_menu.setTitle(t("menu_agent"))
         self._manage_action.setText(t("menu_agent_manage"))
         self._about_menu.setTitle(t("menu_about"))
+        self._about_action.setText(t("menu_about"))
         self._rebuild_agent_menu()
         # 侧边栏
         self.sidebar.retranslate()
