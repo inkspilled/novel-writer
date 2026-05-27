@@ -76,13 +76,13 @@ python -m novel_writer
 
 ## 数据存储
 
-所有数据存储在 `~/NovelWriter/`（非隐藏目录）：
+所有数据存储在 `data/`（非隐藏目录）：
 
 | 文件 | 说明 |
 |------|------|
-| `~/NovelWriter/config.json` | 全局配置（主题、语言、模型、智能体） |
-| `~/NovelWriter/chat_history.json` | 聊天记录 |
-| `~/NovelWriter/projects/*.json` | 小说项目数据 |
+| `data/config.json` | 全局配置（主题、语言、模型、智能体） |
+| `data/chat_history.json` | 聊天记录 |
+| `data/projects/*.json` | 小说项目数据 |
 
 ## 更多
 

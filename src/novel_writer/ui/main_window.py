@@ -26,8 +26,9 @@ from ..core.agents import load_default_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 
 
-CONFIG_PATH = Path.home() / "NovelWriter" / "config.json"
-PROJECTS_DIR = Path.home() / "NovelWriter" / "projects"
+DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
+CONFIG_PATH = DATA_DIR / "config.json"
+PROJECTS_DIR = DATA_DIR / "projects"
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 PROJECT_ROOT = ASSETS_DIR.parent.parent
 
