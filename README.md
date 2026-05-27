@@ -1,18 +1,13 @@
 # Novel Writer - AI 小说写作桌面应用
 
-多 Agent 协作的小说创作工具，从立意到定稿全流程覆盖。Apple 极简风格 UI。
+多 Agent 协作的小说创作工具，从立意到定稿全流程覆盖。
 
 ## 启动
 
 ```bash
 cd novel-writer
-python -m novel_writer
-```
-
-首次运行需要安装依赖：
-
-```bash
 pip install -e .
+python -m novel_writer
 ```
 
 ## 写作流程
@@ -42,20 +37,32 @@ pip install -e .
 
 ## Agent 对话
 
-- 每个 Agent 独立聊天记录，切换不丢失
+- 每个 Agent 独立聊天记录，切换不丢失，重启自动恢复
 - Markdown 渲染：代码块、表格、标题、列表
 - 快捷操作栏：根据 Agent 技能自动生成常用指令
 - 流式输出 + 思考过程展示
 - Ctrl+Enter 发送消息
 
-## 设置（独立对话框）
+## 菜单
 
 | 菜单 | 功能 |
 |------|------|
-| 设置 → 外观 | 主题（5 套）、语言（中/英）、字号 |
-| 设置 → 模型 | 供应商、API Key、模型选择、连接测试 |
-| 设置 → Agent | 增删改查 Agent、独立模型、提示词 |
-| Agent → Agent 管理 | 同上 |
+| 文件 | 新建 / 打开 / 保存项目 |
+| 模型与智能体 | 模型设置、智能体管理、快捷切换 |
+| 关于 | 外观设置、关于 |
+
+## 模型配置
+
+支持所有 OpenAI 兼容接口的模型供应商，只需 API Key + Base URL + 模型名称。
+
+预置供应商：DeepSeek、Moonshot (Kimi)、智谱 GLM、通义千问、小米 MiMo、OpenAI、Ollama (本地)。
+
+在 `设置 → 模型` 中可：
+- 配置并保存多个模型方案（如 DeepSeek Chat、本地 Ollama Qwen 等）
+- 为每个智能体独立选择不同模型
+- 测试连接是否正常
+
+添加新供应商：编辑 `config/default_providers.json`，或直接在模型设置中手动填写。
 
 ## 快捷键
 
@@ -69,9 +76,14 @@ pip install -e .
 
 ## 数据存储
 
-- 配置：`~/.novel-writer/config.json`
-- 项目：`~/.novel-writer/projects/*.json`
+所有数据存储在 `~/NovelWriter/`（非隐藏目录）：
+
+| 文件 | 说明 |
+|------|------|
+| `~/NovelWriter/config.json` | 全局配置（主题、语言、模型、智能体） |
+| `~/NovelWriter/chat_history.json` | 聊天记录 |
+| `~/NovelWriter/projects/*.json` | 小说项目数据 |
 
 ## 更多
 
-- [开发指南 (DEV_GUIDE.md)](DEV_GUIDE.md) — 技术架构、AI 模型配置、项目结构
+- [开发指南 (DEV_GUIDE.md)](DEV_GUIDE.md) — 技术架构、项目结构
