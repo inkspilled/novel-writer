@@ -141,23 +141,25 @@ class MainWindow(QMainWindow):
         self._save_action.triggered.connect(self._save_project)
         self._file_menu.addAction(self._save_action)
         self._file_menu.addSeparator()
-        self._appearance_action = QAction(t("settings_tab_appearance"), self)
-        self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
-        self._appearance_action.triggered.connect(self._open_appearance)
-        self._file_menu.addAction(self._appearance_action)
-        self._model_action = QAction(t("settings_tab_model"), self)
-        self._model_action.triggered.connect(self._open_model_settings)
-        self._file_menu.addAction(self._model_action)
-        self._agent_settings_action = QAction(t("settings_tab_agent"), self)
-        self._agent_settings_action.triggered.connect(self._open_agent_manage)
-        self._file_menu.addAction(self._agent_settings_action)
-        self._file_menu.addSeparator()
         self._exit_action = QAction(t("menu_exit"), self)
         self._exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         self._exit_action.triggered.connect(self.close)
         self._file_menu.addAction(self._exit_action)
 
-        # Agent 管理
+        # 外观
+        self._appearance_menu = menubar.addMenu(t("menu_appearance"))
+        self._appearance_action = QAction(t("settings_tab_appearance"), self)
+        self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
+        self._appearance_action.triggered.connect(self._open_appearance)
+        self._appearance_menu.addAction(self._appearance_action)
+
+        # 模型
+        self._model_menu = menubar.addMenu(t("menu_model"))
+        self._model_action = QAction(t("settings_tab_model"), self)
+        self._model_action.triggered.connect(self._open_model_settings)
+        self._model_menu.addAction(self._model_action)
+
+        # 智能体
         self._agent_menu = menubar.addMenu(t("menu_agent"))
         self._manage_action = QAction(t("menu_agent_manage"), self)
         self._manage_action.triggered.connect(self._open_agent_manage)
@@ -288,7 +290,7 @@ class MainWindow(QMainWindow):
         title, ok = QInputDialog.getText(self, t("dialog_new_project"), t("dialog_novel_title"))
         if ok and title:
             self.project = Project(title=title)
-            self.project.add_chapter("第一章")
+            self.project.add_chapter(t("chapter_first"))
             self._save_project()
             self.sidebar.set_project_title(title)
             self.sidebar.load_chapters(self.project.chapters)
@@ -320,7 +322,7 @@ class MainWindow(QMainWindow):
                 title = data.get("title", f.stem)
                 ch_count = len(data.get("chapters", []))
                 words = sum(len(ch.get("content", "")) for ch in data.get("chapters", []))
-                item = QListWidgetItem(f"{title}  ({ch_count} 章 · {words:,} 字)")
+                item = QListWidgetItem(f"{title}  ({ch_count} {t('sidebar_chapters')} · {words:,} {t('editor_words')})")
                 item.setData(Qt.ItemDataRole.UserRole, str(f))
                 project_list.addItem(item)
             except Exception:
@@ -500,7 +502,7 @@ class MainWindow(QMainWindow):
     def _on_agent_error(self, error: str):
         self.agent_panel.set_working(False)
         QMessageBox.critical(self, t("dialog_error"), error)
-        self.statusBar().showMessage(f"错误: {error}")
+        self.statusBar().showMessage(f"{t('dialog_error')}: {error}")
 
     def _on_agent_stream(self, chunk: str):
         """接收流式文本块，更新UI"""
@@ -551,9 +553,10 @@ class MainWindow(QMainWindow):
         self._open_action.setText(t("menu_open_project"))
         self._save_action.setText(t("menu_save_project"))
         self._exit_action.setText(t("menu_exit"))
+        self._appearance_menu.setTitle(t("menu_appearance"))
         self._appearance_action.setText(t("settings_tab_appearance"))
+        self._model_menu.setTitle(t("menu_model"))
         self._model_action.setText(t("settings_tab_model"))
-        self._agent_settings_action.setText(t("settings_tab_agent"))
         self._agent_menu.setTitle(t("menu_agent"))
         self._manage_action.setText(t("menu_agent_manage"))
         self._rebuild_agent_menu()

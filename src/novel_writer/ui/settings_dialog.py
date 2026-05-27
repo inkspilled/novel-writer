@@ -65,7 +65,7 @@ class ColorPicker(QWidget):
         self._color = default_color
 
     def _pick_color(self):
-        color = QColorDialog.getColor(QColor(self._color), self, "选择颜色")
+        color = QColorDialog.getColor(QColor(self._color), self, t("color_pick"))
         if color.isValid():
             self.set_color(color.name())
 
@@ -543,7 +543,7 @@ class AgentDialog(QDialog):
         self.agent_temp_spin.setRange(0.0, 2.0)
         self.agent_temp_spin.setSingleStep(0.1)
         self.agent_temp_spin.setValue(0.7)
-        form.addRow("Temperature:", self.agent_temp_spin)
+        form.addRow(t("settings_temperature"), self.agent_temp_spin)
 
         self.agent_skills_input = QLineEdit()
         self.agent_skills_input.setPlaceholderText(t("settings_ph_skills"))

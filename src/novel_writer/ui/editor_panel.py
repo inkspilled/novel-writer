@@ -34,7 +34,7 @@ class EditorPanel(QWidget):
         self.chapter_title.setStyleSheet("font-size: 18px; font-weight: 700; letter-spacing: -0.3px;")
         toolbar_layout.addWidget(self.chapter_title, 1)
 
-        self.word_count_label = QLabel("0 字")
+        self.word_count_label = QLabel(f"0 {t('editor_words')}")
         self.word_count_label.setStyleSheet("font-size: 12px; font-weight: 500;")
         self.word_count_label.setMinimumWidth(60)
         toolbar_layout.addWidget(self.word_count_label)

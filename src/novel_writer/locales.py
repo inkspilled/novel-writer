@@ -11,10 +11,17 @@ STRINGS = {
     "menu_open_project": {"zh": "打开项目(&O)", "en": "Open Project(&O)"},
     "menu_save_project": {"zh": "保存项目(&S)", "en": "Save Project(&S)"},
     "menu_exit": {"zh": "退出(&Q)", "en": "Exit(&Q)"},
-    "menu_agent": {"zh": "Agent(&A)", "en": "Agent(&A)"},
-    "menu_agent_manage": {"zh": "Agent 管理", "en": "Agent Manager"},
+    "menu_agent": {"zh": "智能体(&A)", "en": "Agent(&A)"},
+    "menu_agent_manage": {"zh": "智能体管理", "en": "Agent Manager"},
     "menu_settings": {"zh": "设置(&S)", "en": "Settings(&S)"},
     "menu_preferences": {"zh": "偏好设置(&P)", "en": "Preferences(&P)"},
+
+    # ── 一级菜单 ──
+    "menu_appearance": {"zh": "外观(&P)", "en": "Appearance(&P)"},
+    "menu_model": {"zh": "模型(&M)", "en": "Model(&M)"},
+
+    # ── Agent 面板 ──
+    "settings_temperature": {"zh": "温度:", "en": "Temperature:"},
 
     # ── 侧边栏 ──
     "sidebar_no_project": {"zh": "未打开项目", "en": "No Project Open"},
@@ -23,6 +30,8 @@ STRINGS = {
     "sidebar_chapters": {"zh": "章节", "en": "Chapters"},
     "sidebar_add_chapter": {"zh": "+ 添加章节", "en": "+ Add Chapter"},
     "sidebar_unnamed": {"zh": "未命名项目", "en": "Untitled Project"},
+    "sidebar_unnamed_chapter": {"zh": "未命名章节", "en": "Untitled Chapter"},
+    "sidebar_stats": {"zh": "{} 章  ·  {} 字  ·  {:.1f}%", "en": "{} chapters  ·  {} words  ·  {:.1f}%"},
 
     # ── 编辑区 ──
     "editor_select_chapter": {"zh": "选择一个章节开始写作", "en": "Select a chapter to start writing"},
@@ -35,15 +44,15 @@ STRINGS = {
     "editor_ph_notes": {"zh": "写作备注", "en": "Writing notes"},
 
     # ── Agent 面板 ──
-    "agent_workbench": {"zh": "Agent 工作台", "en": "Agent Workbench"},
-    "agent_select": {"zh": "选择一个 Agent", "en": "Select an Agent"},
-    "agent_ph_input": {"zh": "输入指令给 Agent", "en": "Enter instructions for Agent"},
+    "agent_workbench": {"zh": "智能体工作台", "en": "Agent Workbench"},
+    "agent_select": {"zh": "选择一个智能体", "en": "Select an Agent"},
+    "agent_ph_input": {"zh": "输入指令给智能体", "en": "Enter instructions for Agent"},
     "agent_send": {"zh": "发送", "en": "Send"},
     "agent_generating": {"zh": "生成中", "en": "Generating"},
     "agent_clear_chat": {"zh": "清空聊天", "en": "Clear Chat"},
     "agent_thinking": {"zh": "AI 正在思考...", "en": "AI is thinking..."},
     "agent_quick_actions": {"zh": "快捷操作", "en": "Quick Actions"},
-    "agent_welcome": {"zh": "你好！请选择一个 Agent 开始创作。", "en": "Hello! Select an Agent to start writing."},
+    "agent_welcome": {"zh": "你好！请选择一个智能体开始创作。", "en": "Hello! Select an Agent to start writing."},
     "agent_send_hint": {"zh": "Ctrl+Enter 发送", "en": "Ctrl+Enter to send"},
 
     # ── 设置对话框 ──
@@ -65,6 +74,7 @@ STRINGS = {
     "color_fg": {"zh": "字体色", "en": "Text"},
     "color_fg2": {"zh": "副字体色", "en": "Secondary Text"},
     "color_accent": {"zh": "强调色", "en": "Accent"},
+    "color_pick": {"zh": "选择颜色", "en": "Pick Color"},
 
     # 模型
     "settings_tab_model": {"zh": "模型", "en": "Model"},
@@ -82,10 +92,10 @@ STRINGS = {
     "settings_ollama_refresh": {"zh": "刷新", "en": "Refresh"},
     "settings_ph_model_hint": {"zh": "留空用全局默认", "en": "Leave empty for global default"},
 
-    # Agent
-    "settings_tab_agent": {"zh": "Agent", "en": "Agent"},
-    "settings_agent_list": {"zh": "Agent 列表", "en": "Agent List"},
-    "settings_agent_detail": {"zh": "Agent 详情", "en": "Agent Details"},
+    # 智能体
+    "settings_tab_agent": {"zh": "智能体", "en": "Agent"},
+    "settings_agent_list": {"zh": "智能体列表", "en": "Agent List"},
+    "settings_agent_detail": {"zh": "智能体详情", "en": "Agent Details"},
     "settings_agent_id": {"zh": "标识:", "en": "ID:"},
     "settings_ph_agent_id": {"zh": "英文标识", "en": "English identifier"},
     "settings_agent_title": {"zh": "标题:", "en": "Title:"},
@@ -102,6 +112,7 @@ STRINGS = {
     "settings_btn_open": {"zh": "打开", "en": "Open"},
 
     # ── 对话框 ──
+    "chapter_first": {"zh": "第一章", "en": "Chapter 1"},
     "dialog_new_project": {"zh": "新建项目", "en": "New Project"},
     "dialog_novel_title": {"zh": "小说标题:", "en": "Novel Title:"},
     "dialog_add_chapter": {"zh": "添加章节", "en": "Add Chapter"},
@@ -126,9 +137,9 @@ STRINGS = {
     # ── 错误/提示 ──
     "msg_no_project": {"zh": "请先创建或打开一个项目", "en": "Please create or open a project first"},
     "msg_no_projects_saved": {"zh": "暂无已保存的项目", "en": "No saved projects"},
-    "msg_agent_not_init": {"zh": "Agent '{}' 未初始化，请先在设置中配置模型。", "en": "Agent '{}' not initialized. Please configure model in settings."},
+    "msg_agent_not_init": {"zh": "智能体 '{}' 未初始化，请先在设置中配置模型。", "en": "Agent '{}' not initialized. Please configure model in settings."},
     "msg_delete_project": {"zh": "确定删除项目 '{}'？\n此操作不可撤销。", "en": "Delete project '{}'?\nThis cannot be undone."},
-    "msg_builtin_no_delete": {"zh": "内置 Agent 不能删除", "en": "Built-in agents cannot be deleted"},
+    "msg_builtin_no_delete": {"zh": "内置智能体不能删除", "en": "Built-in agents cannot be deleted"},
     "msg_delete_agent": {"zh": "删除 '{}'？", "en": "Delete '{}'?"},
     "msg_agent_exists": {"zh": "'{}' 已存在", "en": "'{}' already exists"},
     "msg_input_model": {"zh": "请输入模型名称", "en": "Please enter model name"},
@@ -138,7 +149,7 @@ STRINGS = {
     "msg_http_error": {"zh": "HTTP {}", "en": "HTTP {}"},
     "msg_open_fail": {"zh": "打开项目失败: {}", "en": "Failed to open project: {}"},
 
-    # ── 内置 Agent ──
+    # ── 内置智能体 ──
     "agent_editor": {"zh": "主编", "en": "Editor"},
     "agent_planner": {"zh": "策划", "en": "Planner"},
     "agent_writer": {"zh": "写手", "en": "Writer"},

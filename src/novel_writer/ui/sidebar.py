@@ -84,16 +84,16 @@ class Sidebar(QWidget):
         for i, ch in enumerate(chapters):
             item = QTreeWidgetItem()
             icon = icons.get(ch.status.value if hasattr(ch.status, 'value') else ch.status, "📝")
-            item.setText(0, f"{icon}  {ch.title or '未命名章节'}")
+            item.setText(0, f"{icon}  {ch.title or t('sidebar_unnamed_chapter')}")
             item.setData(0, Qt.ItemDataRole.UserRole, i)
             self.chapter_tree.addTopLevelItem(item)
 
     def update_stats(self, total_words: int, target_words: int, chapter_count: int):
         pct = (total_words / target_words * 100) if target_words > 0 else 0
-        self.stats_label.setText(f"{chapter_count} 章  ·  {total_words:,} 字  ·  {pct:.1f}%")
+        self.stats_label.setText(t("sidebar_stats", chapter_count, f"{total_words:,}", pct))
 
     def set_project_title(self, title: str):
-        self.project_label.setText(title or "未命名项目")
+        self.project_label.setText(title or t("sidebar_unnamed"))
 
     def _on_item_changed(self, current, _previous):
         if current:
