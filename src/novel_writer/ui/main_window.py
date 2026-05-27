@@ -461,9 +461,10 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _stop_worker(self):
+        """安全停止后台工作线程，避免 QThread 销毁时线程仍在运行。"""
         if self._worker is not None and self._worker.isRunning():
             self._worker.quit()
-            self._worker.wait(3000)
+            self._worker.wait(3000)  # 最多等待 3 秒
             self._worker = None
 
     def _build_context(self, agent_name: str) -> str:

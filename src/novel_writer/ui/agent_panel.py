@@ -27,7 +27,7 @@ def get_color(name: str, idx: int = 0) -> str:
 # ── Markdown → HTML 轻量渲染器 ──
 
 def _is_light_color(hex_color: str) -> bool:
-    """判断颜色是否为浅色。"""
+    """判断颜色是否为浅色（用于 Markdown 渲染时动态选择代码块背景色）。"""
     h = hex_color.lstrip("#")
     if len(h) == 3:
         h = "".join(c * 2 for c in h)
@@ -556,6 +556,7 @@ class AgentPanel(QWidget):
             answer = parts[1] if len(parts) > 1 else ""
             display_text = f"💭 *思考过程:*\n{think_content}\n\n{answer}"
 
+        # 保护：widget 可能已被 deleteLater 销毁（切换 Agent 或清空聊天时）
         try:
             self._stream_widget._set_content(display_text)
         except RuntimeError:
@@ -597,6 +598,7 @@ class AgentPanel(QWidget):
         pass
 
     def _restore_chat(self, agent_name: str):
+        # 先清空流式引用，防止后台线程继续写入已销毁的 widget
         self._stream_widget = None
         self._stream_text = ""
         for msg in self._msg_widgets:

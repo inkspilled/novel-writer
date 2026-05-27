@@ -226,6 +226,7 @@ class AppearanceDialog(QDialog):
         self.theme_preview.emit(self.config.get("theme", "dark"))
 
     def _load_config(self):
+        # 阻塞信号，防止设置 combo 值时触发 _on_theme_changed 导致重复渲染
         self.theme_combo.blockSignals(True)
         self.lang_combo.blockSignals(True)
         self.font_size_combo.blockSignals(True)

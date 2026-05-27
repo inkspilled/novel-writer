@@ -81,6 +81,7 @@ QWidget {{
     background-color: transparent;
     color: {t['fg']};
 }}
+/* 显式设置透明背景，防止 Qt 某些版本下子控件显示为黑色 */
 QFrame {{
     background-color: transparent;
 }}
