@@ -17,9 +17,8 @@ STRINGS = {
     "menu_preferences": {"zh": "偏好设置(&P)", "en": "Preferences(&P)"},
 
     # ── 一级菜单 ──
-    "menu_appearance": {"zh": "外观(&P)", "en": "Appearance(&P)"},
+    "menu_model_agent": {"zh": "模型与智能体(&M)", "en": "Model & Agent(&M)"},
     "menu_appearance_open": {"zh": "外观设置", "en": "Appearance Settings"},
-    "menu_model": {"zh": "模型(&M)", "en": "Model(&M)"},
     "menu_model_open": {"zh": "模型设置", "en": "Model Settings"},
     "menu_about": {"zh": "关于(&H)", "en": "About(&H)"},
     "menu_about_app": {"zh": "关于 Novel Writer", "en": "About Novel Writer"},
