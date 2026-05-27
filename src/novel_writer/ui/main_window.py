@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         self._setup_menubar_icon()
         self._init_llm()
         self._init_agents()
+        self.agent_panel.load_history()
 
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -288,7 +289,7 @@ class MainWindow(QMainWindow):
                 title=info.get("title", name),
                 system_prompt=prompt,
                 skills=info.get("skills", []),
-                model=agent_model,
+                model=agent_model_key,
                 temperature=info.get("temperature", 0.7),
                 max_tokens=info.get("max_tokens", 4096),
             )
@@ -509,6 +510,7 @@ class MainWindow(QMainWindow):
     def _on_agent_finished(self, agent_name: str, response: str):
         self.agent_panel.set_working(False, agent_name)
         self.agent_panel.finalize_stream_message(agent_name)
+        self.agent_panel.save_history()
         agents_cfg = self.config.get("agents") or load_default_agents()
         title = agents_cfg.get(agent_name, {}).get("title", agent_name)
         self.statusBar().showMessage(t("status_agent_done", title))

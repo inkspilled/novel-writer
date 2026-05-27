@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -12,6 +14,8 @@ from PySide6.QtGui import QKeyEvent
 from .agent_animation import AgentIndicator, AgentBubble
 from ..locales import t
 from .styles import get_theme_colors
+
+CHAT_HISTORY_PATH = Path.home() / ".novel-writer" / "chat_history.json"
 
 # 默认颜色池
 COLOR_POOL = ["#ff6b8a", "#51cf66", "#4da6ff", "#ffd43b", "#cc5de8", "#ff922b",
@@ -635,6 +639,7 @@ class AgentPanel(QWidget):
         for msg in self._msg_widgets:
             msg.deleteLater()
         self._msg_widgets.clear()
+        self.save_history()
 
     def clear_chat(self):
         self._stream_widget = None
@@ -643,6 +648,26 @@ class AgentPanel(QWidget):
             msg.deleteLater()
         self._msg_widgets.clear()
         self._chat_history.clear()
+        self.save_history()
+
+    # ── 聊天记录持久化 ──
+
+    def save_history(self):
+        """将聊天记录保存到磁盘。"""
+        CHAT_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CHAT_HISTORY_PATH.write_text(
+            json.dumps(self._chat_history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def load_history(self):
+        """从磁盘加载聊天记录。"""
+        if CHAT_HISTORY_PATH.exists():
+            try:
+                self._chat_history = json.loads(
+                    CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                self._chat_history = {}
 
     # ── 工作状态 ──
 
