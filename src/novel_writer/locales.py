@@ -59,6 +59,7 @@ STRINGS = {
     "agent_quick_actions": {"zh": "快捷操作", "en": "Quick Actions"},
     "agent_welcome": {"zh": "你好！请选择一个智能体开始创作。", "en": "Hello! Select an Agent to start writing."},
     "agent_send_hint": {"zh": "Ctrl+Enter 发送", "en": "Ctrl+Enter to send"},
+    "agent_model_default": {"zh": "默认模型", "en": "Default model"},
 
     # ── 设置对话框 ──
     "settings_title": {"zh": "设置", "en": "Settings"},
@@ -98,10 +99,16 @@ STRINGS = {
     # 已保存模型
     "model_saved_models": {"zh": "已保存模型", "en": "Saved Models"},
     "model_save_config": {"zh": "保存配置", "en": "Save Config"},
+    "model_save_as": {"zh": "保存方案", "en": "Save Config"},
     "model_delete_config": {"zh": "删除配置", "en": "Delete Config"},
     "model_use_global": {"zh": "使用全局默认", "en": "Use Global Default"},
     "model_name_prompt": {"zh": "为此模型配置命名:", "en": "Name this model config:"},
     "model_name_exists": {"zh": "'{}' 已存在，是否覆盖？", "en": "'{}' already exists, overwrite?"},
+    "model_default_group": {"zh": "默认模型", "en": "Default Model"},
+    "model_default_label": {"zh": "当前默认:", "en": "Current Default:"},
+    "model_select_default": {"zh": "— 从已保存模型中选择 —", "en": "— Select from saved models —"},
+    "model_set_default": {"zh": "设为默认", "en": "Set as Default"},
+    "model_default_set": {"zh": "已设为默认模型", "en": "Set as default model"},
 
     # 智能体
     "settings_tab_agent": {"zh": "智能体", "en": "Agent"},

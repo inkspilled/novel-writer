@@ -44,25 +44,56 @@ class AgentWorker(QThread):
         self.agent = agent
         self.user_input = user_input
         self.context = context
+        self._cancelled = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task | None = None
+
+    def cancel(self):
+        """请求取消进行中的任务。"""
+        self._cancelled = True
+        if self._loop and self._task and not self._task.done():
+            self._loop.call_soon_threadsafe(self._task.cancel)
 
     def run(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
         try:
             full_response = ""
             async def collect_stream():
                 nonlocal full_response
                 async for chunk in self.agent.stream_run(self.user_input, self.context):
+                    if self._cancelled:
+                        break
                     full_response += chunk
-                    self.chunk_received.emit(chunk)
+                    try:
+                        self.chunk_received.emit(chunk)
+                    except Exception:
+                        pass
                 return full_response
 
-            loop.run_until_complete(collect_stream())
-            self.finished.emit(full_response)
+            self._task = self._loop.create_task(collect_stream())
+            self._loop.run_until_complete(self._task)
+            if not self._cancelled:
+                self.finished.emit(full_response)
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            self.error.emit(str(e))
+            if not self._cancelled:
+                try:
+                    self.error.emit(str(e)[:500])
+                except Exception:
+                    pass
         finally:
-            loop.close()
+            # 关闭 LLM 客户端的 HTTP 连接
+            try:
+                llm = self.agent.llm
+                if hasattr(llm, 'client') and hasattr(llm.client, 'close'):
+                    self._loop.run_until_complete(llm.client.close())
+            except Exception:
+                pass
+            self._loop.close()
+            self._loop = None
+            self._task = None
 
 
 class MainWindow(QMainWindow):
@@ -90,6 +121,7 @@ class MainWindow(QMainWindow):
         self.agents: dict[str, BaseAgent] = {}
         self.llm = None
         self._worker = None
+        self._old_workers: list[AgentWorker] = []
 
         self._setup_ui()
         self._apply_theme()
@@ -154,8 +186,6 @@ class MainWindow(QMainWindow):
         self._manage_action = QAction(t("menu_agent_manage"), self)
         self._manage_action.triggered.connect(self._open_agent_manage)
         self._model_agent_menu.addAction(self._manage_action)
-        self._model_agent_menu.addSeparator()
-        self._rebuild_agent_menu(self._model_agent_menu)
 
         # 关于
         self._about_menu = menubar.addMenu(t("menu_about"))
@@ -178,34 +208,6 @@ class MainWindow(QMainWindow):
             label.setPixmap(pixmap)
             label.setContentsMargins(8, 0, 0, 0)
             self.statusBar().addPermanentWidget(label)
-
-    def _rebuild_agent_menu(self, menu: QMenu = None):
-        if menu is None:
-            for action in self.menuBar().actions():
-                if action.menu() == self._model_agent_menu:
-                    menu = action.menu()
-                    break
-        if not menu:
-            return
-        # 清除旧的 agent 快捷项（保留 "Agent 管理" 和分隔线）
-        to_remove = []
-        found_sep = False
-        for action in menu.actions():
-            if action.isSeparator():
-                found_sep = True
-                continue
-            if found_sep and not action.isSeparator():
-                to_remove.append(action)
-        for action in to_remove:
-            menu.removeAction(action)
-        # 重新添加
-        agents_cfg = self.config.get("agents") or load_default_agents()
-        for name, info in agents_cfg.items():
-            emoji = info.get("emoji", "🤖")
-            title = info.get("title", name)
-            action = QAction(f"{emoji} {title}", self)
-            action.triggered.connect(lambda checked, n=name: self._quick_run_agent(n))
-            menu.addAction(action)
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
@@ -238,13 +240,10 @@ class MainWindow(QMainWindow):
 
     def _init_agents(self):
         self.agents.clear()
-        if not self.llm:
-            return
 
         # 从 config 读取 agents 配置，没有则用内置默认
         agents_cfg = self.config.get("agents", {})
         if not agents_cfg:
-            # 从 JSON 加载默认 agents 配置
             default_agents = load_default_agents()
             for name, defaults in default_agents.items():
                 agents_cfg[name] = {
@@ -258,39 +257,38 @@ class MainWindow(QMainWindow):
                 }
             self.config["agents"] = agents_cfg
 
+        # 先更新按钮（不依赖 LLM）
+        self.agent_panel.update_agent_buttons(agents_cfg)
+
+        if not self.llm:
+            return
+
         saved_models = self.config.get("saved_models", {})
 
         for name, info in agents_cfg.items():
-            # 每个 Agent 可以有自己的模型（引用 saved_models 的 key）
             agent_model_key = info.get("model", "").strip()
             if agent_model_key:
                 saved = saved_models.get(agent_model_key)
                 if saved:
-                    # 从已保存模型配置创建独立 LLM
                     llm = self._create_llm(saved) or self.llm
                 else:
-                    # 兼容旧逻辑：当作 model 名称覆盖全局配置
                     provider = self.config.get("current_provider", {}).copy()
                     provider["model"] = agent_model_key
                     llm = self._create_llm(provider) or self.llm
             else:
                 llm = self.llm
 
-            prompt = info.get("system_prompt", "")
             agent_config = AgentConfig(
                 name=name,
                 role=info.get("title", name),
                 title=info.get("title", name),
-                system_prompt=prompt,
+                system_prompt=info.get("system_prompt", ""),
                 skills=info.get("skills", []),
                 model=agent_model_key,
                 temperature=info.get("temperature", 0.7),
                 max_tokens=info.get("max_tokens", 4096),
             )
             self.agents[name] = BaseAgent(agent_config, llm)
-
-        # 更新 Agent 面板的按钮
-        self.agent_panel.update_agent_buttons(agents_cfg)
 
     def _new_project(self):
         # 先保存当前项目
@@ -466,17 +464,26 @@ class MainWindow(QMainWindow):
         context = self._build_context(agent_name)
         self.agent_panel.set_working(True, agent_name)
         self._worker = AgentWorker(agent, user_input, context)
-        self._worker.chunk_received.connect(self._on_agent_stream)
+        self._worker.chunk_received.connect(lambda chunk: self._on_agent_stream(agent_name, chunk))
         self._worker.finished.connect(lambda resp: self._on_agent_finished(agent_name, resp))
         self._worker.error.connect(self._on_agent_error)
         self._worker.start()
 
     def _stop_worker(self):
-        """安全停止后台工作线程，避免 QThread 销毁时线程仍在运行。"""
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.quit()
-            self._worker.wait(3000)  # 最多等待 3 秒
+        """安全停止后台工作线程，取消进行中的请求。"""
+        if self._worker is not None:
+            if self._worker.isRunning():
+                self._worker.cancel()
+                if not self._worker.wait(5000):
+                    self._worker.terminate()
+                    self._worker.wait(1000)
+            self._old_workers.append(self._worker)
             self._worker = None
+        self._cleanup_workers()
+
+    def _cleanup_workers(self):
+        """清理已结束的旧 worker 引用。"""
+        self._old_workers = [w for w in self._old_workers if w.isRunning()]
 
     def _build_context(self, agent_name: str) -> str:
         parts = []
@@ -502,24 +509,31 @@ class MainWindow(QMainWindow):
         return "\n\n".join(parts)
 
     def _on_agent_finished(self, agent_name: str, response: str):
-        self.agent_panel.set_working(False, agent_name)
-        self.agent_panel.finalize_stream_message(agent_name)
-        self.agent_panel.save_history()
-        agents_cfg = self.config.get("agents") or load_default_agents()
-        title = agents_cfg.get(agent_name, {}).get("title", agent_name)
-        self.statusBar().showMessage(t("status_agent_done", title))
+        try:
+            self.agent_panel.set_working(False, agent_name)
+            self.agent_panel.finalize_stream_message(agent_name)
+            self.agent_panel.save_history()
+            agents_cfg = self.config.get("agents") or load_default_agents()
+            title = agents_cfg.get(agent_name, {}).get("title", agent_name)
+            self.statusBar().showMessage(t("status_agent_done", title))
+        except Exception as e:
+            self.agent_panel.set_working(False)
+            self.statusBar().showMessage(f"{t('dialog_error')}: {e}")
 
     def _on_agent_error(self, error: str):
         self.agent_panel.set_working(False)
-        QMessageBox.critical(self, t("dialog_error"), error)
         self.statusBar().showMessage(f"{t('dialog_error')}: {error}")
+        try:
+            QMessageBox.critical(self, t("dialog_error"), error)
+        except Exception:
+            pass
 
-    def _on_agent_stream(self, chunk: str):
+    def _on_agent_stream(self, agent_name: str, chunk: str):
         """接收流式文本块，更新UI"""
-        self.agent_panel.append_stream_chunk(chunk)
-
-    def _quick_run_agent(self, agent_name: str):
-        self.agent_panel._on_agent_selected(agent_name)
+        try:
+            self.agent_panel.append_stream_chunk(chunk, agent_name)
+        except Exception:
+            pass
 
     def _open_agent_manage(self):
         """打开 Agent 管理对话框。"""
@@ -528,7 +542,6 @@ class MainWindow(QMainWindow):
             self.config = dialog.get_config()
             self._save_config()
             self._init_agents()
-            self._rebuild_agent_menu()
             self.statusBar().showMessage(t("status_settings_saved"))
 
     def _open_model_settings(self):
@@ -580,7 +593,6 @@ class MainWindow(QMainWindow):
         self._about_menu.setTitle(t("menu_about"))
         self._appearance_action.setText(t("menu_appearance_open"))
         self._about_action.setText(t("menu_about_app"))
-        self._rebuild_agent_menu()
         # 侧边栏
         self.sidebar.retranslate()
         # 编辑区
@@ -634,6 +646,18 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._stop_worker()
+        # 关闭所有 LLM 客户端连接
+        all_llms = [agent.llm for agent in self.agents.values()]
+        if self.llm:
+            all_llms.append(self.llm)
+        for llm in all_llms:
+            try:
+                if hasattr(llm, 'client') and hasattr(llm.client, 'close'):
+                    loop = asyncio.new_event_loop()
+                    loop.run_until_complete(llm.client.close())
+                    loop.close()
+            except Exception:
+                pass
         if self.project.title:
             self._save_project()
         event.accept()

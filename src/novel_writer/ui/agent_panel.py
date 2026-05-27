@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QKeyEvent
 
-from .agent_animation import AgentIndicator, AgentBubble
+from .agent_animation import AgentIndicator
 from ..locales import t
 from .styles import get_theme_colors
 
@@ -192,9 +192,6 @@ class ChatMessage(QFrame):
             self._outer.addStretch()
             self._outer.addWidget(self._bubble, 0)
         else:
-            emoji = AGENT_PANEL_GLOBALS.get("agent_emojis", {}).get(agent_name, "🤖")
-            self._avatar = AgentBubble(emoji)
-            self._outer.addWidget(self._avatar, 0, Qt.AlignmentFlag.AlignTop)
             self._outer.addWidget(self._bubble, 1)
 
         self._apply_style()
@@ -224,8 +221,6 @@ class ChatMessage(QFrame):
                 f"QLabel {{ color: {fg}; background: transparent; border: none; "
                 f"font-size: 13px; }}")
             self._fg = fg
-            if self._avatar:
-                self._avatar.update_theme(colors)
 
     def _set_content(self, content: str) -> None:
         if not content:
@@ -275,6 +270,8 @@ class AgentPanel(QWidget):
         self._msg_widgets: list[ChatMessage] = []
         self._stream_widget: ChatMessage | None = None
         self._stream_text: str = ""
+        self._stream_agent: str = ""
+        self._pending_streams: dict[str, tuple] = {}
         self._quick_buttons: list[QPushButton] = []
         self._setup_ui()
 
@@ -319,13 +316,14 @@ class AgentPanel(QWidget):
         info_row.addWidget(self.agent_name_label)
         info_row.addStretch()
 
-        self.btn_clear = QPushButton("🗑️")
-        self.btn_clear.setFixedSize(32, 32)
+        self.btn_clear = QPushButton("\U0001f5d1️")
+        self.btn_clear.setFixedSize(30, 30)
         self.btn_clear.setToolTip(t("agent_clear_chat"))
         self.btn_clear.setStyleSheet("""
             QPushButton {
-                border-radius: 16px; font-size: 16px;
+                border-radius: 6px; font-size: 16px;
                 border: 1px solid rgba(255,255,255,0.1);
+                padding: 0;
             }
             QPushButton:hover {
                 background-color: rgba(255,100,100,0.2);
@@ -335,6 +333,7 @@ class AgentPanel(QWidget):
         self.btn_clear.clicked.connect(self._clear_current_chat)
         info_row.addWidget(self.btn_clear)
         self.header_layout.addLayout(info_row)
+
         layout.addWidget(header)
 
         # ── 快捷操作栏 ──
@@ -447,8 +446,17 @@ class AgentPanel(QWidget):
         for n, btn in self.agent_buttons.items():
             btn.setChecked(n == name)
         emoji = AGENT_PANEL_GLOBALS["agent_emojis"].get(name, "🤖")
-        title = self._agents_cfg.get(name, {}).get("title", name)
-        self.agent_name_label.setText(f"{emoji}  {title}")
+        info = self._agents_cfg.get(name, {})
+        title = info.get("title", name)
+
+        # 智能体名称 + 模型信息（同一行）
+        agent_model = info.get("model", "").strip()
+        if agent_model:
+            model_html = f'  <span style="font-size:11px;font-weight:400;color:#4da6ff;">🤖 {agent_model}</span>'
+        else:
+            model_html = f'  <span style="font-size:11px;font-weight:400;color:gray;">🤖 {t("agent_model_default")}</span>'
+        self.agent_name_label.setTextFormat(Qt.TextFormat.RichText)
+        self.agent_name_label.setText(f"{emoji}  {title}{model_html}")
 
         self._restore_chat(name)
         self._update_quick_actions(name)
@@ -549,12 +557,15 @@ class AgentPanel(QWidget):
         self._chat_history[agent_name].append(
             {"type": "agent", "text": text, "agent_name": agent_name})
 
-    def append_stream_chunk(self, chunk: str):
+    def append_stream_chunk(self, chunk: str, agent_name: str = ""):
         """追加流式文本块。"""
         if self._stream_widget is None:
-            self._stream_widget = ChatMessage("agent", "", agent_name=self._current_agent)
-            self._msg_widgets.append(self._stream_widget)
-            self.chat_layout.insertWidget(self.chat_layout.count() - 1, self._stream_widget)
+            self._stream_agent = agent_name or self._current_agent
+            self._stream_widget = ChatMessage("agent", "", agent_name=self._stream_agent)
+            # 只在当前显示的是同一智能体时才插入 widget
+            if self._stream_agent == self._current_agent:
+                self._msg_widgets.append(self._stream_widget)
+                self.chat_layout.insertWidget(self.chat_layout.count() - 1, self._stream_widget)
             self._stream_text = ""
 
         self._stream_text += chunk
@@ -581,6 +592,12 @@ class AgentPanel(QWidget):
 
     def finalize_stream_message(self, agent_name: str):
         """完成流式消息。"""
+        target = self._stream_agent or agent_name
+        # 如果流式 widget 被保存在 pending 中，取出来
+        pending = self._pending_streams.pop(target, None)
+        if pending and not self._stream_widget:
+            self._stream_widget, self._stream_text, self._stream_agent = pending
+
         if self._stream_widget and self._stream_text:
             # 重新渲染完整内容（处理 think 标签）
             final_text = self._stream_text
@@ -592,13 +609,14 @@ class AgentPanel(QWidget):
             self._stream_widget._raw_content = final_text
             self._stream_widget._set_content(final_text)
 
-            if agent_name not in self._chat_history:
-                self._chat_history[agent_name] = []
-            self._chat_history[agent_name].append(
-                {"type": "agent", "text": self._stream_text, "agent_name": agent_name})
+            if target not in self._chat_history:
+                self._chat_history[target] = []
+            self._chat_history[target].append(
+                {"type": "agent", "text": self._stream_text, "agent_name": target})
 
         self._stream_widget = None
         self._stream_text = ""
+        self._stream_agent = ""
 
     # ── 滚动 ──
 
@@ -612,10 +630,18 @@ class AgentPanel(QWidget):
         pass
 
     def _restore_chat(self, agent_name: str):
-        # 先清空流式引用，防止后台线程继续写入已销毁的 widget
-        self._stream_widget = None
-        self._stream_text = ""
+        # 保存当前流式状态（如果有正在进行的流）
+        if self._stream_widget and self._stream_agent:
+            self._pending_streams[self._stream_agent] = (
+                self._stream_widget, self._stream_text, self._stream_agent)
+            self._stream_widget = None
+            self._stream_text = ""
+            self._stream_agent = ""
+
         for msg in self._msg_widgets:
+            # 如果是正在进行的流式 widget，跳过销毁（由 pending_streams 管理）
+            if msg is self._stream_widget:
+                continue
             msg.deleteLater()
         self._msg_widgets.clear()
 
@@ -629,6 +655,16 @@ class AgentPanel(QWidget):
             self._msg_widgets.append(msg)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg)
 
+        # 恢复该智能体的进行中流式输出
+        pending = self._pending_streams.pop(agent_name, None)
+        if pending:
+            widget, text, s_agent = pending
+            self._stream_widget = widget
+            self._stream_text = text
+            self._stream_agent = s_agent
+            self._msg_widgets.append(widget)
+            self.chat_layout.insertWidget(self.chat_layout.count() - 1, widget)
+
         QTimer.singleShot(50, self._scroll_to_bottom)
 
     def _clear_current_chat(self):
@@ -636,6 +672,8 @@ class AgentPanel(QWidget):
             return
         self._stream_widget = None
         self._stream_text = ""
+        self._stream_agent = ""
+        self._pending_streams.pop(self._current_agent, None)
         self._chat_history.pop(self._current_agent, None)
         for msg in self._msg_widgets:
             msg.deleteLater()
@@ -730,8 +768,9 @@ class AgentPanel(QWidget):
             f"font-size: 11px; color: {fg3};")
         self.btn_clear.setStyleSheet(f"""
             QPushButton {{
-                border-radius: 16px; font-size: 16px;
+                border-radius: 6px; font-size: 16px;
                 border: 1px solid {border};
+                padding: 0;
             }}
             QPushButton:hover {{
                 background-color: rgba(255,100,100,0.2);

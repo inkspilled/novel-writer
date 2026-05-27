@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QInputDialog, QTextEdit, QColorDialog,
     QScrollArea,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor
 
 from .styles import THEMES, get_theme_colors
@@ -294,11 +294,32 @@ class ModelDialog(QDialog):
         self._load_config()
 
     def _setup_ui(self):
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
-        # ── 左侧：已保存模型列表 ──
+        # ── 顶部：默认模型选择 ──
+        default_group = QGroupBox(t("model_default_group"))
+        dg_layout = QHBoxLayout(default_group)
+        dg_layout.setSpacing(10)
+
+        dg_layout.addWidget(QLabel(t("model_default_label")))
+        self._default_combo = QComboBox()
+        self._default_combo.setMinimumWidth(260)
+        self._default_combo.currentIndexChanged.connect(self._on_default_changed)
+        dg_layout.addWidget(self._default_combo, 1)
+
+        self._default_status = QLabel()
+        self._default_status.setStyleSheet("color: gray; font-size: 12px;")
+        dg_layout.addWidget(self._default_status)
+
+        layout.addWidget(default_group)
+
+        # ── 中部：左侧列表 + 右侧编辑 ──
+        body = QHBoxLayout()
+        body.setSpacing(14)
+
+        # 左侧：已保存模型列表
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -314,16 +335,14 @@ class ModelDialog(QDialog):
         self._btn_del_model.clicked.connect(self._delete_model_config)
         btn_row.addWidget(self._btn_del_model)
         left_layout.addLayout(btn_row)
+        body.addWidget(left, 1)
 
-        layout.addWidget(left, 1)
-
-        # ── 右侧：配置编辑 + 底部按钮 ──
+        # 右侧：配置编辑
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
 
-        # 滚动区域包裹配置内容
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -379,16 +398,34 @@ class ModelDialog(QDialog):
         scroll.setWidget(scroll_content)
         right_layout.addWidget(scroll, 1)
 
-        # 保存按钮（固定在底部）
+        # 底部按钮
         btn_row2 = QHBoxLayout()
         btn_row2.addStretch()
-        self._btn_save = QPushButton(t("model_save_config"))
-        self._btn_save.setObjectName("primary")
-        self._btn_save.clicked.connect(self._save_and_close)
-        btn_row2.addWidget(self._btn_save)
+        self._btn_save_as = QPushButton(t("model_save_as"))
+        self._btn_save_as.clicked.connect(self._save_as_model_config)
+        btn_row2.addWidget(self._btn_save_as)
+        self._btn_set_default = QPushButton(t("model_set_default"))
+        self._btn_set_default.setObjectName("primary")
+        self._btn_set_default.clicked.connect(self._set_as_default)
+        btn_row2.addWidget(self._btn_set_default)
         right_layout.addLayout(btn_row2)
 
-        layout.addWidget(right, 2)
+        body.addWidget(right, 2)
+        layout.addLayout(body, 1)
+
+        # ── 底部：确认按钮 ──
+        bottom_row = QHBoxLayout()
+        bottom_row.addStretch()
+        self._btn_save = QPushButton(t("settings_save_all"))
+        self._btn_save.setObjectName("primary")
+        self._btn_save.setFixedHeight(36)
+        self._btn_save.clicked.connect(self._save)
+        self._btn_cancel = QPushButton(t("settings_cancel"))
+        self._btn_cancel.setFixedHeight(36)
+        self._btn_cancel.clicked.connect(self.reject)
+        bottom_row.addWidget(self._btn_save)
+        bottom_row.addWidget(self._btn_cancel)
+        layout.addLayout(bottom_row)
 
         self._refresh_model_list()
         self._on_provider_changed(0)
@@ -397,6 +434,7 @@ class ModelDialog(QDialog):
         self.model_list.clear()
         for name in self._saved_models:
             self.model_list.addItem(name)
+        self._refresh_default_combo()
 
     def _on_model_selected(self, current, _prev):
         if not current:
@@ -415,13 +453,13 @@ class ModelDialog(QDialog):
         self.base_url_input.setText(info.get("base_url", ""))
         self.model_input.setText(info.get("model", ""))
 
-    def _save_model_config(self):
+    def _save_as_model_config(self):
         """将当前右侧配置保存为命名模型（不关闭对话框）。"""
         model_name = self.model_input.text().strip()
         if not model_name:
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
             return
-        name, ok = QInputDialog.getText(self, t("model_save_config"), t("model_name_prompt"), text=model_name)
+        name, ok = QInputDialog.getText(self, t("model_save_as"), t("model_name_prompt"), text=model_name)
         if not ok or not name.strip():
             return
         name = name.strip()
@@ -442,34 +480,59 @@ class ModelDialog(QDialog):
         }
         self._refresh_model_list()
 
-    def _save_and_close(self):
-        """保存当前供应商为命名模型 + 保存所有配置，关闭对话框。"""
+    def _set_as_default(self):
+        """将当前右侧配置设为默认模型（不关闭对话框）。"""
         model_name = self.model_input.text().strip()
+        if not model_name:
+            QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
+            return
         provider_name = self.provider_combo.currentText()
         provider = next((p for p in self._providers if p["name"] == provider_name), None)
+        if not provider:
+            return
+        self.config["current_provider"] = {
+            "name": provider_name,
+            "type": provider["type"],
+            "api_key": self.api_key_input.text().strip(),
+            "base_url": self.base_url_input.text().strip(),
+            "model": model_name,
+        }
+        self._refresh_default_combo()
+        self._default_status.setText(t("model_default_set"))
+        QTimer.singleShot(2000, lambda: self._default_status.setText(""))
 
-        # 如果填了模型名称，自动保存为命名模型
-        if model_name and provider:
-            name = model_name
-            if name not in self._saved_models:
-                self._saved_models[name] = {
-                    "name": provider_name,
-                    "type": provider["type"],
-                    "api_key": self.api_key_input.text().strip(),
-                    "base_url": self.base_url_input.text().strip(),
-                    "model": model_name,
-                }
+    def _refresh_default_combo(self):
+        """刷新默认模型下拉框。"""
+        self._default_combo.blockSignals(True)
+        self._default_combo.clear()
+        self._default_combo.addItem(t("model_select_default"), "")
+        for name in self._saved_models:
+            self._default_combo.addItem(name, name)
+        # 选中当前默认
+        current = self.config.get("current_provider", {})
+        current_model = current.get("model", "")
+        for i in range(self._default_combo.count()):
+            if self._default_combo.itemData(i) == current_model:
+                self._default_combo.setCurrentIndex(i)
+                break
+        self._default_combo.blockSignals(False)
 
-        if provider:
-            self.config["current_provider"] = {
-                "name": provider_name,
-                "type": provider["type"],
-                "api_key": self.api_key_input.text().strip(),
-                "base_url": self.base_url_input.text().strip(),
-                "model": model_name,
-            }
-        self.config["saved_models"] = self._saved_models
-        self.accept()
+    def _on_default_changed(self, index: int):
+        """默认模型下拉框变更：自动填充右侧表单。"""
+        key = self._default_combo.itemData(index) if index >= 0 else ""
+        if not key:
+            return
+        info = self._saved_models.get(key)
+        if not info:
+            return
+        provider_name = info.get("name", "")
+        for i in range(self.provider_combo.count()):
+            if self.provider_combo.itemText(i) == provider_name:
+                self.provider_combo.setCurrentIndex(i)
+                break
+        self.api_key_input.setText(info.get("api_key", ""))
+        self.base_url_input.setText(info.get("base_url", ""))
+        self.model_input.setText(info.get("model", ""))
 
     def _delete_model_config(self):
         current = self.model_list.currentItem()
@@ -564,6 +627,7 @@ class ModelDialog(QDialog):
             self.model_input.setText(saved_provider.get("model", ""))
 
     def _save(self):
+        # 保存当前编辑的配置为默认模型
         provider_name = self.provider_combo.currentText()
         provider = next((p for p in self._providers if p["name"] == provider_name), None)
         if provider:
@@ -655,11 +719,9 @@ class AgentDialog(QDialog):
         form.addRow(t("settings_agent_emoji"), self.agent_emoji_combo)
 
         self.agent_model_combo = QComboBox()
-        self.agent_model_combo.setEditable(True)
         self.agent_model_combo.addItem(t("model_use_global"), "")
         for model_name in self._saved_models:
             self.agent_model_combo.addItem(model_name, model_name)
-        self.agent_model_combo.setPlaceholderText(t("settings_ph_model_hint"))
         form.addRow(t("settings_agent_model"), self.agent_model_combo)
 
         self.agent_temp_spin = QDoubleSpinBox()
@@ -722,10 +784,7 @@ class AgentDialog(QDialog):
             self.agent_emoji_combo.setEditText(emoji)
         model_val = info.get("model", "")
         idx = self.agent_model_combo.findData(model_val)
-        if idx >= 0:
-            self.agent_model_combo.setCurrentIndex(idx)
-        else:
-            self.agent_model_combo.setEditText(model_val)
+        self.agent_model_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.agent_temp_spin.setValue(info.get("temperature", 0.7))
         self.agent_skills_input.setText(", ".join(info.get("skills", [])))
         self.agent_prompt_input.setPlainText(info.get("system_prompt", ""))
@@ -742,10 +801,7 @@ class AgentDialog(QDialog):
         agents[name]["temperature"] = self.agent_temp_spin.value()
         agents[name]["skills"] = [s.strip() for s in self.agent_skills_input.text().split(",") if s.strip()]
         agents[name]["system_prompt"] = self.agent_prompt_input.toPlainText().strip()
-        model = self.agent_model_combo.currentData()
-        if model is None:
-            model = self.agent_model_combo.currentText().strip()
-        agents[name]["model"] = model
+        agents[name]["model"] = self.agent_model_combo.currentData() or ""
 
     def _add_agent(self):
         name, ok = QInputDialog.getText(self, t("settings_btn_add"), t("settings_ph_agent_id"))

@@ -47,5 +47,8 @@ class LLMClient(BaseLLM):
             stream=True,
         )
         async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            try:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+            except (AttributeError, IndexError):
+                continue
