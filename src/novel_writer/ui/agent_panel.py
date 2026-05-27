@@ -435,7 +435,8 @@ class AgentPanel(QWidget):
         for n, btn in self.agent_buttons.items():
             btn.setChecked(n == name)
         emoji = AGENT_PANEL_GLOBALS["agent_emojis"].get(name, "🤖")
-        self.agent_name_label.setText(f"{emoji}  {name}")
+        title = self._agents_cfg.get(name, {}).get("title", name)
+        self.agent_name_label.setText(f"{emoji}  {title}")
 
         self._restore_chat(name)
         self._update_quick_actions(name)
