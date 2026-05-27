@@ -1,54 +1,258 @@
 from __future__ import annotations
 
+import re
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QScrollArea, QFrame, QSizePolicy,
+    QTextEdit, QScrollArea, QFrame, QSizePolicy, QApplication,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QKeyEvent
 
 from .agent_animation import AgentIndicator, AgentBubble
 from ..locales import t
+from .styles import get_theme_colors
 
 # 默认颜色池
 COLOR_POOL = ["#ff6b8a", "#51cf66", "#4da6ff", "#ffd43b", "#cc5de8", "#ff922b",
               "#20c997", "#748ffc", "#f06595", "#5c7cfa", "#63e6be", "#e599f7"]
 
-AGENT_PANEL_GLOBALS: dict = {"agent_emojis": {}, "agent_colors": {}}
+AGENT_PANEL_GLOBALS: dict = {"agent_emojis": {}, "agent_colors": {}, "config": {}}
 
 
 def get_color(name: str, idx: int = 0) -> str:
     return AGENT_PANEL_GLOBALS["agent_colors"].get(name, COLOR_POOL[idx % len(COLOR_POOL)])
 
 
-class ChatBubble(QFrame):
+# ── Markdown → HTML 轻量渲染器 ──
 
-    def __init__(self, text: str, is_agent: bool = True, agent_name: str = "", parent=None):
-        super().__init__(parent)
-        self.setFrameShape(QFrame.Shape.NoFrame)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
+def _is_light_color(hex_color: str) -> bool:
+    """判断颜色是否为浅色。"""
+    h = hex_color.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    try:
+        r, g, b = int(h[:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except (ValueError, IndexError):
+        return False
+    return (r * 299 + g * 587 + b * 114) / 1000 > 128
 
-        emoji = AGENT_PANEL_GLOBALS.get("agent_emojis", {}).get(agent_name, "🤖")
 
-        if is_agent:
-            avatar = AgentBubble(emoji)
-            layout.addWidget(avatar, alignment=Qt.AlignmentFlag.AlignTop)
-            self.content_label = QLabel(text)
-            self.content_label.setWordWrap(True)
-            self.content_label.setTextFormat(Qt.TextFormat.MarkdownText)
-            self.content_label.setObjectName("chatBubble")
-            self.content_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            layout.addWidget(self.content_label)
+def _inline_md(text: str, fg: str = "#e8e8ed") -> str:
+    """行内 Markdown：粗体、斜体、行内代码。"""
+    code_bg = "rgba(0,0,0,0.06)" if _is_light_color(fg) else "rgba(255,255,255,0.08)"
+    text = re.sub(r'`([^`]+)`',
+                  r'<code style="background:' + code_bg + r';padding:1px 5px;'
+                  r'border-radius:3px;font-family:Consolas,monospace;font-size:12px;">\1</code>', text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+    return text
+
+
+def _md_to_html(text: str, fg: str = "#e8e8ed") -> str:
+    """轻量 Markdown → HTML，支持代码块、标题、列表、表格。"""
+    is_light = _is_light_color(fg)
+    code_bg = "rgba(0,0,0,0.06)" if is_light else "rgba(0,0,0,0.25)"
+    code_fg = "#6e6e73" if is_light else "#a6adc8"
+    border_color = "rgba(0,0,0,0.1)" if is_light else "rgba(255,255,255,0.1)"
+
+    lines = text.split("\n")
+    out: list[str] = []
+    in_code_block = False
+    in_list = False
+    in_table = False
+    table_rows: list[str] = []
+
+    for line in lines:
+        # 代码块
+        if line.strip().startswith("```"):
+            if in_code_block:
+                out.append("</pre>")
+                in_code_block = False
+            else:
+                if in_list:
+                    out.append("</ul>")
+                    in_list = False
+                out.append(
+                    f'<pre style="background:{code_bg};color:{code_fg};padding:10px 14px;'
+                    'border-radius:8px;font-family:Consolas,monospace;font-size:12px;'
+                    'overflow-x:auto;line-height:1.5;">')
+                in_code_block = True
+            continue
+        if in_code_block:
+            out.append(line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+            continue
+
+        stripped = line.strip()
+
+        # 表格
+        if "|" in stripped and stripped.startswith("|"):
+            if re.match(r'^\|[\s\-:|]+\|$', stripped):
+                continue
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if not in_table:
+                in_table = True
+                table_rows = []
+                header = "".join(
+                    f'<th style="padding:6px 12px;border:1px solid {border_color};'
+                    f'text-align:left;font-weight:600;">{c}</th>' for c in cells)
+                table_rows.append(f"<tr>{header}</tr>")
+            else:
+                row = "".join(
+                    f'<td style="padding:4px 12px;border:1px solid {border_color};">{c}</td>'
+                    for c in cells)
+                table_rows.append(f"<tr>{row}</tr>")
+            continue
+        elif in_table:
+            out.append(
+                f'<table style="border-collapse:collapse;margin:8px 0;width:100%;">'
+                f'{"".join(table_rows)}</table>')
+            in_table = False
+            table_rows = []
+
+        # 标题
+        if stripped.startswith("### "):
+            out.append(f'<b style="font-size:13px;">{stripped[4:]}</b><br>')
+        elif stripped.startswith("## "):
+            out.append(f'<b style="font-size:14px;">{stripped[3:]}</b><br>')
+        elif stripped.startswith("# "):
+            out.append(f'<b style="font-size:15px;">{stripped[2:]}</b><br>')
+        # 无序列表
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            if not in_list:
+                in_list = True
+                out.append("<ul>")
+            out.append(f"<li>{_inline_md(stripped[2:], fg)}</li>")
+        # 有序列表
+        elif re.match(r'^\d+\.\s', stripped):
+            if not in_list:
+                in_list = True
+                out.append('<ul style="list-style-type:decimal;">')
+            out.append(f'<li>{_inline_md(re.sub(r"^\d+\.\s", "", stripped), fg)}</li>')
+        # 空行
+        elif not stripped:
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            out.append("<br>")
         else:
-            self.content_label = QLabel(text)
-            self.content_label.setWordWrap(True)
-            self.content_label.setTextFormat(Qt.TextFormat.MarkdownText)
-            self.content_label.setObjectName("chatBubbleUser")
-            self.content_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-            layout.addWidget(self.content_label)
-            avatar = AgentBubble("👤")
-            layout.addWidget(avatar, alignment=Qt.AlignmentFlag.AlignTop)
+            if in_list:
+                out.append("</ul>")
+                in_list = False
+            out.append(_inline_md(stripped, fg))
 
+    if in_list:
+        out.append("</ul>")
+    if in_table:
+        out.append(
+            f'<table style="border-collapse:collapse;margin:8px 0;width:100%;">'
+            f'{"".join(table_rows)}</table>')
+    if in_code_block:
+        out.append("</pre>")
+
+    return "<br>".join(out)
+
+
+# ── 消息气泡 ──
+
+class ChatMessage(QFrame):
+    """单条消息气泡，支持 Markdown 渲染。"""
+
+    def __init__(self, role: str, content: str, agent_name: str = "", parent=None):
+        super().__init__(parent)
+        self._role = role
+        self._raw_content = content
+        self._agent_name = agent_name
+        self.setFrameShape(QFrame.Shape.NoFrame)
+
+        self._outer = QHBoxLayout(self)
+        self._outer.setContentsMargins(8, 4, 8, 4)
+
+        self._bubble = QFrame()
+        self._bubble_layout = QVBoxLayout(self._bubble)
+        self._bubble_layout.setContentsMargins(14, 10, 14, 10)
+        self._bubble_layout.setSpacing(4)
+
+        self._label = QLabel()
+        self._label.setWordWrap(True)
+        self._label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse |
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+        )
+        self._bubble_layout.addWidget(self._label)
+
+        self._avatar = None
+        if role == "user":
+            self._outer.addStretch()
+            self._outer.addWidget(self._bubble, 0)
+        else:
+            emoji = AGENT_PANEL_GLOBALS.get("agent_emojis", {}).get(agent_name, "🤖")
+            self._avatar = AgentBubble(emoji)
+            self._outer.addWidget(self._avatar, 0, Qt.AlignmentFlag.AlignTop)
+            self._outer.addWidget(self._bubble, 1)
+
+        self._apply_style()
+        self._set_content(content)
+
+    def _apply_style(self):
+        colors = get_theme_colors(
+            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "dark"),
+            AGENT_PANEL_GLOBALS.get("config")
+        )
+        accent = colors.get("accent", "#6e8efb")
+        card = colors.get("card", "#1c1c26")
+        fg = colors.get("fg", "#e8e8ed")
+
+        if self._role == "user":
+            self._bubble.setStyleSheet(
+                f"QFrame {{ background-color: {accent}; border-radius: 14px; }}")
+            self._label.setStyleSheet(
+                f"QLabel {{ color: #ffffff; background: transparent; border: none; "
+                f"font-size: 13px; }}")
+            self._fg = "#ffffff"
+        else:
+            self._bubble.setStyleSheet(
+                f"QFrame {{ background-color: {card}; border-radius: 14px; "
+                f"border: 1px solid {colors.get('border', 'rgba(255,255,255,0.06)')}; }}")
+            self._label.setStyleSheet(
+                f"QLabel {{ color: {fg}; background: transparent; border: none; "
+                f"font-size: 13px; }}")
+            self._fg = fg
+            if self._avatar:
+                self._avatar.update_theme(colors)
+
+    def _set_content(self, content: str) -> None:
+        if not content:
+            return
+        if self._role == "user":
+            safe = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            self._label.setText(safe.replace("\n", "<br>"))
+        else:
+            html = _md_to_html(content, fg=self._fg)
+            self._label.setTextFormat(Qt.TextFormat.RichText)
+            self._label.setText(html)
+
+    def refresh_style(self):
+        """刷新主题样式。"""
+        self._apply_style()
+        self._set_content(self._raw_content)
+
+
+# ── Ctrl+Enter 发送的输入框 ──
+
+class ChatTextEdit(QTextEdit):
+    """支持 Ctrl+Enter 发送的文本输入框。"""
+    submit = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.submit.emit()
+                return
+        super().keyPressEvent(event)
+
+
+# ── Agent 面板主体 ──
 
 class AgentPanel(QWidget):
 
@@ -60,9 +264,12 @@ class AgentPanel(QWidget):
         self.setMaximumWidth(560)
         self.agent_buttons: dict[str, QPushButton] = {}
         self._current_agent = ""
-        self._chat_history: dict[str, list] = {}  # 每个Agent独立的聊天记录
-        self._stream_label: QLabel = None  # 当前流式显示的标签
-        self._stream_text: str = ""  # 当前流式文本
+        self._agents_cfg: dict = {}
+        self._chat_history: dict[str, list] = {}
+        self._msg_widgets: list[ChatMessage] = []
+        self._stream_widget: ChatMessage | None = None
+        self._stream_text: str = ""
+        self._quick_buttons: list[QPushButton] = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -70,25 +277,25 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header
+        # ── Header ──
         header = QWidget()
         header.setObjectName("agentHeader")
         self.header_layout = QVBoxLayout(header)
-        self.header_layout.setContentsMargins(16, 16, 16, 12)
+        self.header_layout.setContentsMargins(16, 14, 16, 10)
         self.header_layout.setSpacing(10)
 
         self._title_label = QLabel(t("agent_workbench"))
         self._title_label.setStyleSheet("font-size: 15px; font-weight: 700; letter-spacing: -0.3px;")
         self.header_layout.addWidget(self._title_label)
 
-        # 按钮容器
+        # Agent 按钮行
         self.agent_btn_container = QWidget()
         self.agent_btn_layout = QHBoxLayout(self.agent_btn_container)
         self.agent_btn_layout.setSpacing(8)
         self.agent_btn_layout.setContentsMargins(0, 0, 0, 0)
         self.header_layout.addWidget(self.agent_btn_container)
 
-        # Agent 信息
+        # Agent 信息行
         info_row = QHBoxLayout()
         info_row.setSpacing(10)
         self.indicator = AgentIndicator()
@@ -99,14 +306,12 @@ class AgentPanel(QWidget):
         info_row.addWidget(self.agent_name_label)
         info_row.addStretch()
 
-        # 清空聊天按钮
         self.btn_clear = QPushButton("🗑️")
         self.btn_clear.setFixedSize(32, 32)
         self.btn_clear.setToolTip(t("agent_clear_chat"))
         self.btn_clear.setStyleSheet("""
             QPushButton {
-                border-radius: 16px;
-                font-size: 16px;
+                border-radius: 16px; font-size: 16px;
                 border: 1px solid rgba(255,255,255,0.1);
             }
             QPushButton:hover {
@@ -116,46 +321,65 @@ class AgentPanel(QWidget):
         """)
         self.btn_clear.clicked.connect(self._clear_current_chat)
         info_row.addWidget(self.btn_clear)
-
         self.header_layout.addLayout(info_row)
-
         layout.addWidget(header)
 
-        # 对话区域
+        # ── 快捷操作栏 ──
+        self._quick_bar = QWidget()
+        self._quick_bar_layout = QHBoxLayout(self._quick_bar)
+        self._quick_bar_layout.setContentsMargins(12, 6, 12, 6)
+        self._quick_bar_layout.setSpacing(6)
+        self._quick_bar_layout.addStretch()
+        self._quick_bar.setVisible(False)
+        layout.addWidget(self._quick_bar)
+
+        # ── 聊天区域 ──
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setStyleSheet("QScrollArea { border: none; }")
+        self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
         self.chat_container = QWidget()
         self.chat_layout = QVBoxLayout(self.chat_container)
-        self.chat_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.chat_layout.setSpacing(6)
         self.chat_layout.setContentsMargins(8, 8, 8, 8)
+        self.chat_layout.setSpacing(4)
+        self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
-        layout.addWidget(self.scroll_area)
+        layout.addWidget(self.scroll_area, 1)
 
-        # 输入区
+        # ── 加载指示器 ──
+        self._loading_label = QLabel(t("agent_thinking"))
+        self._loading_label.setVisible(False)
+        self._loading_label.setStyleSheet("color: gray; padding: 4px 16px; font-size: 12px;")
+        layout.addWidget(self._loading_label)
+
+        # ── 输入区 ──
         input_area = QWidget()
         input_area.setObjectName("agentInput")
         input_layout = QVBoxLayout(input_area)
-        input_layout.setContentsMargins(16, 12, 16, 16)
-        input_layout.setSpacing(10)
+        input_layout.setContentsMargins(12, 10, 12, 12)
+        input_layout.setSpacing(8)
 
-        self.input_edit = QTextEdit()
+        self.input_edit = ChatTextEdit()
         self.input_edit.setPlaceholderText(t("agent_ph_input"))
         self.input_edit.setMaximumHeight(90)
+        self.input_edit.submit.connect(self._on_send)
         input_layout.addWidget(self.input_edit)
 
         btn_row = QHBoxLayout()
+        self._hint_label = QLabel(t("agent_send_hint"))
+        self._hint_label.setStyleSheet("font-size: 11px; color: gray;")
+        btn_row.addWidget(self._hint_label)
+        btn_row.addStretch()
         self.btn_run = QPushButton(t("agent_send"))
         self.btn_run.setObjectName("primary")
-        self.btn_run.setFixedHeight(36)
+        self.btn_run.setFixedHeight(34)
         self.btn_run.setFixedWidth(80)
         self.btn_run.clicked.connect(self._on_send)
-        btn_row.addStretch()
         btn_row.addWidget(self.btn_run)
         input_layout.addLayout(btn_row)
 
         layout.addWidget(input_area)
+
+    # ── Agent 按钮管理 ──
 
     def update_agent_buttons(self, agents_cfg: dict):
         while self.agent_btn_layout.count():
@@ -163,6 +387,7 @@ class AgentPanel(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self.agent_buttons.clear()
+        self._agents_cfg = agents_cfg
 
         emojis, colors = {}, {}
         for i, (name, info) in enumerate(agents_cfg.items()):
@@ -177,10 +402,8 @@ class AgentPanel(QWidget):
             btn.setToolTip(title)
             btn.setStyleSheet(f"""
                 QPushButton {{
-                    border-radius: 24px;
-                    font-size: 24px;
-                    border: 2px solid transparent;
-                    padding: 0;
+                    border-radius: 24px; font-size: 24px;
+                    border: 2px solid transparent; padding: 0;
                 }}
                 QPushButton:hover {{ border-color: {color}; }}
                 QPushButton:checked {{
@@ -197,8 +420,13 @@ class AgentPanel(QWidget):
         AGENT_PANEL_GLOBALS["agent_emojis"] = emojis
         AGENT_PANEL_GLOBALS["agent_colors"] = colors
 
+    def set_config(self, config: dict):
+        """传入应用配置，用于主题感知。"""
+        AGENT_PANEL_GLOBALS["config"] = config
+
+    # ── Agent 切换 ──
+
     def _on_agent_selected(self, name: str):
-        # 保存当前Agent的聊天记录
         if self._current_agent and self._current_agent != name:
             self._save_current_chat()
 
@@ -208,8 +436,68 @@ class AgentPanel(QWidget):
         emoji = AGENT_PANEL_GLOBALS["agent_emojis"].get(name, "🤖")
         self.agent_name_label.setText(f"{emoji}  {name}")
 
-        # 恢复选中Agent的聊天记录
         self._restore_chat(name)
+        self._update_quick_actions(name)
+
+    def _update_quick_actions(self, agent_name: str):
+        """根据 Agent 的 skills 生成快捷按钮。"""
+        for btn in self._quick_buttons:
+            btn.deleteLater()
+        self._quick_buttons.clear()
+
+        info = self._agents_cfg.get(agent_name, {})
+        skills = info.get("skills", [])
+        if not skills:
+            self._quick_bar.setVisible(False)
+            return
+
+        self._quick_bar.setVisible(True)
+        prompt_map = {
+            "选题分析": "帮我分析一下当前热门的小说题材趋势",
+            "立意规划": "帮我确定这部小说的核心立意",
+            "风格定位": "帮我确定写作风格",
+            "故事结构": "帮我设计故事结构",
+            "章节规划": "帮我规划章节结构",
+            "人物设定": "帮我设计主要人物",
+            "世界观构建": "帮我构建世界观设定",
+            "伏笔设计": "帮我设计伏笔和悬念",
+            "正文写作": "请根据大纲写正文",
+            "对话创作": "帮我写一段人物对话",
+            "场景描写": "帮我描写这个场景",
+            "错别字检查": "帮我检查错别字",
+            "剧情审查": "帮我审查剧情逻辑",
+            "文笔润色": "帮我润色这段文字",
+            "情感渲染": "帮我加强情感表达",
+        }
+        for skill in skills[:4]:
+            prompt = prompt_map.get(skill, f"帮我{skill}")
+            btn = QPushButton(skill)
+            btn.setProperty("quick_action", True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda checked, p=prompt: self._send_quick_action(p))
+            self._quick_bar_layout.insertWidget(self._quick_bar_layout.count() - 1, btn)
+            self._quick_buttons.append(btn)
+
+        self._apply_quick_style()
+
+    def _apply_quick_style(self):
+        """应用快捷按钮主题样式。"""
+        colors = get_theme_colors(
+            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "dark"),
+            AGENT_PANEL_GLOBALS.get("config")
+        )
+        card = colors.get("card", "#1c1c26")
+        border = colors.get("border", "rgba(255,255,255,0.06)")
+        text = colors.get("fg", "#e8e8ed")
+        accent = colors.get("accent", "#6e8efb")
+        for btn in self._quick_buttons:
+            btn.setStyleSheet(
+                f"QPushButton {{ background: {card}; border: 1px solid {border}; "
+                f"border-radius: 12px; padding: 4px 12px; color: {text}; font-size: 12px; }}"
+                f"QPushButton:hover {{ background: {accent}; color: #ffffff; border-color: {accent}; }}"
+            )
+
+    # ── 发送 ──
 
     def _on_send(self):
         text = self.input_edit.toPlainText().strip()
@@ -219,85 +507,133 @@ class AgentPanel(QWidget):
         self.input_edit.clear()
         self.agent_run_requested.emit(self._current_agent, text)
 
+    def _send_quick_action(self, prompt: str):
+        """发送快捷操作。"""
+        self.input_edit.setText(prompt)
+        self._on_send()
+
+    # ── 消息管理 ──
+
     def add_user_message(self, text: str):
-        bubble = ChatBubble(text, is_agent=False)
-        self.chat_layout.addWidget(bubble)
-        # 记录到当前Agent的历史
+        msg = ChatMessage("user", text)
+        self._msg_widgets.append(msg)
+        self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg)
+        QTimer.singleShot(50, self._scroll_to_bottom)
+
         if self._current_agent not in self._chat_history:
             self._chat_history[self._current_agent] = []
         self._chat_history[self._current_agent].append({"type": "user", "text": text})
 
     def add_agent_message(self, agent_name: str, text: str):
-        bubble = ChatBubble(text, is_agent=True, agent_name=agent_name)
-        self.chat_layout.addWidget(bubble)
-        # 记录到当前Agent的历史
+        msg = ChatMessage("agent", text, agent_name=agent_name)
+        self._msg_widgets.append(msg)
+        self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg)
+        QTimer.singleShot(50, self._scroll_to_bottom)
+
         if agent_name not in self._chat_history:
             self._chat_history[agent_name] = []
-        self._chat_history[agent_name].append({"type": "agent", "text": text, "agent_name": agent_name})
+        self._chat_history[agent_name].append(
+            {"type": "agent", "text": text, "agent_name": agent_name})
 
     def append_stream_chunk(self, chunk: str):
-        """追加流式文本块"""
-        if self._stream_label is None:
-            # 创建新的流式消息气泡
-            bubble = ChatBubble("", is_agent=True, agent_name=self._current_agent)
-            self.chat_layout.addWidget(bubble)
-            self._stream_label = bubble.content_label
+        """追加流式文本块。"""
+        if self._stream_widget is None:
+            self._stream_widget = ChatMessage("agent", "", agent_name=self._current_agent)
+            self._msg_widgets.append(self._stream_widget)
+            self.chat_layout.insertWidget(self.chat_layout.count() - 1, self._stream_widget)
             self._stream_text = ""
 
         self._stream_text += chunk
-        # 处理think标签
         display_text = self._stream_text
+
+        # 处理 think 标签
         if "<think>" in display_text and "</think>" not in display_text:
-            # 正在思考中，显示思考状态
             think_content = display_text.split("<think>")[1]
             display_text = f"💭 *思考中...*\n\n{think_content}"
         elif "<think>" in display_text and "</think>" in display_text:
-            # 思考完成，提取思考内容和回答
             parts = display_text.split("</think>")
             think_content = parts[0].split("<think>")[1]
             answer = parts[1] if len(parts) > 1 else ""
             display_text = f"💭 *思考过程:*\n{think_content}\n\n{answer}"
 
-        if self._stream_label:
-            self._stream_label.setText(display_text)
-            # 滚动到底部
-            self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum())
+        try:
+            self._stream_widget._set_content(display_text)
+        except RuntimeError:
+            self._stream_widget = None
+            self._stream_text = ""
+            return
+        QTimer.singleShot(20, self._scroll_to_bottom)
 
     def finalize_stream_message(self, agent_name: str):
-        """完成流式消息"""
-        if self._stream_label and self._stream_text:
-            # 记录到历史
+        """完成流式消息。"""
+        if self._stream_widget and self._stream_text:
+            # 重新渲染完整内容（处理 think 标签）
+            final_text = self._stream_text
+            if "<think>" in final_text and "</think>" in final_text:
+                parts = final_text.split("</think>")
+                think_content = parts[0].split("<think>")[1]
+                answer = parts[1].strip() if len(parts) > 1 else ""
+                final_text = f"💭 *思考过程:*\n{think_content}\n\n{answer}" if think_content else answer
+            self._stream_widget._raw_content = final_text
+            self._stream_widget._set_content(final_text)
+
             if agent_name not in self._chat_history:
                 self._chat_history[agent_name] = []
-            self._chat_history[agent_name].append({
-                "type": "agent",
-                "text": self._stream_text,
-                "agent_name": agent_name
-            })
-        self._stream_label = None
+            self._chat_history[agent_name].append(
+                {"type": "agent", "text": self._stream_text, "agent_name": agent_name})
+
+        self._stream_widget = None
         self._stream_text = ""
 
+    # ── 滚动 ──
+
+    def _scroll_to_bottom(self):
+        sb = self.scroll_area.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    # ── 聊天记录管理 ──
+
     def _save_current_chat(self):
-        """保存当前聊天区域的内容到当前Agent的历史"""
-        # 聊天已经在 add_user_message/add_agent_message 中保存了
         pass
 
     def _restore_chat(self, agent_name: str):
-        """恢复指定Agent的聊天记录"""
-        # 清空当前聊天区域
-        while self.chat_layout.count():
-            item = self.chat_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._stream_widget = None
+        self._stream_text = ""
+        for msg in self._msg_widgets:
+            msg.deleteLater()
+        self._msg_widgets.clear()
 
-        # 恢复该Agent的聊天记录
         history = self._chat_history.get(agent_name, [])
-        for msg in history:
-            if msg["type"] == "user":
-                bubble = ChatBubble(msg["text"], is_agent=False)
+        for m in history:
+            if m["type"] == "user":
+                msg = ChatMessage("user", m["text"])
             else:
-                bubble = ChatBubble(msg["text"], is_agent=True, agent_name=msg.get("agent_name", agent_name))
-            self.chat_layout.addWidget(bubble)
+                msg = ChatMessage("agent", m["text"],
+                                  agent_name=m.get("agent_name", agent_name))
+            self._msg_widgets.append(msg)
+            self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg)
+
+        QTimer.singleShot(50, self._scroll_to_bottom)
+
+    def _clear_current_chat(self):
+        if not self._current_agent:
+            return
+        self._stream_widget = None
+        self._stream_text = ""
+        self._chat_history.pop(self._current_agent, None)
+        for msg in self._msg_widgets:
+            msg.deleteLater()
+        self._msg_widgets.clear()
+
+    def clear_chat(self):
+        self._stream_widget = None
+        self._stream_text = ""
+        for msg in self._msg_widgets:
+            msg.deleteLater()
+        self._msg_widgets.clear()
+        self._chat_history.clear()
+
+    # ── 工作状态 ──
 
     def set_working(self, active: bool, agent_name: str = ""):
         if active:
@@ -305,33 +641,53 @@ class AgentPanel(QWidget):
             self.indicator.start(color)
             self.btn_run.setEnabled(False)
             self.btn_run.setText(t("agent_generating"))
+            self._loading_label.setVisible(True)
+            self.input_edit.setEnabled(False)
         else:
             self.indicator.stop()
             self.btn_run.setEnabled(True)
             self.btn_run.setText(t("agent_send"))
+            self._loading_label.setVisible(False)
+            self.input_edit.setEnabled(True)
+
+    # ── 主题刷新 ──
+
+    def refresh_theme(self):
+        """刷新所有组件的主题样式。"""
+        colors = get_theme_colors(
+            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "dark"),
+            AGENT_PANEL_GLOBALS.get("config")
+        )
+        fg3 = colors.get("fg3", "#5a5a66")
+        border = colors.get("border", "rgba(255,255,255,0.06)")
+
+        self._loading_label.setStyleSheet(
+            f"color: {fg3}; padding: 4px 16px; font-size: 12px;")
+        self._hint_label.setStyleSheet(
+            f"font-size: 11px; color: {fg3};")
+        self.btn_clear.setStyleSheet(f"""
+            QPushButton {{
+                border-radius: 16px; font-size: 16px;
+                border: 1px solid {border};
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255,100,100,0.2);
+                border-color: rgba(255,100,100,0.3);
+            }}
+        """)
+
+        self.indicator.update_theme(colors)
+
+        self._apply_quick_style()
+        for msg in self._msg_widgets:
+            msg.refresh_style()
+
+    # ── 国际化 ──
 
     def retranslate(self):
-        """刷新文本。"""
         self._title_label.setText(t("agent_workbench"))
         self.agent_name_label.setText(t("agent_select"))
         self.input_edit.setPlaceholderText(t("agent_ph_input"))
         self.btn_run.setText(t("agent_send"))
-
-    def clear_chat(self):
-        while self.chat_layout.count():
-            item = self.chat_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._chat_history.clear()
-
-    def _clear_current_chat(self):
-        """清空当前Agent的聊天记录"""
-        if not self._current_agent:
-            return
-        # 清空当前Agent的历史
-        self._chat_history.pop(self._current_agent, None)
-        # 清空聊天区域
-        while self.chat_layout.count():
-            item = self.chat_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._loading_label.setText(t("agent_thinking"))
+        self._hint_label.setText(t("agent_send_hint"))
