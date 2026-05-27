@@ -78,18 +78,21 @@ QMainWindow {{
     background-color: {t['bg']};
 }}
 QWidget {{
-    background-color: transparent;
+    background-color: {t['bg']};
     color: {t['fg']};
 }}
-/* 显式设置透明背景，防止 Qt 某些版本下子控件显示为黑色 */
-QFrame {{
+/* 需要透明的容器控件，透出父级背景 */
+QFrame, QLabel, QSplitter, QSplitterHandle {{
     background-color: transparent;
 }}
 QScrollArea {{
     background-color: transparent;
 }}
 QScrollArea > QWidget > QWidget {{
-    background-color: transparent;
+    background-color: {t['bg']};
+}}
+QScrollArea > QViewport {{
+    background-color: {t['bg']};
 }}
 
 /* ──── 分割器 ──── */
