@@ -320,7 +320,7 @@ class ModelDialog(QDialog):
 
         layout.addWidget(left, 1)
 
-        # ── 右侧：配置编辑 ──
+        # ── 右侧：配置编辑 + 底部按钮 ──
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -370,9 +370,8 @@ class ModelDialog(QDialog):
         self.ollama_group.setVisible(False)
 
         right_layout.addStretch()
-        layout.addWidget(right, 2)
 
-        # 底部按钮
+        # 保存/取消按钮（在右侧列底部）
         btn_row2 = QHBoxLayout()
         btn_row2.addStretch()
         self._btn_save = QPushButton(t("settings_save_all"))
@@ -382,12 +381,9 @@ class ModelDialog(QDialog):
         self._btn_cancel.clicked.connect(self.reject)
         btn_row2.addWidget(self._btn_save)
         btn_row2.addWidget(self._btn_cancel)
+        right_layout.addLayout(btn_row2)
 
-        bottom = QWidget()
-        bottom_layout = QVBoxLayout(bottom)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.addLayout(btn_row2)
-        layout.addWidget(bottom)
+        layout.addWidget(right, 2)
 
         self._refresh_model_list()
         self._on_provider_changed(0)
@@ -487,7 +483,6 @@ class ModelDialog(QDialog):
         provider = next((p for p in self._providers if p["name"] == provider_name), None)
         if not provider:
             return
-        ptype = provider["type"]
         api_key = self.api_key_input.text().strip()
         base_url = self.base_url_input.text().strip()
         model = self.model_input.text().strip()
@@ -496,7 +491,8 @@ class ModelDialog(QDialog):
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
             return
 
-        if ptype == "ollama":
+        # Ollama 先检查模型是否存在
+        if provider.get("type") == "ollama":
             import httpx
             try:
                 tags = httpx.get(base_url + "/api/tags", timeout=5)
@@ -506,42 +502,20 @@ class ModelDialog(QDialog):
                     QMessageBox.warning(self, t("dialog_fail"),
                                         t("msg_model_not_found", model, ", ".join(available)))
                     return
-                resp = httpx.post(base_url + "/api/chat", json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": "你好"}],
-                    "stream": False,
-                    "options": {"num_predict": 30},
-                }, timeout=300)
-                resp.raise_for_status()
-                msg = resp.json().get("message", {})
-                reply = (msg.get("content", "") or msg.get("thinking", ""))[:150]
-                QMessageBox.information(self, t("dialog_success"), t("test_success_model", model, reply))
-            except httpx.ConnectError:
-                QMessageBox.warning(self, t("dialog_fail"), t("msg_conn_fail", base_url))
-            except httpx.ReadTimeout:
-                QMessageBox.warning(self, t("dialog_fail"), t("msg_timeout", model))
-            except httpx.HTTPStatusError as e:
-                QMessageBox.warning(self, t("dialog_error"), t("msg_http_error", str(e.response.status_code)))
             except Exception as e:
-                QMessageBox.warning(self, t("dialog_fail"), str(e))
-        elif ptype == "openai_compat":
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=api_key, base_url=base_url)
-                resp = client.chat.completions.create(
-                    model=model, messages=[{"role": "user", "content": "hi"}], max_tokens=5)
-                QMessageBox.information(self, t("dialog_success"), t("test_success_conn", resp.model))
-            except Exception as e:
-                QMessageBox.warning(self, t("dialog_fail"), str(e))
-        elif ptype == "claude":
-            try:
-                import anthropic
-                client = anthropic.Anthropic(api_key=api_key)
-                client.messages.create(
-                    model=model, messages=[{"role": "user", "content": "hi"}], max_tokens=5)
-                QMessageBox.information(self, t("dialog_success"), t("test_success_claude"))
-            except Exception as e:
-                QMessageBox.warning(self, t("dialog_fail"), str(e))
+                QMessageBox.warning(self, t("dialog_fail"), t("msg_conn_fail", str(e)))
+                return
+            base_url = base_url.rstrip("/") + "/v1"
+
+        # 统一用 OpenAI 兼容接口测试
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key or "ollama", base_url=base_url)
+            resp = client.chat.completions.create(
+                model=model, messages=[{"role": "user", "content": "hi"}], max_tokens=5)
+            QMessageBox.information(self, t("dialog_success"), t("test_success_conn", resp.model))
+        except Exception as e:
+            QMessageBox.warning(self, t("dialog_fail"), str(e))
 
     def _load_config(self):
         saved_provider = self.config.get("current_provider")

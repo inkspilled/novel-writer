@@ -1,9 +1,4 @@
 from .base import BaseLLM, LLMMessage, LLMResponse
-from .openai_compat import OpenAICompatLLM
-from .claude import ClaudeLLM
-from .ollama import OllamaLLM
+from .client import LLMClient
 
-__all__ = [
-    "BaseLLM", "LLMMessage", "LLMResponse",
-    "OpenAICompatLLM", "ClaudeLLM", "OllamaLLM",
-]
+__all__ = ["BaseLLM", "LLMMessage", "LLMResponse", "LLMClient"]

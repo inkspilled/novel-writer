@@ -21,7 +21,7 @@ from ..locales import t, set_language
 from ..models.project import Project
 from ..models.chapter import Chapter, ChapterStatus
 from ..models.character import Character
-from ..core.llm import OpenAICompatLLM, ClaudeLLM, OllamaLLM
+from ..core.llm import LLMClient
 from ..core.agents import load_default_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 
@@ -216,25 +216,18 @@ class MainWindow(QMainWindow):
         CONFIG_PATH.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _create_llm(self, provider: dict):
-        """根据供应商配置创建 LLM 实例。"""
-        ptype = provider.get("type", "")
-        if ptype == "openai_compat":
-            return OpenAICompatLLM(
-                model=provider["model"],
-                api_key=provider.get("api_key", ""),
-                base_url=provider["base_url"],
-            )
-        elif ptype == "claude":
-            return ClaudeLLM(
-                model=provider["model"],
-                api_key=provider.get("api_key", ""),
-            )
-        elif ptype == "ollama":
-            return OllamaLLM(
-                model=provider["model"],
-                base_url=provider.get("base_url", "http://localhost:11434"),
-            )
-        return None
+        """根据供应商配置创建 LLM 实例。统一走 OpenAI 兼容协议。"""
+        model = provider.get("model", "")
+        if not model:
+            return None
+        base_url = provider.get("base_url", "")
+        api_key = provider.get("api_key", "")
+        # Ollama 使用 /v1 端点
+        if provider.get("type") == "ollama":
+            base_url = base_url.rstrip("/") + "/v1"
+        if not base_url:
+            base_url = "https://api.openai.com/v1"
+        return LLMClient(model=model, api_key=api_key, base_url=base_url)
 
     def _init_llm(self):
         provider = self.config.get("current_provider")
