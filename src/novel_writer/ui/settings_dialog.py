@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QComboBox, QPushButton, QFormLayout,
     QGroupBox, QMessageBox, QDoubleSpinBox, QListWidget,
     QListWidgetItem, QInputDialog, QTextEdit, QColorDialog,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -134,15 +135,23 @@ class AppearanceDialog(QDialog):
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("settings_tab_appearance"))
-        self.setMinimumSize(520, 560)
+        self.resize(560, 640)
         self.config = dict(config)
         self._setup_ui()
         self._load_config()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        # 滚动区域包裹所有内容
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
         # 语言
         lang_group = QGroupBox(t("settings_language").rstrip(":"))
@@ -157,7 +166,7 @@ class AppearanceDialog(QDialog):
         # 主题
         theme_group = QGroupBox(t("settings_theme_group"))
         tg = QVBoxLayout(theme_group)
-        tg.setSpacing(10)
+        tg.setSpacing(12)
 
         row1 = QHBoxLayout()
         row1.addWidget(QLabel(t("settings_select_theme")))
@@ -173,45 +182,54 @@ class AppearanceDialog(QDialog):
         self.theme_preview_label.setStyleSheet("border-radius: 10px;")
         tg.addWidget(self.theme_preview_label)
 
+        # 自定义配色
         self.custom_group = QGroupBox(t("settings_custom_colors"))
-        cg = QFormLayout(self.custom_group)
-        cg.setSpacing(10)
+        cg = QVBoxLayout(self.custom_group)
+        cg.setSpacing(6)
         self.color_bg = ColorPicker(t("color_bg"), "#1a1a2e")
         self.color_bg.color_changed.connect(self._on_custom_color_changed)
-        cg.addRow(self.color_bg)
+        cg.addWidget(self.color_bg)
         self.color_surface = ColorPicker(t("color_surface"), "#16213e")
         self.color_surface.color_changed.connect(self._on_custom_color_changed)
-        cg.addRow(self.color_surface)
+        cg.addWidget(self.color_surface)
         self.color_fg = ColorPicker(t("color_fg"), "#e0e0e0")
         self.color_fg.color_changed.connect(self._on_custom_color_changed)
-        cg.addRow(self.color_fg)
+        cg.addWidget(self.color_fg)
         self.color_fg2 = ColorPicker(t("color_fg2"), "#a0a0a0")
         self.color_fg2.color_changed.connect(self._on_custom_color_changed)
-        cg.addRow(self.color_fg2)
+        cg.addWidget(self.color_fg2)
         self.color_accent = ColorPicker(t("color_accent"), "#e94560")
         self.color_accent.color_changed.connect(self._on_custom_color_changed)
-        cg.addRow(self.color_accent)
+        cg.addWidget(self.color_accent)
         tg.addWidget(self.custom_group)
         self.custom_group.setVisible(False)
 
         self._apply_btn = QPushButton(t("settings_apply_now"))
         self._apply_btn.setObjectName("primary")
+        self._apply_btn.setFixedHeight(40)
         self._apply_btn.clicked.connect(self._apply_theme_now)
         tg.addWidget(self._apply_btn)
         layout.addWidget(theme_group)
 
         layout.addStretch()
 
+        scroll.setWidget(container)
+        root.addWidget(scroll)
+
+        # 底部按钮（固定在底部，不随滚动）
         btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(24, 12, 24, 16)
         btn_row.addStretch()
         self._btn_save = QPushButton(t("settings_save_all"))
         self._btn_save.setObjectName("primary")
+        self._btn_save.setFixedHeight(38)
         self._btn_save.clicked.connect(self._save)
         self._btn_cancel = QPushButton(t("settings_cancel"))
+        self._btn_cancel.setFixedHeight(38)
         self._btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(self._btn_save)
         btn_row.addWidget(self._btn_cancel)
-        layout.addLayout(btn_row)
+        root.addLayout(btn_row)
 
     def _on_theme_changed(self):
         idx = self.theme_combo.currentIndex()
