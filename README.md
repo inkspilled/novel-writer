@@ -81,7 +81,7 @@ python -m novel_writer
 | 文件 | 说明 |
 |------|------|
 | `data/config.json` | 全局配置（主题、语言、模型、智能体） |
-| `data/chat_history.json` | 聊天记录 |
+| `data/chat.db` | 聊天记录 |
 | `data/projects/*.json` | 小说项目数据 |
 
 ## 更多

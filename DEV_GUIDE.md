@@ -120,7 +120,7 @@ MainWindow
 
 - `AgentWorker(QThread)`：后台线程执行 Agent 调用，信号驱动 UI 更新
 - 流式输出：`chunk_received` 信号逐块更新 Markdown 渲染
-- 聊天记录：`save_history()` / `load_history()` 持久化到 `data/chat_history.json`
+- 聊天记录：`save_history()` / `load_history()` 持久化到 `data/chat.db`
 
 ## 添加新供应商
 
@@ -149,7 +149,7 @@ MainWindow
 | 文件 | 说明 |
 |------|------|
 | `data/config.json` | 全局配置（主题、语言、模型、智能体） |
-| `data/chat_history.json` | 聊天记录 |
+| `data/chat.db` | 聊天记录 |
 | `data/projects/*.json` | 小说项目数据 |
 
 ## 开发环境

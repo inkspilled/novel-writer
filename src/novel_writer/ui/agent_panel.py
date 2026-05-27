@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -15,7 +16,7 @@ from .agent_animation import AgentIndicator, AgentBubble
 from ..locales import t
 from .styles import get_theme_colors
 
-CHAT_HISTORY_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "chat_history.json"
+CHAT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "chat.db"
 
 # 默认颜色池
 COLOR_POOL = ["#ff6b8a", "#51cf66", "#4da6ff", "#ffd43b", "#cc5de8", "#ff922b",
@@ -650,24 +651,50 @@ class AgentPanel(QWidget):
         self._chat_history.clear()
         self.save_history()
 
-    # ── 聊天记录持久化 ──
+    # ── 聊天记录持久化 (SQLite) ──
+
+    def _get_db(self) -> sqlite3.Connection:
+        CHAT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(str(CHAT_DB_PATH))
+        db.execute("""CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
+        db.commit()
+        return db
 
     def save_history(self):
-        """将聊天记录保存到磁盘。"""
-        CHAT_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CHAT_HISTORY_PATH.write_text(
-            json.dumps(self._chat_history, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        """将当前所有聊天记录写入 SQLite（全量覆盖）。"""
+        db = self._get_db()
+        try:
+            db.execute("DELETE FROM messages")
+            rows = []
+            for agent_name, messages in self._chat_history.items():
+                for m in messages:
+                    rows.append((agent_name, m["type"], m["text"]))
+            db.executemany("INSERT INTO messages (agent, role, content) VALUES (?, ?, ?)", rows)
+            db.commit()
+        finally:
+            db.close()
 
     def load_history(self):
-        """从磁盘加载聊天记录。"""
-        if CHAT_HISTORY_PATH.exists():
-            try:
-                self._chat_history = json.loads(
-                    CHAT_HISTORY_PATH.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                self._chat_history = {}
+        """从 SQLite 加载聊天记录。"""
+        if not CHAT_DB_PATH.exists():
+            return
+        db = self._get_db()
+        try:
+            self._chat_history = {}
+            for agent, role, content in db.execute(
+                    "SELECT agent, role, content FROM messages ORDER BY id"):
+                if agent not in self._chat_history:
+                    self._chat_history[agent] = []
+                self._chat_history[agent].append(
+                    {"type": role, "text": content, "agent_name": agent})
+        finally:
+            db.close()
 
     # ── 工作状态 ──
 
