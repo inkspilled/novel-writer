@@ -81,6 +81,15 @@ QWidget {{
     background-color: transparent;
     color: {t['fg']};
 }}
+QFrame {{
+    background-color: transparent;
+}}
+QScrollArea {{
+    background-color: transparent;
+}}
+QScrollArea > QWidget > QWidget {{
+    background-color: transparent;
+}}
 
 /* ──── 分割器 ──── */
 QSplitter::handle {{

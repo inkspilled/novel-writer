@@ -17,6 +17,7 @@ class AgentIndicator(QWidget):
         self._angle = 0
         self._active = False
         self._color = QColor("#89b4fa")
+        self._inactive_color = QColor("#45475a")
 
         # 呼吸灯动画
         self._breath_anim = QPropertyAnimation(self, b"opacity")
@@ -53,6 +54,12 @@ class AgentIndicator(QWidget):
         self._opacity = 0.3
         self.update()
 
+    def update_theme(self, colors: dict):
+        """更新主题色。"""
+        self._inactive_color = QColor(colors.get("fg3", "#45475a"))
+        if not self._active:
+            self.update()
+
     def _rotate_step(self):
         self._angle = (self._angle + 3) % 360
         self.update()
@@ -83,7 +90,7 @@ class AgentIndicator(QWidget):
             # 静止状态 - 灰色小圆
             painter.setOpacity(0.3)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#45475a"))
+            painter.setBrush(self._inactive_color)
             painter.drawEllipse(center, 8, 8)
 
         painter.end()
@@ -97,6 +104,8 @@ class AgentBubble(QWidget):
         self.setFixedSize(40, 40)
         self._emoji = emoji
         self._scale = 1.0
+        self._bg_color = QColor("#313244")
+        self._fg_color = QColor("#cdd6f4")
 
         self._bounce_anim = QPropertyAnimation(self, b"scale")
         self._bounce_anim.setDuration(300)
@@ -116,6 +125,12 @@ class AgentBubble(QWidget):
     def bounce(self):
         self._bounce_anim.start()
 
+    def update_theme(self, colors: dict):
+        """更新主题色。"""
+        self._bg_color = QColor(colors.get("card", "#313244"))
+        self._fg_color = QColor(colors.get("fg", "#cdd6f4"))
+        self.update()
+
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -123,12 +138,12 @@ class AgentBubble(QWidget):
 
         # 背景圆
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#313244"))
+        painter.setBrush(self._bg_color)
         r = int(18 * self._scale)
         painter.drawEllipse(center, r, r)
 
         # Emoji
-        painter.setPen(QColor("#cdd6f4"))
+        painter.setPen(self._fg_color)
         font = painter.font()
         font.setPixelSize(int(22 * self._scale))
         painter.setFont(font)
