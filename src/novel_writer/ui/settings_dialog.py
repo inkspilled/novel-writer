@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
+    QDialog, QVBoxLayout, QHBoxLayout, QWidget,
     QLabel, QLineEdit, QComboBox, QPushButton, QFormLayout,
     QGroupBox, QMessageBox, QDoubleSpinBox, QListWidget,
     QListWidgetItem, QInputDialog, QTextEdit, QColorDialog,
@@ -49,7 +49,9 @@ class ColorPicker(QWidget):
 
         self.color_btn = QPushButton()
         self.color_btn.setFixedSize(32, 32)
-        self.color_btn.setStyleSheet(f"background-color: {default_color}; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);")
+        self.color_btn.setStyleSheet(
+            f"background-color: {default_color}; border-radius: 6px; "
+            f"border: 1px solid rgba(128,128,128,0.3);")
         self.color_btn.clicked.connect(self._pick_color)
         layout.addWidget(self.color_btn)
 
@@ -71,7 +73,9 @@ class ColorPicker(QWidget):
         text = text.strip()
         if len(text) == 7 and text.startswith("#"):
             self._color = text
-            self.color_btn.setStyleSheet(f"background-color: {text}; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);")
+            self.color_btn.setStyleSheet(
+                f"background-color: {text}; border-radius: 6px; "
+                f"border: 1px solid rgba(128,128,128,0.3);")
             self.color_changed.emit(text)
 
     def set_color(self, color: str):
@@ -79,20 +83,27 @@ class ColorPicker(QWidget):
         self.hex_input.blockSignals(True)
         self.hex_input.setText(color)
         self.hex_input.blockSignals(False)
-        self.color_btn.setStyleSheet(f"background-color: {color}; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);")
+        self.color_btn.setStyleSheet(
+            f"background-color: {color}; border-radius: 6px; "
+            f"border: 1px solid rgba(128,128,128,0.3);")
 
     def get_color(self) -> str:
         return self._color
 
 
-class SettingsDialog(QDialog):
+# ════════════════════════════════════════
+#  外观设置对话框
+# ════════════════════════════════════════
+
+class AppearanceDialog(QDialog):
+    """外观设置：主题、语言、字体。"""
 
     theme_preview = Signal(str)
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(t("settings_title"))
-        self.setMinimumSize(640, 580)
+        self.setWindowTitle(t("settings_tab_appearance"))
+        self.setMinimumSize(500, 480)
         self.config = dict(config)
         self._setup_ui()
         self._load_config()
@@ -100,31 +111,6 @@ class SettingsDialog(QDialog):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        self.tabs = QTabWidget()
-
-        self._build_appearance_tab()
-        self._build_model_tab()
-        self._build_agent_tab()
-
-        layout.addWidget(self.tabs)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        self._btn_save = QPushButton(t("settings_save_all"))
-        self._btn_save.setObjectName("primary")
-        self._btn_save.clicked.connect(self._save_all)
-        self._btn_cancel = QPushButton(t("settings_cancel"))
-        self._btn_cancel.clicked.connect(self.reject)
-        btn_row.addWidget(self._btn_save)
-        btn_row.addWidget(self._btn_cancel)
-        layout.addLayout(btn_row)
-
-        self._on_provider_changed(0)
-
-    # ── 外观 ──
-    def _build_appearance_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
         layout.setSpacing(14)
 
         # 语言
@@ -134,10 +120,10 @@ class SettingsDialog(QDialog):
         self.lang_combo = QComboBox()
         for code, label in get_languages():
             self.lang_combo.addItem(label, code)
-        self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
         lg.addWidget(self.lang_combo, 1)
         layout.addWidget(lang_group)
 
+        # 主题
         theme_group = QGroupBox(t("settings_theme_group"))
         tg = QVBoxLayout(theme_group)
         tg.setSpacing(10)
@@ -156,31 +142,24 @@ class SettingsDialog(QDialog):
         self.theme_preview_label.setStyleSheet("border-radius: 10px;")
         tg.addWidget(self.theme_preview_label)
 
-        # 自定义主题色盘（仅自定义时显示）
         self.custom_group = QGroupBox(t("settings_custom_colors"))
         cg = QFormLayout(self.custom_group)
         cg.setSpacing(10)
-
         self.color_bg = ColorPicker(t("color_bg"), "#1a1a2e")
         self.color_bg.color_changed.connect(self._on_custom_color_changed)
         cg.addRow(self.color_bg)
-
         self.color_surface = ColorPicker(t("color_surface"), "#16213e")
         self.color_surface.color_changed.connect(self._on_custom_color_changed)
         cg.addRow(self.color_surface)
-
         self.color_fg = ColorPicker(t("color_fg"), "#e0e0e0")
         self.color_fg.color_changed.connect(self._on_custom_color_changed)
         cg.addRow(self.color_fg)
-
         self.color_fg2 = ColorPicker(t("color_fg2"), "#a0a0a0")
         self.color_fg2.color_changed.connect(self._on_custom_color_changed)
         cg.addRow(self.color_fg2)
-
         self.color_accent = ColorPicker(t("color_accent"), "#e94560")
         self.color_accent.color_changed.connect(self._on_custom_color_changed)
         cg.addRow(self.color_accent)
-
         tg.addWidget(self.custom_group)
         self.custom_group.setVisible(False)
 
@@ -188,7 +167,6 @@ class SettingsDialog(QDialog):
         self._apply_btn.setObjectName("primary")
         self._apply_btn.clicked.connect(self._apply_theme_now)
         tg.addWidget(self._apply_btn)
-
         layout.addWidget(theme_group)
 
         # 字体
@@ -202,30 +180,29 @@ class SettingsDialog(QDialog):
         layout.addWidget(font_group)
 
         layout.addStretch()
-        self.tabs.addTab(tab, t("settings_tab_appearance"))
-        self._on_theme_changed()
 
-    def _on_lang_changed(self):
-        code = self.lang_combo.itemData(self.lang_combo.currentIndex())
-        self.config["language"] = code or "zh"
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._btn_save = QPushButton(t("settings_save_all"))
+        self._btn_save.setObjectName("primary")
+        self._btn_save.clicked.connect(self._save)
+        self._btn_cancel = QPushButton(t("settings_cancel"))
+        self._btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self._btn_save)
+        btn_row.addWidget(self._btn_cancel)
+        layout.addLayout(btn_row)
 
     def _on_theme_changed(self):
         idx = self.theme_combo.currentIndex()
         key = self.theme_combo.itemData(idx)
         is_custom = (key == "custom")
         self.custom_group.setVisible(is_custom)
-
-        if is_custom:
-            colors = get_theme_colors("custom", self.config)
-        else:
-            colors = get_theme_colors(key or "dark")
-
+        colors = get_theme_colors("custom", self.config) if is_custom else get_theme_colors(key or "dark")
         self.theme_preview_label.setStyleSheet(
             f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
             f"stop:0 {colors['bg']}, stop:0.25 {colors['surface']}, stop:0.5 {colors['card']}, "
             f"stop:0.75 {colors['accent']}, stop:1 {colors['elevated']}); "
-            f"border-radius: 10px;"
-        )
+            f"border-radius: 10px;")
 
     def _on_custom_color_changed(self):
         self.config["custom_bg"] = self.color_bg.get_color()
@@ -248,10 +225,71 @@ class SettingsDialog(QDialog):
         self.config["font_size"] = size
         self.theme_preview.emit(self.config.get("theme", "dark"))
 
-    # ── 模型 ──
-    def _build_model_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+    def _load_config(self):
+        self.theme_combo.blockSignals(True)
+        self.lang_combo.blockSignals(True)
+        self.font_size_combo.blockSignals(True)
+
+        saved_lang = self.config.get("language", "zh")
+        for i in range(self.lang_combo.count()):
+            if self.lang_combo.itemData(i) == saved_lang:
+                self.lang_combo.setCurrentIndex(i)
+                break
+        saved_theme = self.config.get("theme", "dark")
+        for i in range(self.theme_combo.count()):
+            if self.theme_combo.itemData(i) == saved_theme:
+                self.theme_combo.setCurrentIndex(i)
+                break
+        saved_font = self.config.get("font_size", "16")
+        idx = self.font_size_combo.findText(saved_font)
+        if idx >= 0:
+            self.font_size_combo.setCurrentIndex(idx)
+        self.color_bg.set_color(self.config.get("custom_bg", "#1a1a2e"))
+        self.color_surface.set_color(self.config.get("custom_surface", "#16213e"))
+        self.color_fg.set_color(self.config.get("custom_fg", "#e0e0e0"))
+        self.color_fg2.set_color(self.config.get("custom_fg2", "#a0a0a0"))
+        self.color_accent.set_color(self.config.get("custom_accent", "#e94560"))
+
+        self.theme_combo.blockSignals(False)
+        self.lang_combo.blockSignals(False)
+        self.font_size_combo.blockSignals(False)
+
+        # 初始化预览（仅一次）
+        self._on_theme_changed()
+
+    def _save(self):
+        self.config["theme"] = self.theme_combo.itemData(self.theme_combo.currentIndex()) or "dark"
+        self.config["font_size"] = self.font_size_combo.currentText()
+        self.config["language"] = self.lang_combo.itemData(self.lang_combo.currentIndex()) or "zh"
+        self.config["custom_bg"] = self.color_bg.get_color()
+        self.config["custom_surface"] = self.color_surface.get_color()
+        self.config["custom_fg"] = self.color_fg.get_color()
+        self.config["custom_fg2"] = self.color_fg2.get_color()
+        self.config["custom_accent"] = self.color_accent.get_color()
+        self.accept()
+
+    def get_config(self) -> dict:
+        return self.config
+
+
+# ════════════════════════════════════════
+#  模型设置对话框
+# ════════════════════════════════════════
+
+class ModelDialog(QDialog):
+    """模型设置：供应商、API Key、模型选择。"""
+
+    def __init__(self, config: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("settings_tab_model"))
+        self.setMinimumSize(500, 460)
+        self.config = dict(config)
+        self._setup_ui()
+        self._load_config()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
         provider_group = QGroupBox(t("settings_provider_group"))
@@ -298,7 +336,19 @@ class SettingsDialog(QDialog):
         self.ollama_group.setVisible(False)
 
         layout.addStretch()
-        self.tabs.addTab(tab, t("settings_tab_model"))
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self._btn_save = QPushButton(t("settings_save_all"))
+        self._btn_save.setObjectName("primary")
+        self._btn_save.clicked.connect(self._save)
+        self._btn_cancel = QPushButton(t("settings_cancel"))
+        self._btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(self._btn_save)
+        btn_row.addWidget(self._btn_cancel)
+        layout.addLayout(btn_row)
+
+        self._on_provider_changed(0)
 
     def _on_provider_changed(self, index: int):
         if index < 0 or index >= len(DEFAULT_PROVIDERS):
@@ -353,7 +403,7 @@ class SettingsDialog(QDialog):
                 available = [m["name"] for m in tags.json().get("models", [])]
                 if model not in available:
                     QMessageBox.warning(self, t("dialog_fail"),
-                        t("msg_model_not_found", model, ", ".join(available)))
+                                        t("msg_model_not_found", model, ", ".join(available)))
                     return
                 resp = httpx.post(base_url + "/api/chat", json={
                     "model": model,
@@ -392,12 +442,57 @@ class SettingsDialog(QDialog):
             except Exception as e:
                 QMessageBox.warning(self, t("dialog_fail"), str(e))
 
-    # ── Agent ──
-    def _build_agent_tab(self):
-        tab = QWidget()
-        layout = QHBoxLayout(tab)
-        layout.setSpacing(14)
+    def _load_config(self):
+        saved_provider = self.config.get("current_provider")
+        if saved_provider:
+            for i in range(self.provider_combo.count()):
+                if self.provider_combo.itemText(i) == saved_provider.get("name"):
+                    self.provider_combo.setCurrentIndex(i)
+                    break
+            self.api_key_input.setText(saved_provider.get("api_key", ""))
+            self.base_url_input.setText(saved_provider.get("base_url", ""))
+            self.model_input.setText(saved_provider.get("model", ""))
 
+    def _save(self):
+        provider_name = self.provider_combo.currentText()
+        provider = next((p for p in DEFAULT_PROVIDERS if p["name"] == provider_name), None)
+        if provider:
+            self.config["current_provider"] = {
+                "name": provider_name,
+                "type": provider["type"],
+                "api_key": self.api_key_input.text().strip(),
+                "base_url": self.base_url_input.text().strip(),
+                "model": self.model_input.text().strip(),
+            }
+        self.accept()
+
+    def get_config(self) -> dict:
+        return self.config
+
+
+# ════════════════════════════════════════
+#  Agent 管理对话框
+# ════════════════════════════════════════
+
+class AgentDialog(QDialog):
+    """Agent 管理：增删改查 Agent 配置。"""
+
+    def __init__(self, config: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("settings_tab_agent"))
+        self.setMinimumSize(640, 500)
+        self.config = dict(config)
+        self._setup_ui()
+        self._load_config()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+
+        # 左侧列表
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -416,8 +511,9 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(self._btn_add)
         btn_row.addWidget(self._btn_del)
         left_layout.addLayout(btn_row)
-        layout.addWidget(left, 1)
+        body.addWidget(left, 1)
 
+        # 右侧详情
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -428,23 +524,19 @@ class SettingsDialog(QDialog):
 
         self.agent_name_input = QLineEdit()
         self.agent_name_input.setPlaceholderText(t("settings_ph_agent_id"))
-        self._label_id = QLabel(t("settings_agent_id"))
-        form.addRow(self._label_id, self.agent_name_input)
+        form.addRow(t("settings_agent_id"), self.agent_name_input)
 
         self.agent_title_input = QLineEdit()
         self.agent_title_input.setPlaceholderText(t("settings_ph_agent_title"))
-        self._label_title = QLabel(t("settings_agent_title"))
-        form.addRow(self._label_title, self.agent_title_input)
+        form.addRow(t("settings_agent_title"), self.agent_title_input)
 
         self.agent_emoji_input = QLineEdit()
         self.agent_emoji_input.setPlaceholderText(t("settings_ph_emoji"))
-        self._label_emoji = QLabel(t("settings_agent_emoji"))
-        form.addRow(self._label_emoji, self.agent_emoji_input)
+        form.addRow(t("settings_agent_emoji"), self.agent_emoji_input)
 
         self.agent_model_input = QLineEdit()
         self.agent_model_input.setPlaceholderText(t("settings_ph_model_hint"))
-        self._label_model = QLabel(t("settings_agent_model"))
-        form.addRow(self._label_model, self.agent_model_input)
+        form.addRow(t("settings_agent_model"), self.agent_model_input)
 
         self.agent_temp_spin = QDoubleSpinBox()
         self.agent_temp_spin.setRange(0.0, 2.0)
@@ -454,20 +546,29 @@ class SettingsDialog(QDialog):
 
         self.agent_skills_input = QLineEdit()
         self.agent_skills_input.setPlaceholderText(t("settings_ph_skills"))
-        self._label_skills = QLabel(t("settings_agent_skills"))
-        form.addRow(self._label_skills, self.agent_skills_input)
+        form.addRow(t("settings_agent_skills"), self.agent_skills_input)
 
         self.agent_prompt_input = QTextEdit()
         self.agent_prompt_input.setPlaceholderText(t("settings_ph_prompt"))
         self.agent_prompt_input.setMaximumHeight(100)
-        self._label_prompt = QLabel(t("settings_agent_prompt"))
-        form.addRow(self._label_prompt, self.agent_prompt_input)
+        form.addRow(t("settings_agent_prompt"), self.agent_prompt_input)
 
         right_layout.addWidget(self.agent_detail_group)
         right_layout.addStretch()
-        layout.addWidget(right, 2)
+        body.addWidget(right, 2)
 
-        self.tabs.addTab(tab, t("settings_tab_agent"))
+        layout.addLayout(body)
+
+        btn_row2 = QHBoxLayout()
+        btn_row2.addStretch()
+        self._btn_save = QPushButton(t("settings_save_all"))
+        self._btn_save.setObjectName("primary")
+        self._btn_save.clicked.connect(self._save)
+        self._btn_cancel = QPushButton(t("settings_cancel"))
+        self._btn_cancel.clicked.connect(self.reject)
+        btn_row2.addWidget(self._btn_save)
+        btn_row2.addWidget(self._btn_cancel)
+        layout.addLayout(btn_row2)
 
     def _refresh_agent_list(self):
         self.agent_list.clear()
@@ -535,69 +636,21 @@ class SettingsDialog(QDialog):
         if name in BUILTIN_AGENTS:
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_builtin_no_delete"))
             return
-        if QMessageBox.question(self, t("dialog_confirm"), t("msg_delete_agent", name)) == QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, t("dialog_confirm"),
+                                t("msg_delete_agent", name)) == QMessageBox.StandardButton.Yes:
             del agents[name]
             self._refresh_agent_list()
 
-    # ── 加载/保存 ──
     def _load_config(self):
-        saved_lang = self.config.get("language", "zh")
-        for i in range(self.lang_combo.count()):
-            if self.lang_combo.itemData(i) == saved_lang:
-                self.lang_combo.setCurrentIndex(i)
-                break
-
-        saved_theme = self.config.get("theme", "dark")
-        for i in range(self.theme_combo.count()):
-            if self.theme_combo.itemData(i) == saved_theme:
-                self.theme_combo.setCurrentIndex(i)
-                break
-        saved_font = self.config.get("font_size", "16")
-        idx = self.font_size_combo.findText(saved_font)
-        if idx >= 0:
-            self.font_size_combo.setCurrentIndex(idx)
-
-        # 自定义颜色
-        self.color_bg.set_color(self.config.get("custom_bg", "#1a1a2e"))
-        self.color_surface.set_color(self.config.get("custom_surface", "#16213e"))
-        self.color_fg.set_color(self.config.get("custom_fg", "#e0e0e0"))
-        self.color_fg2.set_color(self.config.get("custom_fg2", "#a0a0a0"))
-        self.color_accent.set_color(self.config.get("custom_accent", "#e94560"))
-
-        saved_provider = self.config.get("current_provider")
-        if saved_provider:
-            for i in range(self.provider_combo.count()):
-                if self.provider_combo.itemText(i) == saved_provider.get("name"):
-                    self.provider_combo.setCurrentIndex(i)
-                    break
-            self.api_key_input.setText(saved_provider.get("api_key", ""))
-            self.base_url_input.setText(saved_provider.get("base_url", ""))
-            self.model_input.setText(saved_provider.get("model", ""))
-
         self._refresh_agent_list()
 
-    def _save_all(self):
+    def _save(self):
         self._save_current_agent()
-        provider_name = self.provider_combo.currentText()
-        provider = next((p for p in DEFAULT_PROVIDERS if p["name"] == provider_name), None)
-        if provider:
-            self.config["current_provider"] = {
-                "name": provider_name,
-                "type": provider["type"],
-                "api_key": self.api_key_input.text().strip(),
-                "base_url": self.base_url_input.text().strip(),
-                "model": self.model_input.text().strip(),
-            }
-        self.config["theme"] = self.theme_combo.itemData(self.theme_combo.currentIndex()) or "dark"
-        self.config["font_size"] = self.font_size_combo.currentText()
-        self.config["language"] = self.lang_combo.itemData(self.lang_combo.currentIndex()) or "zh"
-        # 保存自定义颜色
-        self.config["custom_bg"] = self.color_bg.get_color()
-        self.config["custom_surface"] = self.color_surface.get_color()
-        self.config["custom_fg"] = self.color_fg.get_color()
-        self.config["custom_fg2"] = self.color_fg2.get_color()
-        self.config["custom_accent"] = self.color_accent.get_color()
         self.accept()
 
     def get_config(self) -> dict:
         return self.config
+
+
+# ── 保留 SettingsDialog 作为兼容别名 ──
+SettingsDialog = AppearanceDialog
