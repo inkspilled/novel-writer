@@ -95,6 +95,14 @@ STRINGS = {
     "settings_ollama_refresh": {"zh": "刷新", "en": "Refresh"},
     "settings_ph_model_hint": {"zh": "留空用全局默认", "en": "Leave empty for global default"},
 
+    # 已保存模型
+    "model_saved_models": {"zh": "已保存模型", "en": "Saved Models"},
+    "model_save_config": {"zh": "保存配置", "en": "Save Config"},
+    "model_delete_config": {"zh": "删除配置", "en": "Delete Config"},
+    "model_use_global": {"zh": "使用全局默认", "en": "Use Global Default"},
+    "model_name_prompt": {"zh": "为此模型配置命名:", "en": "Name this model config:"},
+    "model_name_exists": {"zh": "'{}' 已存在，是否覆盖？", "en": "'{}' already exists, overwrite?"},
+
     # 智能体
     "settings_tab_agent": {"zh": "智能体", "en": "Agent"},
     "settings_agent_list": {"zh": "智能体列表", "en": "Agent List"},

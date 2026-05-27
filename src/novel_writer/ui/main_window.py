@@ -263,17 +263,21 @@ class MainWindow(QMainWindow):
                 }
             self.config["agents"] = agents_cfg
 
+        saved_models = self.config.get("saved_models", {})
+
         for name, info in agents_cfg.items():
-            # 每个 Agent 可以有自己的模型
-            agent_model = info.get("model", "").strip()
-            if agent_model and agent_model != self.config.get("current_provider", {}).get("model", ""):
-                # 需要为这个 Agent 创建独立的 LLM
-                provider = self.config.get("current_provider", {}).copy()
-                provider["model"] = agent_model
-                # Ollama 模型可以直接用
-                if provider.get("type") == "ollama":
-                    provider["model"] = agent_model
-                llm = self._create_llm(provider) or self.llm
+            # 每个 Agent 可以有自己的模型（引用 saved_models 的 key）
+            agent_model_key = info.get("model", "").strip()
+            if agent_model_key:
+                saved = saved_models.get(agent_model_key)
+                if saved:
+                    # 从已保存模型配置创建独立 LLM
+                    llm = self._create_llm(saved) or self.llm
+                else:
+                    # 兼容旧逻辑：当作 model 名称覆盖全局配置
+                    provider = self.config.get("current_provider", {}).copy()
+                    provider["model"] = agent_model_key
+                    llm = self._create_llm(provider) or self.llm
             else:
                 llm = self.llm
 

@@ -281,21 +281,50 @@ class AppearanceDialog(QDialog):
 # ════════════════════════════════════════
 
 class ModelDialog(QDialog):
-    """模型设置：供应商、API Key、模型选择。"""
+    """模型设置：供应商配置 + 已保存模型管理。"""
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("settings_tab_model"))
-        self.setMinimumSize(500, 460)
+        self.setMinimumSize(700, 520)
         self.config = dict(config)
         self._providers = load_default_providers()
+        self._saved_models: dict = dict(self.config.get("saved_models", {}))
         self._setup_ui()
         self._load_config()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(14)
+
+        # ── 左侧：已保存模型列表 ──
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        left_layout.addWidget(QLabel(t("model_saved_models")))
+        self.model_list = QListWidget()
+        self.model_list.currentItemChanged.connect(self._on_model_selected)
+        left_layout.addWidget(self.model_list)
+
+        btn_row = QHBoxLayout()
+        self._btn_save_model = QPushButton(t("model_save_config"))
+        self._btn_save_model.clicked.connect(self._save_model_config)
+        self._btn_del_model = QPushButton(t("model_delete_config"))
+        self._btn_del_model.setObjectName("danger")
+        self._btn_del_model.clicked.connect(self._delete_model_config)
+        btn_row.addWidget(self._btn_save_model)
+        btn_row.addWidget(self._btn_del_model)
+        left_layout.addLayout(btn_row)
+
+        layout.addWidget(left, 1)
+
+        # ── 右侧：配置编辑 ──
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
 
         provider_group = QGroupBox(t("settings_provider_group"))
         pg = QFormLayout(provider_group)
@@ -323,7 +352,7 @@ class ModelDialog(QDialog):
         test_btn = QPushButton(t("settings_test_conn"))
         test_btn.clicked.connect(self._test_connection)
         pg.addRow("", test_btn)
-        layout.addWidget(provider_group)
+        right_layout.addWidget(provider_group)
 
         # Ollama
         self.ollama_group = QGroupBox(t("settings_ollama_group"))
@@ -331,29 +360,96 @@ class ModelDialog(QDialog):
         self.ollama_status = QLabel(t("settings_ollama_detecting"))
         og.addWidget(self.ollama_status)
         self.ollama_model_list = QListWidget()
-        self.ollama_model_list.setMaximumHeight(100)
+        self.ollama_model_list.setMaximumHeight(80)
         self.ollama_model_list.itemDoubleClicked.connect(self._on_ollama_model_selected)
         og.addWidget(self.ollama_model_list)
         self._refresh_btn = QPushButton(t("settings_ollama_refresh"))
         self._refresh_btn.clicked.connect(self._refresh_ollama_models)
         og.addWidget(self._refresh_btn)
-        layout.addWidget(self.ollama_group)
+        right_layout.addWidget(self.ollama_group)
         self.ollama_group.setVisible(False)
 
-        layout.addStretch()
+        right_layout.addStretch()
+        layout.addWidget(right, 2)
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
+        # 底部按钮
+        btn_row2 = QHBoxLayout()
+        btn_row2.addStretch()
         self._btn_save = QPushButton(t("settings_save_all"))
         self._btn_save.setObjectName("primary")
         self._btn_save.clicked.connect(self._save)
         self._btn_cancel = QPushButton(t("settings_cancel"))
         self._btn_cancel.clicked.connect(self.reject)
-        btn_row.addWidget(self._btn_save)
-        btn_row.addWidget(self._btn_cancel)
-        layout.addLayout(btn_row)
+        btn_row2.addWidget(self._btn_save)
+        btn_row2.addWidget(self._btn_cancel)
 
+        bottom = QWidget()
+        bottom_layout = QVBoxLayout(bottom)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.addLayout(btn_row2)
+        layout.addWidget(bottom)
+
+        self._refresh_model_list()
         self._on_provider_changed(0)
+
+    def _refresh_model_list(self):
+        self.model_list.clear()
+        for name in self._saved_models:
+            self.model_list.addItem(name)
+
+    def _on_model_selected(self, current, _prev):
+        if not current:
+            return
+        name = current.text()
+        info = self._saved_models.get(name)
+        if not info:
+            return
+        # 填充右侧字段
+        provider_name = info.get("name", "")
+        for i in range(self.provider_combo.count()):
+            if self.provider_combo.itemText(i) == provider_name:
+                self.provider_combo.setCurrentIndex(i)
+                break
+        self.api_key_input.setText(info.get("api_key", ""))
+        self.base_url_input.setText(info.get("base_url", ""))
+        self.model_input.setText(info.get("model", ""))
+
+    def _save_model_config(self):
+        """将当前右侧配置保存为命名模型。"""
+        model_name = self.model_input.text().strip()
+        if not model_name:
+            QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
+            return
+        name, ok = QInputDialog.getText(self, t("model_save_config"), t("model_name_prompt"), text=model_name)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in self._saved_models:
+            if QMessageBox.question(self, t("dialog_prompt"),
+                                    t("model_name_exists", name)) != QMessageBox.StandardButton.Yes:
+                return
+        provider_name = self.provider_combo.currentText()
+        provider = next((p for p in self._providers if p["name"] == provider_name), None)
+        if not provider:
+            return
+        self._saved_models[name] = {
+            "name": provider_name,
+            "type": provider["type"],
+            "api_key": self.api_key_input.text().strip(),
+            "base_url": self.base_url_input.text().strip(),
+            "model": model_name,
+        }
+        self._refresh_model_list()
+
+    def _delete_model_config(self):
+        current = self.model_list.currentItem()
+        if not current:
+            return
+        name = current.text()
+        if QMessageBox.question(self, t("dialog_confirm"),
+                                t("msg_delete_agent", name)) == QMessageBox.StandardButton.Yes:
+            self._saved_models.pop(name, None)
+            self._refresh_model_list()
 
     def _on_provider_changed(self, index: int):
         if index < 0 or index >= len(self._providers):
@@ -469,6 +565,7 @@ class ModelDialog(QDialog):
                 "base_url": self.base_url_input.text().strip(),
                 "model": self.model_input.text().strip(),
             }
+        self.config["saved_models"] = self._saved_models
         self.accept()
 
     def get_config(self) -> dict:
@@ -488,6 +585,7 @@ class AgentDialog(QDialog):
         self.setMinimumSize(640, 500)
         self.config = dict(config)
         self._builtin_agents = load_default_agents()
+        self._saved_models: dict = self.config.get("saved_models", {})
         self._setup_ui()
         self._load_config()
 
@@ -547,9 +645,13 @@ class AgentDialog(QDialog):
         self.agent_emoji_combo.setPlaceholderText(t("settings_ph_emoji"))
         form.addRow(t("settings_agent_emoji"), self.agent_emoji_combo)
 
-        self.agent_model_input = QLineEdit()
-        self.agent_model_input.setPlaceholderText(t("settings_ph_model_hint"))
-        form.addRow(t("settings_agent_model"), self.agent_model_input)
+        self.agent_model_combo = QComboBox()
+        self.agent_model_combo.setEditable(True)
+        self.agent_model_combo.addItem(t("model_use_global"), "")
+        for model_name in self._saved_models:
+            self.agent_model_combo.addItem(model_name, model_name)
+        self.agent_model_combo.setPlaceholderText(t("settings_ph_model_hint"))
+        form.addRow(t("settings_agent_model"), self.agent_model_combo)
 
         self.agent_temp_spin = QDoubleSpinBox()
         self.agent_temp_spin.setRange(0.0, 2.0)
@@ -609,7 +711,12 @@ class AgentDialog(QDialog):
             self.agent_emoji_combo.setCurrentIndex(idx)
         else:
             self.agent_emoji_combo.setEditText(emoji)
-        self.agent_model_input.setText(info.get("model", ""))
+        model_val = info.get("model", "")
+        idx = self.agent_model_combo.findData(model_val)
+        if idx >= 0:
+            self.agent_model_combo.setCurrentIndex(idx)
+        else:
+            self.agent_model_combo.setEditText(model_val)
         self.agent_temp_spin.setValue(info.get("temperature", 0.7))
         self.agent_skills_input.setText(", ".join(info.get("skills", [])))
         self.agent_prompt_input.setPlainText(info.get("system_prompt", ""))
@@ -626,9 +733,10 @@ class AgentDialog(QDialog):
         agents[name]["temperature"] = self.agent_temp_spin.value()
         agents[name]["skills"] = [s.strip() for s in self.agent_skills_input.text().split(",") if s.strip()]
         agents[name]["system_prompt"] = self.agent_prompt_input.toPlainText().strip()
-        model = self.agent_model_input.text().strip()
-        if model:
-            agents[name]["model"] = model
+        model = self.agent_model_combo.currentData()
+        if model is None:
+            model = self.agent_model_combo.currentText().strip()
+        agents[name]["model"] = model
 
     def _add_agent(self):
         name, ok = QInputDialog.getText(self, t("settings_btn_add"), t("settings_ph_agent_id"))
