@@ -28,7 +28,7 @@ from ..core.agents.base import BaseAgent, AgentConfig
 
 CONFIG_PATH = Path.home() / ".novel-writer" / "config.json"
 PROJECTS_DIR = Path.home() / ".novel-writer" / "projects"
-ASSETS_DIR = Path(__file__).resolve().parent.parent
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 # 内置 Agent 的默认系统提示词
 DEFAULT_PROMPTS = {
@@ -91,7 +91,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(t("window_title"))
 
         # 窗口图标（标题栏 + macOS dock）
-        logo = ASSETS_DIR / "logo.png"
+        logo = ASSETS_DIR.parent / "logo.png"
         if logo.exists():
             self.setWindowIcon(QIcon(str(logo)))
         self.project = Project()

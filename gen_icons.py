@@ -8,19 +8,21 @@ from PySide6.QtCore import Qt
 
 app = QApplication(sys.argv)
 pkg = Path(__file__).parent / "src" / "novel_writer"
+assets = pkg / "assets"
 
 # ── 应用 logo：1024x1024 PNG ──
-renderer = QSvgRenderer(str(pkg / "icon.svg"))
+renderer = QSvgRenderer(str(assets / "icon.svg"))
 img = QImage(1024, 1024, QImage.Format.Format_ARGB32)
 img.fill(Qt.GlobalColor.transparent)
 p = QPainter(img)
 renderer.render(p)
 p.end()
 img.save(str(pkg / "logo.png"))
+img.save(str(assets / "logo.png"))
 print(f"logo.png generated: {pkg / 'logo.png'}")
 
 # ── 状态栏图标：单色模板 PNG ──
-status_renderer = QSvgRenderer(str(pkg / "status_icon.svg"))
+status_renderer = QSvgRenderer(str(assets / "status_icon.svg"))
 for px in [18, 36]:
     img = QImage(px, px, QImage.Format.Format_ARGB32)
     img.fill(Qt.GlobalColor.transparent)
@@ -28,7 +30,7 @@ for px in [18, 36]:
     status_renderer.render(p)
     p.end()
     suffix = "@2x" if px == 36 else ""
-    path = pkg / f"status_icon{suffix}.png"
+    path = assets / f"status_icon{suffix}.png"
     img.save(str(path))
     print(f"Status icon: {path}")
 
