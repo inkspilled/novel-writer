@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor
 
 from .styles import THEMES, get_theme_colors
 from ..locales import t, get_languages
-from ..core.agents import load_default_agents
+from ..core.agents import load_agents, save_agents
 from pathlib import Path
 import json
 
@@ -657,7 +657,7 @@ class AgentDialog(QDialog):
         self.setWindowTitle(t("settings_tab_agent"))
         self.setMinimumSize(640, 500)
         self.config = dict(config)
-        self._builtin_agents = load_default_agents()
+        self._agents = load_agents()
         self._saved_models: dict = self.config.get("saved_models", {})
         self._setup_ui()
         self._load_config()
@@ -758,7 +758,7 @@ class AgentDialog(QDialog):
 
     def _refresh_agent_list(self):
         self.agent_list.clear()
-        for name, info in self.config.get("agents", {}).items():
+        for name, info in self._agents.items():
             emoji = info.get("emoji", "🤖")
             title = info.get("title", name)
             self.agent_list.addItem(f"{emoji} {title}")
@@ -767,14 +767,13 @@ class AgentDialog(QDialog):
         if not current:
             return
         row = self.agent_list.currentRow()
-        agents = self.config.get("agents", {})
-        names = list(agents.keys())
+        names = list(self._agents.keys())
         if row >= len(names):
             return
         name = names[row]
-        info = agents[name]
+        info = self._agents[name]
         self.agent_name_input.setText(name)
-        self.agent_name_input.setEnabled(name not in self._builtin_agents)
+        self.agent_name_input.setEnabled(True)
         self.agent_title_input.setText(info.get("title", ""))
         emoji = info.get("emoji", "🤖")
         idx = self.agent_emoji_combo.findText(emoji)
@@ -793,25 +792,23 @@ class AgentDialog(QDialog):
         name = self.agent_name_input.text().strip()
         if not name:
             return
-        agents = self.config.setdefault("agents", {})
-        if name not in agents:
-            agents[name] = {}
-        agents[name]["title"] = self.agent_title_input.text().strip()
-        agents[name]["emoji"] = self.agent_emoji_combo.currentText().strip() or "🤖"
-        agents[name]["temperature"] = self.agent_temp_spin.value()
-        agents[name]["skills"] = [s.strip() for s in self.agent_skills_input.text().split(",") if s.strip()]
-        agents[name]["system_prompt"] = self.agent_prompt_input.toPlainText().strip()
-        agents[name]["model"] = self.agent_model_combo.currentData() or ""
+        if name not in self._agents:
+            self._agents[name] = {}
+        self._agents[name]["title"] = self.agent_title_input.text().strip()
+        self._agents[name]["emoji"] = self.agent_emoji_combo.currentText().strip() or "🤖"
+        self._agents[name]["temperature"] = self.agent_temp_spin.value()
+        self._agents[name]["skills"] = [s.strip() for s in self.agent_skills_input.text().split(",") if s.strip()]
+        self._agents[name]["system_prompt"] = self.agent_prompt_input.toPlainText().strip()
+        self._agents[name]["model"] = self.agent_model_combo.currentData() or ""
 
     def _add_agent(self):
         name, ok = QInputDialog.getText(self, t("settings_btn_add"), t("settings_ph_agent_id"))
         if ok and name:
             name = name.strip().lower().replace(" ", "_")
-            agents = self.config.setdefault("agents", {})
-            if name in agents:
+            if name in self._agents:
                 QMessageBox.warning(self, t("dialog_prompt"), t("msg_agent_exists", name))
                 return
-            agents[name] = {"title": name, "emoji": "🤖", "skills": [], "temperature": 0.7, "system_prompt": ""}
+            self._agents[name] = {"title": name, "emoji": "🤖", "skills": [], "temperature": 0.7, "system_prompt": ""}
             self._refresh_agent_list()
             self.agent_list.setCurrentRow(self.agent_list.count() - 1)
 
@@ -819,17 +816,13 @@ class AgentDialog(QDialog):
         row = self.agent_list.currentRow()
         if row < 0:
             return
-        agents = self.config.get("agents", {})
-        names = list(agents.keys())
+        names = list(self._agents.keys())
         if row >= len(names):
             return
         name = names[row]
-        if name in self._builtin_agents:
-            QMessageBox.warning(self, t("dialog_prompt"), t("msg_builtin_no_delete"))
-            return
         if QMessageBox.question(self, t("dialog_confirm"),
                                 t("msg_delete_agent", name)) == QMessageBox.StandardButton.Yes:
-            del agents[name]
+            del self._agents[name]
             self._refresh_agent_list()
 
     def _load_config(self):
@@ -837,6 +830,7 @@ class AgentDialog(QDialog):
 
     def _save(self):
         self._save_current_agent()
+        save_agents(self._agents)
         self.accept()
 
     def get_config(self) -> dict:

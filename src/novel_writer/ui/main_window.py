@@ -22,7 +22,7 @@ from ..models.project import Project
 from ..models.chapter import Chapter, ChapterStatus
 from ..models.character import Character
 from ..core.llm import LLMClient
-from ..core.agents import load_default_agents
+from ..core.agents import load_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 
 
@@ -241,21 +241,8 @@ class MainWindow(QMainWindow):
     def _init_agents(self):
         self.agents.clear()
 
-        # 从 config 读取 agents 配置，没有则用内置默认
-        agents_cfg = self.config.get("agents", {})
-        if not agents_cfg:
-            default_agents = load_default_agents()
-            for name, defaults in default_agents.items():
-                agents_cfg[name] = {
-                    "title": defaults.get("title", name),
-                    "emoji": defaults.get("emoji", "🤖"),
-                    "skills": defaults.get("skills", []),
-                    "temperature": defaults.get("temperature", 0.7),
-                    "max_tokens": defaults.get("max_tokens", 4096),
-                    "system_prompt": defaults.get("system_prompt", ""),
-                    "model": "",
-                }
-            self.config["agents"] = agents_cfg
+        # 从 agents.json 读取配置
+        agents_cfg = load_agents()
 
         # 先更新按钮（不依赖 LLM）
         self.agent_panel.update_agent_buttons(agents_cfg)
@@ -513,7 +500,7 @@ class MainWindow(QMainWindow):
             self.agent_panel.set_working(False, agent_name)
             self.agent_panel.finalize_stream_message(agent_name)
             self.agent_panel.save_history()
-            agents_cfg = self.config.get("agents") or load_default_agents()
+            agents_cfg = load_agents()
             title = agents_cfg.get(agent_name, {}).get("title", agent_name)
             self.statusBar().showMessage(t("status_agent_done", title))
         except Exception as e:
