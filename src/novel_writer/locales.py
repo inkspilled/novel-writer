@@ -18,7 +18,13 @@ STRINGS = {
 
     # ── 一级菜单 ──
     "menu_appearance": {"zh": "外观(&P)", "en": "Appearance(&P)"},
+    "menu_appearance_open": {"zh": "外观设置", "en": "Appearance Settings"},
     "menu_model": {"zh": "模型(&M)", "en": "Model(&M)"},
+    "menu_model_open": {"zh": "模型设置", "en": "Model Settings"},
+    "menu_about": {"zh": "关于(&H)", "en": "About(&H)"},
+    "menu_about_app": {"zh": "关于 Novel Writer", "en": "About Novel Writer"},
+    "about_version": {"zh": "版本 0.1.0", "en": "Version 0.1.0"},
+    "about_desc": {"zh": "多 Agent 协作的 AI 小说写作桌面应用", "en": "AI novel writing desktop app with multi-agent collaboration"},
 
     # ── Agent 面板 ──
     "settings_temperature": {"zh": "温度:", "en": "Temperature:"},

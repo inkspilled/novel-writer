@@ -153,16 +153,18 @@ class MainWindow(QMainWindow):
         self._exit_action.triggered.connect(self.close)
         self._file_menu.addAction(self._exit_action)
 
-        # 外观（直接点击打开，无子菜单）
-        self._appearance_action = QAction(t("menu_appearance"), self)
+        # 外观
+        self._appearance_menu = menubar.addMenu(t("menu_appearance"))
+        self._appearance_action = QAction(t("menu_appearance_open"), self)
         self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
         self._appearance_action.triggered.connect(self._open_appearance)
-        menubar.addAction(self._appearance_action)
+        self._appearance_menu.addAction(self._appearance_action)
 
-        # 模型（直接点击打开，无子菜单）
-        self._model_action = QAction(t("menu_model"), self)
+        # 模型
+        self._model_menu = menubar.addMenu(t("menu_model"))
+        self._model_action = QAction(t("menu_model_open"), self)
         self._model_action.triggered.connect(self._open_model_settings)
-        menubar.addAction(self._model_action)
+        self._model_menu.addAction(self._model_action)
 
         # 智能体
         self._agent_menu = menubar.addMenu(t("menu_agent"))
@@ -171,6 +173,12 @@ class MainWindow(QMainWindow):
         self._agent_menu.addAction(self._manage_action)
         self._agent_menu.addSeparator()
         self._rebuild_agent_menu(self._agent_menu)
+
+        # 关于
+        self._about_menu = menubar.addMenu(t("menu_about"))
+        self._about_action = QAction(t("menu_about_app"), self)
+        self._about_action.triggered.connect(self._show_about)
+        self._about_menu.addAction(self._about_action)
 
     def _setup_menubar_icon(self):
         """在状态栏左侧显示应用小图标。"""
@@ -559,6 +567,17 @@ class MainWindow(QMainWindow):
             self._refresh_ui_texts()
             self.statusBar().showMessage(t("status_settings_saved"))
 
+    def _show_about(self):
+        """显示关于对话框。"""
+        QMessageBox.about(
+            self,
+            t("menu_about_app"),
+            f"<h2 style='margin-bottom:8px;'>Novel Writer</h2>"
+            f"<p>{t('about_version')}</p>"
+            f"<p>{t('about_desc')}</p>"
+            f"<p style='color:gray;font-size:12px;'>PySide6 · Python {'.'.join(map(str, __import__('sys').version_info[:3]))}</p>",
+        )
+
     def _refresh_ui_texts(self):
         """切换语言后刷新所有 UI 文本。"""
         lang = self.config.get("language", "zh")
@@ -570,10 +589,14 @@ class MainWindow(QMainWindow):
         self._open_action.setText(t("menu_open_project"))
         self._save_action.setText(t("menu_save_project"))
         self._exit_action.setText(t("menu_exit"))
-        self._appearance_action.setText(t("menu_appearance"))
-        self._model_action.setText(t("menu_model"))
+        self._appearance_menu.setTitle(t("menu_appearance"))
+        self._appearance_action.setText(t("menu_appearance_open"))
+        self._model_menu.setTitle(t("menu_model"))
+        self._model_action.setText(t("menu_model_open"))
         self._agent_menu.setTitle(t("menu_agent"))
         self._manage_action.setText(t("menu_agent_manage"))
+        self._about_menu.setTitle(t("menu_about"))
+        self._about_action.setText(t("menu_about_app"))
         self._rebuild_agent_menu()
         # 侧边栏
         self.sidebar.retranslate()
