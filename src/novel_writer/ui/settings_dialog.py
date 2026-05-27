@@ -309,12 +309,9 @@ class ModelDialog(QDialog):
         left_layout.addWidget(self.model_list)
 
         btn_row = QHBoxLayout()
-        self._btn_save_model = QPushButton(t("model_save_config"))
-        self._btn_save_model.clicked.connect(self._save_model_config)
         self._btn_del_model = QPushButton(t("model_delete_config"))
         self._btn_del_model.setObjectName("danger")
         self._btn_del_model.clicked.connect(self._delete_model_config)
-        btn_row.addWidget(self._btn_save_model)
         btn_row.addWidget(self._btn_del_model)
         left_layout.addLayout(btn_row)
 
@@ -446,16 +443,30 @@ class ModelDialog(QDialog):
         self._refresh_model_list()
 
     def _save_and_close(self):
-        """保存当前供应商配置 + 所有已保存模型，关闭对话框。"""
+        """保存当前供应商为命名模型 + 保存所有配置，关闭对话框。"""
+        model_name = self.model_input.text().strip()
         provider_name = self.provider_combo.currentText()
         provider = next((p for p in self._providers if p["name"] == provider_name), None)
+
+        # 如果填了模型名称，自动保存为命名模型
+        if model_name and provider:
+            name = model_name
+            if name not in self._saved_models:
+                self._saved_models[name] = {
+                    "name": provider_name,
+                    "type": provider["type"],
+                    "api_key": self.api_key_input.text().strip(),
+                    "base_url": self.base_url_input.text().strip(),
+                    "model": model_name,
+                }
+
         if provider:
             self.config["current_provider"] = {
                 "name": provider_name,
                 "type": provider["type"],
                 "api_key": self.api_key_input.text().strip(),
                 "base_url": self.base_url_input.text().strip(),
-                "model": self.model_input.text().strip(),
+                "model": model_name,
             }
         self.config["saved_models"] = self._saved_models
         self.accept()

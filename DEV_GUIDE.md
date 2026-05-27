@@ -120,7 +120,7 @@ MainWindow
 
 - `AgentWorker(QThread)`：后台线程执行 Agent 调用，信号驱动 UI 更新
 - 流式输出：`chunk_received` 信号逐块更新 Markdown 渲染
-- 聊天记录：`save_history()` / `load_history()` 持久化到 `data/chat.db`
+- 聊天记录：SQLite 持久化到 `data/chat.db`，Python 标准库内置，打包无额外依赖
 
 ## 添加新供应商
 

@@ -58,7 +58,8 @@ python -m novel_writer
 预置供应商：DeepSeek、Moonshot (Kimi)、智谱 GLM、通义千问、小米 MiMo、OpenAI、Ollama (本地)。
 
 在 `设置 → 模型` 中可：
-- 配置并保存多个模型方案（如 DeepSeek Chat、本地 Ollama Qwen 等）
+- 配置模型（选供应商、填 API Key、填模型名称），点保存配置即生效
+- 已保存的模型方案供智能体下拉选择
 - 为每个智能体独立选择不同模型
 - 测试连接是否正常
 
