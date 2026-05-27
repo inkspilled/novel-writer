@@ -41,6 +41,10 @@ STRINGS = {
     "agent_send": {"zh": "发送", "en": "Send"},
     "agent_generating": {"zh": "生成中", "en": "Generating"},
     "agent_clear_chat": {"zh": "清空聊天", "en": "Clear Chat"},
+    "agent_thinking": {"zh": "AI 正在思考...", "en": "AI is thinking..."},
+    "agent_quick_actions": {"zh": "快捷操作", "en": "Quick Actions"},
+    "agent_welcome": {"zh": "你好！请选择一个 Agent 开始创作。", "en": "Hello! Select an Agent to start writing."},
+    "agent_send_hint": {"zh": "Ctrl+Enter 发送", "en": "Ctrl+Enter to send"},
 
     # ── 设置对话框 ──
     "settings_title": {"zh": "设置", "en": "Settings"},
