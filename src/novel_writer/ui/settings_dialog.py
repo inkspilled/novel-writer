@@ -47,11 +47,9 @@ class ColorPicker(QWidget):
         self.label.setFixedWidth(60)
         layout.addWidget(self.label)
 
-        self.color_btn = QPushButton()
-        self.color_btn.setFixedSize(32, 32)
-        self.color_btn.setStyleSheet(
-            f"background-color: {default_color}; border-radius: 6px; "
-            f"border: 1px solid rgba(128,128,128,0.3);")
+        self.color_btn = QPushButton(t("color_pick"))
+        self.color_btn.setFixedSize(80, 32)
+        self.color_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.color_btn.clicked.connect(self._pick_color)
         layout.addWidget(self.color_btn)
 
@@ -63,6 +61,24 @@ class ColorPicker(QWidget):
 
         layout.addStretch()
         self._color = default_color
+        self._update_btn_style(default_color)
+
+    def _update_btn_style(self, color: str):
+        self.color_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {color}; color: {'#000' if self._is_light(color) else '#fff'};"
+            f"border-radius: 6px; border: 2px solid rgba(128,128,128,0.4); font-size: 12px; }}"
+            f"QPushButton:hover {{ border-color: rgba(255,255,255,0.6); }}")
+
+    @staticmethod
+    def _is_light(hex_color: str) -> bool:
+        h = hex_color.lstrip("#")
+        if len(h) != 6:
+            return False
+        try:
+            r, g, b = int(h[:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        except ValueError:
+            return False
+        return (r * 299 + g * 587 + b * 114) / 1000 > 128
 
     def _pick_color(self):
         color = QColorDialog.getColor(QColor(self._color), self, t("color_pick"))
@@ -73,9 +89,7 @@ class ColorPicker(QWidget):
         text = text.strip()
         if len(text) == 7 and text.startswith("#"):
             self._color = text
-            self.color_btn.setStyleSheet(
-                f"background-color: {text}; border-radius: 6px; "
-                f"border: 1px solid rgba(128,128,128,0.3);")
+            self._update_btn_style(text)
             self.color_changed.emit(text)
 
     def set_color(self, color: str):
@@ -83,9 +97,7 @@ class ColorPicker(QWidget):
         self.hex_input.blockSignals(True)
         self.hex_input.setText(color)
         self.hex_input.blockSignals(False)
-        self.color_btn.setStyleSheet(
-            f"background-color: {color}; border-radius: 6px; "
-            f"border: 1px solid rgba(128,128,128,0.3);")
+        self._update_btn_style(color)
 
     def get_color(self) -> str:
         return self._color
