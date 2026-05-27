@@ -15,7 +15,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from .sidebar import Sidebar
 from .editor_panel import EditorPanel
 from .agent_panel import AgentPanel
-from .settings_dialog import SettingsDialog, BUILTIN_AGENTS
+from .settings_dialog import AppearanceDialog, ModelDialog, AgentDialog, BUILTIN_AGENTS
 from .styles import build_style
 from ..locales import t, set_language
 from ..models.project import Project
@@ -98,7 +98,6 @@ class MainWindow(QMainWindow):
         self._setup_menu()
         self._init_llm()
         self._init_agents()
-        self._auto_connect_ollama()
 
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -106,6 +105,7 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar()
         self.editor = EditorPanel()
         self.agent_panel = AgentPanel()
+        self.agent_panel.set_config(self.config)
         splitter.addWidget(self.sidebar)
         splitter.addWidget(self.editor)
         splitter.addWidget(self.agent_panel)
@@ -141,6 +141,17 @@ class MainWindow(QMainWindow):
         self._save_action.triggered.connect(self._save_project)
         self._file_menu.addAction(self._save_action)
         self._file_menu.addSeparator()
+        self._appearance_action = QAction(t("settings_tab_appearance"), self)
+        self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
+        self._appearance_action.triggered.connect(self._open_appearance)
+        self._file_menu.addAction(self._appearance_action)
+        self._model_action = QAction(t("settings_tab_model"), self)
+        self._model_action.triggered.connect(self._open_model_settings)
+        self._file_menu.addAction(self._model_action)
+        self._agent_settings_action = QAction(t("settings_tab_agent"), self)
+        self._agent_settings_action.triggered.connect(self._open_agent_manage)
+        self._file_menu.addAction(self._agent_settings_action)
+        self._file_menu.addSeparator()
         self._exit_action = QAction(t("menu_exit"), self)
         self._exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         self._exit_action.triggered.connect(self.close)
@@ -152,15 +163,7 @@ class MainWindow(QMainWindow):
         self._manage_action.triggered.connect(self._open_agent_manage)
         self._agent_menu.addAction(self._manage_action)
         self._agent_menu.addSeparator()
-        # 动态生成 Agent 快捷菜单
         self._rebuild_agent_menu(self._agent_menu)
-
-        # 设置
-        self._settings_menu = menubar.addMenu(t("menu_settings"))
-        self._pref_action = QAction(t("menu_preferences"), self)
-        self._pref_action.setShortcut(QKeySequence("Ctrl+,"))
-        self._pref_action.triggered.connect(self._open_settings)
-        self._settings_menu.addAction(self._pref_action)
 
     def _rebuild_agent_menu(self, menu: QMenu = None):
         if menu is None:
@@ -189,51 +192,6 @@ class MainWindow(QMainWindow):
             action = QAction(f"{emoji} {title}", self)
             action.triggered.connect(lambda checked, n=name: self._quick_run_agent(n))
             menu.addAction(action)
-
-    def _auto_connect_ollama(self):
-        """自动检测本地 Ollama 并连接 qwen3.5:9B。"""
-        import httpx
-        try:
-            resp = httpx.get("http://localhost:11434/api/tags", timeout=2)
-            models = [m["name"] for m in resp.json().get("models", [])]
-            if not models:
-                return
-            # 优先找 qwen3.5，否则用第一个
-            target = None
-            for m in models:
-                if "qwen3.5" in m.lower() or "qwen3" in m.lower():
-                    target = m
-                    break
-            if not target:
-                target = models[0]
-
-            # 如果当前没配置供应商，自动设置为 Ollama
-            if not self.config.get("current_provider"):
-                self.config["current_provider"] = {
-                    "name": "Ollama (本地)",
-                    "type": "ollama",
-                    "api_key": "",
-                    "base_url": "http://localhost:11434",
-                    "model": target,
-                }
-                self._save_config()
-                self._init_llm()
-                self._init_agents()
-                self.statusBar().showMessage(t("status_connected_ollama", target))
-            # 即使有供应商配置，也把 Ollama 模型加入可用列表
-            elif self.llm is None:
-                self.config["current_provider"] = {
-                    "name": "Ollama (本地)",
-                    "type": "ollama",
-                    "api_key": "",
-                    "base_url": "http://localhost:11434",
-                    "model": target,
-                }
-                self._init_llm()
-                self._init_agents()
-                self.statusBar().showMessage(t("status_connected_ollama", target))
-        except Exception:
-            pass
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
@@ -493,6 +451,7 @@ class MainWindow(QMainWindow):
         if not agent:
             QMessageBox.warning(self, t("dialog_error"), t("msg_agent_not_init", agent_name))
             return
+        self._stop_worker()
         context = self._build_context(agent_name)
         self.agent_panel.set_working(True, agent_name)
         self._worker = AgentWorker(agent, user_input, context)
@@ -500,6 +459,12 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(lambda resp: self._on_agent_finished(agent_name, resp))
         self._worker.error.connect(self._on_agent_error)
         self._worker.start()
+
+    def _stop_worker(self):
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.quit()
+            self._worker.wait(3000)
+            self._worker = None
 
     def _build_context(self, agent_name: str) -> str:
         parts = []
@@ -544,8 +509,35 @@ class MainWindow(QMainWindow):
         self.agent_panel._on_agent_selected(agent_name)
 
     def _open_agent_manage(self):
-        """打开 Agent 管理（跳转到设置的 Agent 页）。"""
-        self._open_settings(tab_index=2)
+        """打开 Agent 管理对话框。"""
+        dialog = AgentDialog(self.config, self)
+        if dialog.exec() == AgentDialog.DialogCode.Accepted:
+            self.config = dialog.get_config()
+            self._save_config()
+            self._init_agents()
+            self._rebuild_agent_menu()
+            self.statusBar().showMessage(t("status_settings_saved"))
+
+    def _open_model_settings(self):
+        """打开模型设置对话框。"""
+        dialog = ModelDialog(self.config, self)
+        if dialog.exec() == ModelDialog.DialogCode.Accepted:
+            self.config = dialog.get_config()
+            self._save_config()
+            self._init_llm()
+            self._init_agents()
+            self.statusBar().showMessage(t("status_settings_saved"))
+
+    def _open_appearance(self):
+        """打开外观设置对话框。"""
+        dialog = AppearanceDialog(self.config, self)
+        dialog.theme_preview.connect(self._apply_theme)
+        if dialog.exec() == AppearanceDialog.DialogCode.Accepted:
+            self.config = dialog.get_config()
+            self._save_config()
+            self._apply_theme()
+            self._refresh_ui_texts()
+            self.statusBar().showMessage(t("status_settings_saved"))
 
     def _refresh_ui_texts(self):
         """切换语言后刷新所有 UI 文本。"""
@@ -558,10 +550,11 @@ class MainWindow(QMainWindow):
         self._open_action.setText(t("menu_open_project"))
         self._save_action.setText(t("menu_save_project"))
         self._exit_action.setText(t("menu_exit"))
+        self._appearance_action.setText(t("settings_tab_appearance"))
+        self._model_action.setText(t("settings_tab_model"))
+        self._agent_settings_action.setText(t("settings_tab_agent"))
         self._agent_menu.setTitle(t("menu_agent"))
         self._manage_action.setText(t("menu_agent_manage"))
-        self._settings_menu.setTitle(t("menu_settings"))
-        self._pref_action.setText(t("menu_preferences"))
         self._rebuild_agent_menu()
         # 侧边栏
         self.sidebar.retranslate()
@@ -580,20 +573,8 @@ class MainWindow(QMainWindow):
         self.editor.content_edit.setFont(font)
         self.editor.outline_edit.setFont(font)
         self.editor.notes_edit.setFont(font)
-
-    def _open_settings(self, tab_index: int = 0):
-        dialog = SettingsDialog(self.config, self)
-        dialog.theme_preview.connect(self._apply_theme)
-        dialog.tabs.setCurrentIndex(tab_index)
-        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
-            self.config = dialog.get_config()
-            self._save_config()
-            self._apply_theme()
-            self._init_llm()
-            self._init_agents()
-            self._rebuild_agent_menu()
-            self._refresh_ui_texts()
-            self.statusBar().showMessage(t("status_settings_saved"))
+        self.agent_panel.set_config(self.config)
+        self.agent_panel.refresh_theme()
 
     def _save_project(self):
         if not self.project.title:
@@ -632,6 +613,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(t("status_saved", str(path)))
 
     def closeEvent(self, event):
+        self._stop_worker()
         if self.project.title:
             self._save_project()
         event.accept()
