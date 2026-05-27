@@ -128,7 +128,8 @@ def _md_to_html(text: str, fg: str = "#e8e8ed") -> str:
             if not in_list:
                 in_list = True
                 out.append('<ul style="list-style-type:decimal;">')
-            out.append(f'<li>{_inline_md(re.sub(r"^\d+\.\s", "", stripped), fg)}</li>')
+            text = re.sub(r"^\d+\.\s", "", stripped)
+            out.append(f'<li>{_inline_md(text, fg)}</li>')
         # 空行
         elif not stripped:
             if in_list:
