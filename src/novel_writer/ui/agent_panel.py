@@ -289,12 +289,19 @@ class AgentPanel(QWidget):
         self._title_label.setStyleSheet("font-size: 15px; font-weight: 700; letter-spacing: -0.3px;")
         self.header_layout.addWidget(self._title_label)
 
-        # Agent 按钮行
+        # Agent 按钮行（横向滚动）
+        btn_scroll = QScrollArea()
+        btn_scroll.setWidgetResizable(True)
+        btn_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        btn_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        btn_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        btn_scroll.setMaximumHeight(60)
         self.agent_btn_container = QWidget()
         self.agent_btn_layout = QHBoxLayout(self.agent_btn_container)
         self.agent_btn_layout.setSpacing(8)
         self.agent_btn_layout.setContentsMargins(0, 0, 0, 0)
-        self.header_layout.addWidget(self.agent_btn_container)
+        btn_scroll.setWidget(self.agent_btn_container)
+        self.header_layout.addWidget(btn_scroll)
 
         # Agent 信息行
         info_row = QHBoxLayout()

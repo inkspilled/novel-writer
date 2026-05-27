@@ -541,9 +541,16 @@ class AgentDialog(QDialog):
         self.agent_title_input.setPlaceholderText(t("settings_ph_agent_title"))
         form.addRow(t("settings_agent_title"), self.agent_title_input)
 
-        self.agent_emoji_input = QLineEdit()
-        self.agent_emoji_input.setPlaceholderText(t("settings_ph_emoji"))
-        form.addRow(t("settings_agent_emoji"), self.agent_emoji_input)
+        self.agent_emoji_combo = QComboBox()
+        self.agent_emoji_combo.setEditable(True)
+        self._emoji_list = [
+            "📋", "🗺️", "✍️", "🔍", "✅", "✨", "💡", "🎯",
+            "📖", "🖊️", "🧠", "💬", "🎨", "📐", "🔮", "🎭",
+            "📝", "🤖", "📚", "🌟", "⚡", "🔥", "💎", "🎪",
+        ]
+        self.agent_emoji_combo.addItems(self._emoji_list)
+        self.agent_emoji_combo.setPlaceholderText(t("settings_ph_emoji"))
+        form.addRow(t("settings_agent_emoji"), self.agent_emoji_combo)
 
         self.agent_model_input = QLineEdit()
         self.agent_model_input.setPlaceholderText(t("settings_ph_model_hint"))
@@ -601,7 +608,12 @@ class AgentDialog(QDialog):
         self.agent_name_input.setText(name)
         self.agent_name_input.setEnabled(name not in BUILTIN_AGENTS)
         self.agent_title_input.setText(info.get("title", ""))
-        self.agent_emoji_input.setText(info.get("emoji", ""))
+        emoji = info.get("emoji", "🤖")
+        idx = self.agent_emoji_combo.findText(emoji)
+        if idx >= 0:
+            self.agent_emoji_combo.setCurrentIndex(idx)
+        else:
+            self.agent_emoji_combo.setEditText(emoji)
         self.agent_model_input.setText(info.get("model", ""))
         self.agent_temp_spin.setValue(info.get("temperature", 0.7))
         self.agent_skills_input.setText(", ".join(info.get("skills", [])))
@@ -615,7 +627,7 @@ class AgentDialog(QDialog):
         if name not in agents:
             agents[name] = {}
         agents[name]["title"] = self.agent_title_input.text().strip()
-        agents[name]["emoji"] = self.agent_emoji_input.text().strip() or "🤖"
+        agents[name]["emoji"] = self.agent_emoji_combo.currentText().strip() or "🤖"
         agents[name]["temperature"] = self.agent_temp_spin.value()
         agents[name]["skills"] = [s.strip() for s in self.agent_skills_input.text().split(",") if s.strip()]
         agents[name]["system_prompt"] = self.agent_prompt_input.toPlainText().strip()
