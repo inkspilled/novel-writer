@@ -34,17 +34,6 @@ BUILTIN_AGENTS = {
 }
 
 
-class _HexLineEdit(QLineEdit):
-    """拦截 Enter 键的输入框，防止触发按钮或颜色对话框。"""
-    confirmed = Signal()
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self.confirmed.emit()
-            return
-        super().keyPressEvent(event)
-
-
 class ColorPicker(QWidget):
     """色盘选择器：色块 + 十六进制输入 + 点击弹出颜色对话框。"""
     color_changed = Signal(str)
@@ -65,12 +54,12 @@ class ColorPicker(QWidget):
         self.color_btn.clicked.connect(self._pick_color)
         layout.addWidget(self.color_btn)
 
-        self.hex_input = _HexLineEdit(default_color)
+        self.hex_input = QLineEdit(default_color)
         self.hex_input.setFixedWidth(130)
         self.hex_input.setFixedHeight(44)
         self.hex_input.setPlaceholderText("#rrggbb")
         self.hex_input.setStyleSheet("QLineEdit { padding: 4px 10px; font-size: 15px; border-radius: 8px; }")
-        self.hex_input.confirmed.connect(self._apply_hex_input)
+        self.hex_input.textChanged.connect(self._on_hex_changed)
         layout.addWidget(self.hex_input)
 
         layout.addStretch()
@@ -93,12 +82,6 @@ class ColorPicker(QWidget):
         except ValueError:
             return False
         return (r * 299 + g * 587 + b * 114) / 1000 > 128
-
-    def _apply_hex_input(self):
-        text = self.hex_input.text().strip()
-        if len(text) == 7 and text.startswith("#"):
-            self.set_color(text)
-            self.color_changed.emit(text)
 
     def _pick_color(self):
         color = QColorDialog.getColor(QColor(self._color), self, t("color_pick"))
