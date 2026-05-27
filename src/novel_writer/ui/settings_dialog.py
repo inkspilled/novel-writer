@@ -110,7 +110,7 @@ class ColorPicker(QWidget):
 class AppearanceDialog(QDialog):
     """外观设置：主题、语言。"""
 
-    theme_preview = Signal(str)
+    theme_preview = Signal(str, dict)
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
@@ -220,7 +220,7 @@ class AppearanceDialog(QDialog):
         self.config["language"] = self.lang_combo.itemData(self.lang_combo.currentIndex()) or "zh"
         if key == "custom":
             self._on_custom_color_changed()
-        self.theme_preview.emit(self.config["theme"])
+        self.theme_preview.emit(self.config["theme"], self.config)
 
     def _load_config(self):
         # 阻塞信号，防止设置 combo 值时触发 _on_theme_changed 导致重复渲染

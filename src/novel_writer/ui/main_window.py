@@ -598,11 +598,12 @@ class MainWindow(QMainWindow):
         # Agent 面板
         self.agent_panel.retranslate()
 
-    def _apply_theme(self, theme_name: str = None):
+    def _apply_theme(self, theme_name: str = None, preview_config: dict = None):
         theme_name = theme_name or self.config.get("theme", "dark")
         self.config["theme"] = theme_name
-        self.setStyleSheet(build_style(theme_name, self.config))
-        self.agent_panel.set_config(self.config)
+        cfg = preview_config or self.config
+        self.setStyleSheet(build_style(theme_name, cfg))
+        self.agent_panel.set_config(cfg)
         self.agent_panel.refresh_theme()
 
     def _save_project(self):
