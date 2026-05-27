@@ -108,14 +108,14 @@ class ColorPicker(QWidget):
 # ════════════════════════════════════════
 
 class AppearanceDialog(QDialog):
-    """外观设置：主题、语言、字体。"""
+    """外观设置：主题、语言。"""
 
     theme_preview = Signal(str)
 
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("settings_tab_appearance"))
-        self.setMinimumSize(500, 480)
+        self.setMinimumSize(520, 560)
         self.config = dict(config)
         self._setup_ui()
         self._load_config()
@@ -181,16 +181,6 @@ class AppearanceDialog(QDialog):
         tg.addWidget(self._apply_btn)
         layout.addWidget(theme_group)
 
-        # 字体
-        font_group = QGroupBox(t("settings_font_group"))
-        fg = QFormLayout(font_group)
-        self.font_size_combo = QComboBox()
-        self.font_size_combo.addItems(["12", "13", "14", "15", "16", "18", "20", "22", "24"])
-        self.font_size_combo.setCurrentText("16")
-        self.font_size_combo.currentTextChanged.connect(self._on_font_changed)
-        fg.addRow(t("settings_font_size"), self.font_size_combo)
-        layout.addWidget(font_group)
-
         layout.addStretch()
 
         btn_row = QHBoxLayout()
@@ -227,21 +217,15 @@ class AppearanceDialog(QDialog):
     def _apply_theme_now(self):
         key = self.theme_combo.itemData(self.theme_combo.currentIndex())
         self.config["theme"] = key or "dark"
-        self.config["font_size"] = self.font_size_combo.currentText()
         self.config["language"] = self.lang_combo.itemData(self.lang_combo.currentIndex()) or "zh"
         if key == "custom":
             self._on_custom_color_changed()
         self.theme_preview.emit(self.config["theme"])
 
-    def _on_font_changed(self, size: str):
-        self.config["font_size"] = size
-        self.theme_preview.emit(self.config.get("theme", "dark"))
-
     def _load_config(self):
         # 阻塞信号，防止设置 combo 值时触发 _on_theme_changed 导致重复渲染
         self.theme_combo.blockSignals(True)
         self.lang_combo.blockSignals(True)
-        self.font_size_combo.blockSignals(True)
 
         saved_lang = self.config.get("language", "zh")
         for i in range(self.lang_combo.count()):
@@ -253,10 +237,6 @@ class AppearanceDialog(QDialog):
             if self.theme_combo.itemData(i) == saved_theme:
                 self.theme_combo.setCurrentIndex(i)
                 break
-        saved_font = self.config.get("font_size", "16")
-        idx = self.font_size_combo.findText(saved_font)
-        if idx >= 0:
-            self.font_size_combo.setCurrentIndex(idx)
         self.color_bg.set_color(self.config.get("custom_bg", "#1a1a2e"))
         self.color_surface.set_color(self.config.get("custom_surface", "#16213e"))
         self.color_fg.set_color(self.config.get("custom_fg", "#e0e0e0"))
@@ -265,14 +245,12 @@ class AppearanceDialog(QDialog):
 
         self.theme_combo.blockSignals(False)
         self.lang_combo.blockSignals(False)
-        self.font_size_combo.blockSignals(False)
 
         # 初始化预览（仅一次）
         self._on_theme_changed()
 
     def _save(self):
         self.config["theme"] = self.theme_combo.itemData(self.theme_combo.currentIndex()) or "dark"
-        self.config["font_size"] = self.font_size_combo.currentText()
         self.config["language"] = self.lang_combo.itemData(self.lang_combo.currentIndex()) or "zh"
         self.config["custom_bg"] = self.color_bg.get_color()
         self.config["custom_surface"] = self.color_surface.get_color()

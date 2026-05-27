@@ -602,12 +602,6 @@ class MainWindow(QMainWindow):
         theme_name = theme_name or self.config.get("theme", "dark")
         self.config["theme"] = theme_name
         self.setStyleSheet(build_style(theme_name, self.config))
-        font_size = int(self.config.get("font_size", "16"))
-        font = self.editor.content_edit.font()
-        font.setPointSize(font_size)
-        self.editor.content_edit.setFont(font)
-        self.editor.outline_edit.setFont(font)
-        self.editor.notes_edit.setFont(font)
         self.agent_panel.set_config(self.config)
         self.agent_panel.refresh_theme()
 

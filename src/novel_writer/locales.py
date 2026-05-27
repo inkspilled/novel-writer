@@ -71,8 +71,6 @@ STRINGS = {
     "settings_select_theme": {"zh": "选择主题:", "en": "Select Theme:"},
     "settings_custom_colors": {"zh": "自定义配色", "en": "Custom Colors"},
     "settings_apply_now": {"zh": "立即应用", "en": "Apply Now"},
-    "settings_font_group": {"zh": "字体", "en": "Font"},
-    "settings_font_size": {"zh": "编辑区字号:", "en": "Editor Font Size:"},
     "settings_language": {"zh": "语言:", "en": "Language:"},
     "color_bg": {"zh": "背景色", "en": "Background"},
     "color_surface": {"zh": "面板色", "en": "Surface"},
