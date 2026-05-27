@@ -14,6 +14,7 @@ if __name__ == "__main__" and __package__ is None:
 from novel_writer.ui.main_window import MainWindow
 
 PKG_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = PKG_DIR.parent.parent
 
 
 def main():
@@ -22,7 +23,7 @@ def main():
     app.setOrganizationName("NovelWriter")
 
     # 应用图标（dock + 窗口标题栏）
-    icon_path = PKG_DIR / "logo.png"
+    icon_path = PROJECT_ROOT / "logo.png"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 

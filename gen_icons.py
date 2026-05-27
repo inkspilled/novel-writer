@@ -7,7 +7,8 @@ from PySide6.QtGui import QImage, QPainter
 from PySide6.QtCore import Qt
 
 app = QApplication(sys.argv)
-pkg = Path(__file__).parent / "src" / "novel_writer"
+project_root = Path(__file__).parent
+pkg = project_root / "src" / "novel_writer"
 assets = pkg / "assets"
 
 # ── 应用 logo：1024x1024 PNG ──
@@ -17,9 +18,8 @@ img.fill(Qt.GlobalColor.transparent)
 p = QPainter(img)
 renderer.render(p)
 p.end()
-img.save(str(pkg / "logo.png"))
-img.save(str(assets / "logo.png"))
-print(f"logo.png generated: {pkg / 'logo.png'}")
+img.save(str(project_root / "logo.png"))
+print(f"logo.png generated: {project_root / 'logo.png'}")
 
 # ── 状态栏图标：单色模板 PNG ──
 status_renderer = QSvgRenderer(str(assets / "status_icon.svg"))
