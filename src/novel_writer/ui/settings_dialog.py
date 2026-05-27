@@ -286,7 +286,7 @@ class ModelDialog(QDialog):
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("settings_tab_model"))
-        self.setMinimumSize(700, 520)
+        self.setMinimumSize(720, 600)
         self.config = dict(config)
         self._providers = load_default_providers()
         self._saved_models: dict = dict(self.config.get("saved_models", {}))
@@ -326,6 +326,15 @@ class ModelDialog(QDialog):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
 
+        # 滚动区域包裹配置内容
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(10)
+
         provider_group = QGroupBox(t("settings_provider_group"))
         pg = QFormLayout(provider_group)
         pg.setSpacing(10)
@@ -352,7 +361,7 @@ class ModelDialog(QDialog):
         test_btn = QPushButton(t("settings_test_conn"))
         test_btn.clicked.connect(self._test_connection)
         pg.addRow("", test_btn)
-        right_layout.addWidget(provider_group)
+        scroll_layout.addWidget(provider_group)
 
         # Ollama
         self.ollama_group = QGroupBox(t("settings_ollama_group"))
@@ -360,18 +369,20 @@ class ModelDialog(QDialog):
         self.ollama_status = QLabel(t("settings_ollama_detecting"))
         og.addWidget(self.ollama_status)
         self.ollama_model_list = QListWidget()
-        self.ollama_model_list.setMaximumHeight(80)
+        self.ollama_model_list.setMaximumHeight(120)
         self.ollama_model_list.itemDoubleClicked.connect(self._on_ollama_model_selected)
         og.addWidget(self.ollama_model_list)
         self._refresh_btn = QPushButton(t("settings_ollama_refresh"))
         self._refresh_btn.clicked.connect(self._refresh_ollama_models)
         og.addWidget(self._refresh_btn)
-        right_layout.addWidget(self.ollama_group)
+        scroll_layout.addWidget(self.ollama_group)
         self.ollama_group.setVisible(False)
 
-        right_layout.addStretch()
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        right_layout.addWidget(scroll, 1)
 
-        # 保存/取消按钮（在右侧列底部）
+        # 保存/取消按钮（固定在底部）
         btn_row2 = QHBoxLayout()
         btn_row2.addStretch()
         self._btn_save = QPushButton(t("settings_save_all"))
@@ -452,6 +463,7 @@ class ModelDialog(QDialog):
             return
         provider = self._providers[index]
         self.base_url_input.setText(provider["base_url"])
+        self.model_input.clear()
         is_ollama = provider["type"] == "ollama"
         self.ollama_group.setVisible(is_ollama)
         if is_ollama:
