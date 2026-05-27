@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton, QHBoxLayout, QLabel,
 )
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 
 from .sidebar import Sidebar
 from .editor_panel import EditorPanel
@@ -28,6 +28,7 @@ from ..core.agents.base import BaseAgent, AgentConfig
 
 CONFIG_PATH = Path.home() / ".novel-writer" / "config.json"
 PROJECTS_DIR = Path.home() / ".novel-writer" / "projects"
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 
 # 内置 Agent 的默认系统提示词
 DEFAULT_PROMPTS = {
@@ -88,6 +89,11 @@ class MainWindow(QMainWindow):
         self.config = self._load_config()
         set_language(self.config.get("language", "zh"))
         self.setWindowTitle(t("window_title"))
+
+        # 窗口图标（标题栏 + macOS dock）
+        icns = ASSETS_DIR / "AppIcon.icns"
+        if icns.exists():
+            self.setWindowIcon(QIcon(str(icns)))
         self.project = Project()
         self.agents: dict[str, BaseAgent] = {}
         self.llm = None
@@ -96,6 +102,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._apply_theme()
         self._setup_menu()
+        self._setup_menubar_icon()
         self._init_llm()
         self._init_agents()
 
@@ -146,18 +153,16 @@ class MainWindow(QMainWindow):
         self._exit_action.triggered.connect(self.close)
         self._file_menu.addAction(self._exit_action)
 
-        # 外观
-        self._appearance_menu = menubar.addMenu(t("menu_appearance"))
-        self._appearance_action = QAction(t("settings_tab_appearance"), self)
+        # 外观（直接点击打开，无子菜单）
+        self._appearance_action = QAction(t("menu_appearance"), self)
         self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
         self._appearance_action.triggered.connect(self._open_appearance)
-        self._appearance_menu.addAction(self._appearance_action)
+        menubar.addAction(self._appearance_action)
 
-        # 模型
-        self._model_menu = menubar.addMenu(t("menu_model"))
-        self._model_action = QAction(t("settings_tab_model"), self)
+        # 模型（直接点击打开，无子菜单）
+        self._model_action = QAction(t("menu_model"), self)
         self._model_action.triggered.connect(self._open_model_settings)
-        self._model_menu.addAction(self._model_action)
+        menubar.addAction(self._model_action)
 
         # 智能体
         self._agent_menu = menubar.addMenu(t("menu_agent"))
@@ -166,6 +171,18 @@ class MainWindow(QMainWindow):
         self._agent_menu.addAction(self._manage_action)
         self._agent_menu.addSeparator()
         self._rebuild_agent_menu(self._agent_menu)
+
+    def _setup_menubar_icon(self):
+        """在状态栏左侧显示应用小图标。"""
+        status_icon = ASSETS_DIR / "status_icon.png"
+        if status_icon.exists():
+            label = QLabel()
+            pixmap = QPixmap(str(status_icon)).scaled(
+                18, 18, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            label.setPixmap(pixmap)
+            label.setContentsMargins(8, 0, 0, 0)
+            self.statusBar().addPermanentWidget(label)
 
     def _rebuild_agent_menu(self, menu: QMenu = None):
         if menu is None:
@@ -553,10 +570,8 @@ class MainWindow(QMainWindow):
         self._open_action.setText(t("menu_open_project"))
         self._save_action.setText(t("menu_save_project"))
         self._exit_action.setText(t("menu_exit"))
-        self._appearance_menu.setTitle(t("menu_appearance"))
-        self._appearance_action.setText(t("settings_tab_appearance"))
-        self._model_menu.setTitle(t("menu_model"))
-        self._model_action.setText(t("settings_tab_model"))
+        self._appearance_action.setText(t("menu_appearance"))
+        self._model_action.setText(t("menu_model"))
         self._agent_menu.setTitle(t("menu_agent"))
         self._manage_action.setText(t("menu_agent_manage"))
         self._rebuild_agent_menu()
