@@ -15,7 +15,7 @@ from .agent_animation import AgentIndicator, AgentBubble
 from ..locales import t
 from .styles import get_theme_colors
 
-CHAT_HISTORY_PATH = Path.home() / ".novel-writer" / "chat_history.json"
+CHAT_HISTORY_PATH = Path.home() / "NovelWriter" / "chat_history.json"
 
 # 默认颜色池
 COLOR_POOL = ["#ff6b8a", "#51cf66", "#4da6ff", "#ffd43b", "#cc5de8", "#ff922b",

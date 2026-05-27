@@ -382,16 +382,13 @@ class ModelDialog(QDialog):
         scroll.setWidget(scroll_content)
         right_layout.addWidget(scroll, 1)
 
-        # 保存/取消按钮（固定在底部）
+        # 保存按钮（固定在底部）
         btn_row2 = QHBoxLayout()
         btn_row2.addStretch()
-        self._btn_save = QPushButton(t("settings_save_all"))
+        self._btn_save = QPushButton(t("model_save_config"))
         self._btn_save.setObjectName("primary")
-        self._btn_save.clicked.connect(self._save)
-        self._btn_cancel = QPushButton(t("settings_cancel"))
-        self._btn_cancel.clicked.connect(self.reject)
+        self._btn_save.clicked.connect(self._save_and_close)
         btn_row2.addWidget(self._btn_save)
-        btn_row2.addWidget(self._btn_cancel)
         right_layout.addLayout(btn_row2)
 
         layout.addWidget(right, 2)
@@ -422,7 +419,7 @@ class ModelDialog(QDialog):
         self.model_input.setText(info.get("model", ""))
 
     def _save_model_config(self):
-        """将当前右侧配置保存为命名模型。"""
+        """将当前右侧配置保存为命名模型（不关闭对话框）。"""
         model_name = self.model_input.text().strip()
         if not model_name:
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
@@ -447,6 +444,21 @@ class ModelDialog(QDialog):
             "model": model_name,
         }
         self._refresh_model_list()
+
+    def _save_and_close(self):
+        """保存当前供应商配置 + 所有已保存模型，关闭对话框。"""
+        provider_name = self.provider_combo.currentText()
+        provider = next((p for p in self._providers if p["name"] == provider_name), None)
+        if provider:
+            self.config["current_provider"] = {
+                "name": provider_name,
+                "type": provider["type"],
+                "api_key": self.api_key_input.text().strip(),
+                "base_url": self.base_url_input.text().strip(),
+                "model": self.model_input.text().strip(),
+            }
+        self.config["saved_models"] = self._saved_models
+        self.accept()
 
     def _delete_model_config(self):
         current = self.model_list.currentItem()
