@@ -1,0 +1,74 @@
+{
+  "agents": {
+    "editor": {
+      "name": "editor",
+      "role": "主编",
+      "title": "主编 - 立意规划",
+      "skills": ["选题分析", "立意规划", "风格定位", "市场建议", "创作指导"],
+      "temperature": 0.7,
+      "max_tokens": 4096
+    },
+    "planner": {
+      "name": "planner",
+      "role": "策划",
+      "title": "策划 - 大纲设计",
+      "skills": ["故事结构", "章节规划", "人物设定", "世界观构建", "伏笔设计"],
+      "temperature": 0.7,
+      "max_tokens": 4096
+    },
+    "writer": {
+      "name": "writer",
+      "role": "写手",
+      "title": "写手 - 正文创作",
+      "skills": ["正文写作", "对话创作", "场景描写", "人物刻画", "剧情推进"],
+      "temperature": 0.85,
+      "max_tokens": 8192
+    },
+    "proofreader": {
+      "name": "proofreader",
+      "role": "校对",
+      "title": "校对 - 文字校验",
+      "skills": ["错别字检查", "语法校对", "标点规范", "一致性检查", "格式规范"],
+      "temperature": 0.3,
+      "max_tokens": 4096
+    },
+    "reviewer": {
+      "name": "reviewer",
+      "role": "审核",
+      "title": "审核 - 质量审查",
+      "skills": ["剧情审查", "人物一致性", "节奏评估", "伏笔检查", "主题审核"],
+      "temperature": 0.4,
+      "max_tokens": 4096
+    },
+    "polisher": {
+      "name": "polisher",
+      "role": "润色",
+      "title": "润色 - 文笔提升",
+      "skills": ["文笔润色", "场景强化", "对话优化", "情感渲染", "修辞提升"],
+      "temperature": 0.6,
+      "max_tokens": 4096
+    }
+  },
+  "providers": [
+    {
+      "name": "DeepSeek",
+      "type": "openai_compat",
+      "base_url": "https://api.deepseek.com/v1"
+    },
+    {
+      "name": "Moonshot (Kimi)",
+      "type": "openai_compat",
+      "base_url": "https://api.moonshot.cn/v1"
+    },
+    {
+      "name": "Claude",
+      "type": "claude",
+      "base_url": ""
+    },
+    {
+      "name": "Ollama (本地)",
+      "type": "ollama",
+      "base_url": "http://localhost:11434"
+    }
+  ]
+}

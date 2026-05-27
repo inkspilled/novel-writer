@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "novel-writer"
+version = "0.1.0"
+description = "AI 小说写作桌面应用 - 多 Agent 协作创作"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.7",
+    "openai>=1.0",
+    "anthropic>=0.40",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+novel-writer = "novel_writer.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/novel_writer"]
