@@ -1,14 +1,15 @@
-"""新建项目对话框 — 完整的项目初始化流程。"""
+"""新建项目对话框 — 完整的项目初始化流程，支持 AI 生成。"""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QComboBox, QSpinBox, QPushButton, QFileDialog,
-    QGroupBox, QFormLayout, QFrame, QMessageBox,
+    QGroupBox, QFormLayout, QInputDialog, QMessageBox,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QPixmap
 
 from ..locales import t
@@ -27,14 +28,41 @@ STYLES = [
 ]
 
 
+class _AIWorker(QThread):
+    """后台线程调用 LLM。"""
+    finished = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, llm, prompt: str, parent=None):
+        super().__init__(parent)
+        self.llm = llm
+        self.prompt = prompt
+
+    def run(self):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            from ..core.llm.base import LLMMessage
+            messages = [LLMMessage(role="user", content=self.prompt)]
+            resp = loop.run_until_complete(
+                self.llm.chat(messages, temperature=0.8, max_tokens=1024)
+            )
+            loop.close()
+            self.finished.emit(resp.content)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class NewProjectDialog(QDialog):
     """新建项目对话框。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, llm=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("dialog_new_project"))
         self.setMinimumWidth(520)
         self._cover_path = ""
+        self._llm = llm
+        self._worker = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -102,7 +130,17 @@ class NewProjectDialog(QDialog):
         concept_group = QGroupBox("立意与方向（必填）")
         concept_layout = QVBoxLayout(concept_group)
 
-        concept_layout.addWidget(QLabel("核心立意 *：小说要表达什么？核心卖点是什么？"))
+        # 核心立意 + AI 按钮
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("核心立意 *：小说要表达什么？核心卖点是什么？"))
+        row1.addStretch()
+        self.btn_ai_theme = QPushButton("✨ AI 生成")
+        self.btn_ai_theme.setFixedHeight(24)
+        self.btn_ai_theme.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.btn_ai_theme.clicked.connect(lambda: self._ai_generate("theme"))
+        row1.addWidget(self.btn_ai_theme)
+        concept_layout.addLayout(row1)
+
         self.theme_edit = QTextEdit()
         self.theme_edit.setPlaceholderText(
             "例：在末世废墟中，一个失去记忆的少年通过破解一个个诡异规则，"
@@ -111,7 +149,17 @@ class NewProjectDialog(QDialog):
         self.theme_edit.setMaximumHeight(80)
         concept_layout.addWidget(self.theme_edit)
 
-        concept_layout.addWidget(QLabel("规划方向 *：整体构思、卷数规划、节奏安排。"))
+        # 规划方向 + AI 按钮
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("规划方向 *：整体构思、卷数规划、节奏安排。"))
+        row2.addStretch()
+        self.btn_ai_dir = QPushButton("✨ AI 生成")
+        self.btn_ai_dir.setFixedHeight(24)
+        self.btn_ai_dir.setStyleSheet("font-size: 11px; padding: 2px 8px;")
+        self.btn_ai_dir.clicked.connect(lambda: self._ai_generate("direction"))
+        row2.addWidget(self.btn_ai_dir)
+        concept_layout.addLayout(row2)
+
         self.direction_edit = QTextEdit()
         self.direction_edit.setPlaceholderText(
             "例：全书分3卷，第1卷（30章）新手村生存，第2卷（50章）势力对抗，"
@@ -131,6 +179,11 @@ class NewProjectDialog(QDialog):
         syn_layout.addWidget(self.synopsis_edit)
         layout.addWidget(synopsis_group)
 
+        # ── 状态栏 ──
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet("font-size: 11px; color: gray;")
+        layout.addWidget(self._status_label)
+
         # ── 按钮 ──
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -144,6 +197,82 @@ class NewProjectDialog(QDialog):
         self.btn_create.clicked.connect(self._on_create)
         btn_row.addWidget(self.btn_create)
         layout.addLayout(btn_row)
+
+    def _ai_generate(self, field: str):
+        """AI 生成立意或方向。"""
+        if not self._llm:
+            QMessageBox.warning(self, "提示", "请先在设置中配置模型")
+            return
+
+        label = "核心立意" if field == "theme" else "规划方向"
+        hint = "一个少年穿越到异世界" if field == "theme" else "分3卷，前期升级，中期争霸，后期收尾"
+
+        one_liner, ok = QInputDialog.getText(
+            self, f"AI 生成{label}",
+            f"用一句话描述你的想法，AI 会帮你展开：\n（例：{hint}）",
+        )
+        if not ok or not one_liner.strip():
+            return
+
+        genre = self.genre_combo.currentText()
+        style = self.style_combo.currentText()
+        title = self.title_edit.text().strip() or "未定"
+
+        if field == "theme":
+            prompt = f"""你是一位资深小说主编。请根据以下一句话想法，为一部{genre}题材、{style}风格的小说「{title}」撰写核心立意。
+
+要求：
+1. 明确核心主题（20字内）
+2. 阐述立意内涵（100-200字）
+3. 提炼2-3个核心卖点
+4. 分析目标读者
+
+一句话想法：{one_liner}
+
+请直接输出内容，不要有多余解释。"""
+        else:
+            prompt = f"""你是一位专业的小说策划。请根据以下一句话方向，为一部{genre}题材、{style}风格的小说「{title}」撰写详细的规划方向。
+
+要求：
+1. 整体构思概述（50字内）
+2. 分卷规划（每卷名称、章节数、核心内容）
+3. 节奏安排（高潮与过渡的分布）
+4. 预计总字数
+
+一句话方向：{one_liner}
+
+请直接输出内容，不要有多余解释。"""
+
+        self._set_generating(True)
+        self._worker = _AIWorker(self._llm, prompt, self)
+        self._worker.finished.connect(lambda text: self._on_ai_done(field, text))
+        self._worker.error.connect(self._on_ai_error)
+        self._worker.start()
+
+    def _on_ai_done(self, field: str, text: str):
+        self._set_generating(False)
+        if field == "theme":
+            self.theme_edit.setPlainText(text.strip())
+        else:
+            self.direction_edit.setPlainText(text.strip())
+        self._status_label.setText("")
+
+    def _on_ai_error(self, error: str):
+        self._set_generating(False)
+        self._status_label.setText("")
+        QMessageBox.warning(self, "AI 生成失败", error)
+
+    def _set_generating(self, generating: bool):
+        self.btn_ai_theme.setEnabled(not generating)
+        self.btn_ai_dir.setEnabled(not generating)
+        self.btn_create.setEnabled(not generating)
+        if generating:
+            self._status_label.setText("AI 正在生成...")
+            self.btn_ai_theme.setText("生成中...")
+            self.btn_ai_dir.setText("生成中...")
+        else:
+            self.btn_ai_theme.setText("✨ AI 生成")
+            self.btn_ai_dir.setText("✨ AI 生成")
 
     def _pick_cover(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -177,10 +306,10 @@ class NewProjectDialog(QDialog):
             QMessageBox.warning(self, "提示", "请输入书名")
             return
         if not theme:
-            QMessageBox.warning(self, "提示", "请填写核心立意")
+            QMessageBox.warning(self, "提示", "请填写核心立意（或用 AI 生成）")
             return
         if not direction:
-            QMessageBox.warning(self, "提示", "请填写规划方向")
+            QMessageBox.warning(self, "提示", "请填写规划方向（或用 AI 生成）")
             return
 
         self.accept()

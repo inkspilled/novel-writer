@@ -299,7 +299,7 @@ class MainWindow(QMainWindow):
             self._save_project()
 
         from .new_project_dialog import NewProjectDialog
-        dialog = NewProjectDialog(self)
+        dialog = NewProjectDialog(llm=self.llm, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
