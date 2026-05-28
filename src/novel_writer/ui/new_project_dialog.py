@@ -80,6 +80,8 @@ class NewProjectDialog(QDialog):
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setSpacing(12)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
 
         # ── 基本信息 ──
         basic_group = QGroupBox("基本信息")
