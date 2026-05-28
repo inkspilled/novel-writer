@@ -2,14 +2,25 @@
 
 ## 目标
 
-实现自动化写作流程：用户输入书名和题材，编排器自动调度多个智能体协作完成小说创作。
+实现自动化写作流程：用户选择模式和章节数，编排器自动调度多个智能体协作完成小说创作。
 
 ## 核心原则
 
 - **智能体自描述**：每个 Agent 通过 `skills` 字段声明能力，编排器自动匹配
 - **技能驱动**：工作流步骤绑定"需要什么技能"，不绑定具体智能体名称
 - **新增即生效**：添加新智能体后无需改代码，编排器自动发现新能力
-- **文件传递**：步骤之间通过 MD 文件传递上下文
+- **文件传递**：步骤之间通过文件传递上下文（规划用 `.md`，正文用 `.txt`）
+
+## 工作流模式
+
+| 模式 | 说明 | 步骤 |
+|------|------|------|
+| 📖 新书 | 从立意到审校全流程 | 立意→大纲→人物→世界观→时间线→主线→支线→伏笔→逐章写作→灵感→审核→校对 |
+| ✍️ 续写 | 从已有章节继续 | 逐章写作→灵感→审核→校对（自动检测起始章节） |
+| 🔍 查漏补缺 | 检查缺失章节并补写 | 扫描目录，只为缺失章节生成写作步骤 |
+| ✅ 校验 | 审核+校对已有章节 | 审核→校对 |
+
+启动时弹出模式选择对话框，可配置起始/结束章节号。
 
 ## 实现状态
 
@@ -19,23 +30,27 @@
 | 单步执行 | ✅ 已实现 | run_single_step() |
 | 循环步骤（repeat） | ✅ 已实现 | 逐章写作 |
 | 定时触发（every） | ✅ 已实现 | 每 N 章灵感注入 |
-| 文件输入/输出 | ✅ 已实现 | 读取 MD 文件作为上下文 |
+| 文件输入/输出 | ✅ 已实现 | 章节 .txt，规划 .md |
 | 模板变量插值 | ✅ 已实现 | {n}, {title}, {genre} 等 |
 | 进度回调 | ✅ 已实现 | on_step_start / on_step_end |
 | 断点恢复 | ✅ 已实现 | workflow.json 保存进度 |
-| UI 进度面板 | ✅ 已实现 | workflow_panel.py 步骤状态、进度条、执行日志 |
-| LLM 动态编排 | ✅ 已实现 | generate_workflow() 根据智能体技能自动生成工作流 |
+| 工作流模式 | ✅ 已实现 | 新书/续写/查漏/校验 |
+| 章节标题提取 | ✅ 已实现 | 从 Agent 响应中提取第一个标题作为文件名 |
+| 章节文件复用 | ✅ 已实现 | 已有章节覆盖写入，不重复创建 |
+| UI 进度面板 | ✅ 已实现 | 办公室场景联动 + 迷你进度条 |
 | 质量门控 | 🔲 设计中 | 审核不过自动重写 |
 
 ## 架构
 
 ```
-用户输入（书名 + 题材 + 风格）
+用户选择模式 + 章节范围
          │
          ▼
-   ┌─ LLM 编排器（可选）─┐
-   │  根据可用智能体动态   │
-   │  生成工作流步骤       │
+   ┌─ build_workflow() ─┐
+   │  根据模式构建步骤    │
+   │  新书: 12步          │
+   │  续写: 4步           │
+   │  校验: 2步           │
    └──────────┬──────────┘
               ▼
       ┌─ WorkflowRunner ─┐
@@ -64,48 +79,19 @@
   },
   "steps": [
     {
-      "id": "ideation",
-      "needs": "立意规划",
-      "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}",
-      "output": "planning/立意.md"
-    },
-    {
-      "id": "outline",
-      "needs": "故事结构",
-      "prompt": "根据立意设计完整的故事大纲，包括主要人物、世界观、主线冲突",
-      "input": ["planning/立意.md"],
-      "output": "planning/大纲.md"
-    },
-    {
       "id": "chapter",
       "needs": "正文写作",
       "prompt": "根据大纲写第{n}章正文，保持与前文连贯",
       "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"],
-      "output": "chapters/{n:03d}.md",
+      "output": "chapters/{n}_chapter.txt",
       "repeat": 20
-    },
-    {
-      "id": "inspiration",
-      "needs": "灵感激发",
-      "prompt": "基于当前剧情进展，提供3个意想不到的转折方向",
-      "input": ["prev_chapters"],
-      "output": "inspiration/{n:03d}_灵感.md",
-      "every": 3,
-      "optional": true
     },
     {
       "id": "review",
       "needs": "剧情审查",
       "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏",
-      "input": ["planning/*", "chapters/*.md"],
+      "input": ["planning/*", "chapters/*.txt"],
       "output": "review/审核报告.md"
-    },
-    {
-      "id": "proofread",
-      "needs": "错别字检查",
-      "prompt": "校对全部章节的错别字、语法、标点",
-      "input": ["chapters/*.md"],
-      "output": "review/校对报告.md"
     }
   ]
 }
@@ -130,100 +116,79 @@
 
 ```python
 class WorkflowRunner:
-    def __init__(self, agents: dict[str, BaseAgent], project_dir: Path, project_info: dict):
-        self._agent_by_skill: dict[str, list[BaseAgent]] = {}
-        self._build_skill_index()
+    def __init__(self, agents, project_dir, project_info)
 
-    def find_agent(self, skill: str) -> BaseAgent | None:
+    def find_agent(self, skill) -> BaseAgent | None:
         """根据技能找到匹配的智能体。"""
-        candidates = self._agent_by_skill.get(skill, [])
-        return candidates[0] if candidates else None
 
-    async def run(self, workflow: WorkflowDef, progress: dict | None = None) -> dict:
+    async def run(self, workflow, progress) -> dict:
         """执行完整工作流，返回进度状态。"""
 
-    async def run_single_step(self, step_id: str, workflow: WorkflowDef, n: int = 1) -> str:
-        """执行单个步骤，返回输出内容。"""
+    def _find_chapter_file(self, n) -> str | None:
+        """查找第 n 章的已有文件名，避免重复创建。"""
 ```
 
-### 技能匹配
+### 章节输出逻辑
 
-```python
-def _build_skill_index(self):
-    """建立技能 → 智能体的反向索引。"""
-    for agent in self.agents.values():
-        for skill in agent.config.skills:
-            self._agent_by_skill.setdefault(skill, []).append(agent)
-```
+1. 执行章节步骤时，先检查 `chapters/` 目录是否已有该章节文件
+2. 有 → 覆盖写入已有文件
+3. 无 → 从 Agent 响应中提取第一个 Markdown 标题作为文件名，如 `1_风起云涌.txt`
+4. 无标题 → 使用默认名 `1_第1章.txt`
 
 ### 文件传递上下文
 
 ```python
-def _build_context(self, input_files: list[str], n: int) -> str:
+def _build_context(self, input_files, n) -> str:
     """读取输入文件，拼接上下文。"""
-    for f in input_files:
-        if f == "prev_chapters":
-            # 读取前面所有章节
-        elif "*" in f:
-            # 通配符匹配
-        else:
-            # 读取指定文件
+    # prev_chapters: 读取第 1 到第 n-1 章的 .txt 文件
+    # chapters/*.txt: 通配符匹配所有章节
+    # planning/*: 通配符匹配所有规划文档
 ```
 
-### LLM 动态编排（可选）
+## UI 进度面板
 
-```python
-async def generate_workflow(agents: dict, project_info: dict, llm: BaseLLM) -> WorkflowDef:
-    """让 LLM 根据可用智能体动态生成工作流。"""
-```
+工作流进度整合到智能体面板中：
 
-LLM 根据项目信息（书名、题材、风格）和可用智能体的技能列表，自动生成最优的工作流步骤定义。生成的工作流自动保存到 `workflow.json`。
-
-### UI 进度面板
-
-工作流进度已整合到智能体面板中：
-
-- **WorkflowMiniBar**：紧凑的进度条 + 步骤摘要 + 控制按钮（开始/停止/AI生成）
+- **WorkflowMiniBar**：进度条 + 步骤摘要 + 开始/停止按钮
 - **办公室场景联动**：工作流执行时，办公室里的 Agent 实时切换状态
   - 当前步骤的 Agent → 工作中（敲键盘动画）
   - 其余 Agent → 等待中（喝咖啡/踱步）
   - 步骤完成 → 短暂庆祝后回到空闲
   - 全部完成 → 全员庆祝
-- 菜单入口：工作流 → 打开工作流面板 / 加载默认工作流
 
 ## 项目目录结构
 
 ```
 data/projects/{project_name}/
-├── meta.json                    # 项目元信息
+├── meta.json
+├── chat.db                      # 项目级聊天记录
 ├── planning/
 │   ├── 立意.md                  # 主编输出
 │   ├── 大纲.md                  # 策划输出
-│   ├── 人物设定.md              # 策划输出
-│   ├── 世界观.md                # 策划输出
-│   ├── 时间线.md                # 策划输出
-│   ├── 主线.md                  # 策划输出
-│   ├── 支线.md                  # 策划输出
-│   └── 伏笔.md                  # 策划输出
+│   ├── 人物设定.md
+│   ├── 世界观.md
+│   ├── 时间线.md
+│   ├── 主线.md
+│   ├── 支线.md
+│   └── 伏笔.md
 ├── chapters/
-│   ├── 001_章节名.md            # 写手输出
-│   ├── 002_章节名.md
+│   ├── 1_章节名.txt             # 写手输出（.txt）
+│   ├── 1_章节名.outline.md      # 细纲（可选，.md）
 │   └── ...
 ├── inspiration/
-│   ├── 003_灵感.md              # 灵感注入（每3章一次）
-│   └── 006_灵感.md
+│   ├── 3_灵感.md                # 灵感注入（每3章一次）
+│   └── 6_灵感.md
 ├── review/
-│   ├── 审核报告.md              # 审核输出
-│   └── 校对报告.md              # 校对输出
-└── workflow.json                # 工作流定义（保存当前进度）
+│   ├── 审核报告.md
+│   └── 校对报告.md
+└── workflow.json                # 工作流定义 + 进度
 ```
 
 ## 断点恢复
 
-工作流执行过程中保存进度到 `workflow.json`：
-
 ```json
 {
+  "workflow": { ... },
   "progress": {
     "ideation": "done",
     "outline": "done",
@@ -235,24 +200,8 @@ data/projects/{project_name}/
 
 编排器启动时检查进度，从断点继续。
 
-## 实现优先级
-
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| P0 | WorkflowRunner 基础框架 | ✅ 已完成 |
-| P0 | 技能匹配 + 单步执行 | ✅ 已完成 |
-| P1 | 循环步骤（逐章写作） | ✅ 已完成 |
-| P1 | 文件读写 + 上下文传递 | ✅ 已完成 |
-| P2 | 进度保存 + 断点恢复 | ✅ 已完成 |
-| P2 | UI 进度面板 | ✅ 已完成 |
-| P3 | LLM 动态编排 | ✅ 已完成 |
-| P3 | 定时灵感注入 | ✅ 已完成 |
-| P4 | 质量门控（审核不过重写） | 🔲 待实现 |
-
-## 新增智能体的扩展方式
+## 扩展方式
 
 1. 在 `config/agents.json` 添加新智能体，配好 `skills`
 2. 在工作流模板中添加 `needs: "新技能"` 的步骤
 3. 编排器自动匹配，无需改代码
-
-或者使用 LLM 动态编排，连工作流模板都不用改。

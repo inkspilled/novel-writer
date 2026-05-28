@@ -20,209 +20,116 @@ novel-writer/
 │   ├── default_agents.json         # 智能体默认配置（重置用，自动生成）
 │   └── default_providers.json      # 默认模型供应商列表
 ├── data/                           # 用户数据（gitignore）
-│   ├── config.json                 # 用户配置（主题、语言、模型、智能体）
-│   ├── chat.db                     # 聊天记录（SQLite）
+│   ├── config.json                 # 用户配置（主题、语言、模型）
 │   └── projects/                   # 小说项目目录
 │       └── {project_name}/
 │           ├── meta.json           # 项目元信息
-│           ├── planning/           # 规划文档（立意/大纲/人物设定/世界观等）
-│           ├── chapters/           # 章节正文
-│           ├── inspiration/        # 灵感记录
-│           ├── review/             # 审校报告
+│           ├── chat.db             # 聊天记录（项目级 SQLite）
+│           ├── planning/           # 规划文档（.md）
+│           ├── chapters/           # 章节正文（.txt）+ 细纲（.md）
+│           ├── inspiration/        # 灵感记录（.md）
+│           ├── review/             # 审校报告（.md）
 │           └── workflow.json       # 工作流进度
 ├── src/novel_writer/
 │   ├── __main__.py                 # python -m novel_writer 入口
 │   ├── app.py                      # QApplication 启动
-│   ├── locales.py                  # i18n（中/英，130+ 条字符串）
+│   ├── locales.py                  # i18n（中/英）
 │   ├── core/
 │   │   ├── llm/
-│   │   │   ├── base.py             # BaseLLM 基类 + LLMMessage/LLMResponse
+│   │   │   ├── base.py             # BaseLLM + LLMMessage/LLMResponse
 │   │   │   └── client.py           # 统一 LLMClient（OpenAI 兼容）
 │   │   ├── agents/
-│   │   │   ├── __init__.py         # load_agents() / save_agents() / reset_agents()
+│   │   │   ├── __init__.py         # load_agents() / save_agents()
 │   │   │   └── base.py             # BaseAgent + AgentConfig
-│   │   ├── project_io.py           # 项目目录 IO 操作
-│   │   └── workflow.py             # 工作流引擎（技能匹配 + 文件传递）
-│   ├── models/                     # Pydantic 数据模型
+│   │   ├── project_io.py           # 项目目录 IO
+│   │   └── workflow.py             # 工作流引擎
+│   ├── models/
 │   │   ├── project.py              # Project（基于目录的存储）
-│   │   ├── chapter.py              # Chapter（轻量元数据，文件 IO）
+│   │   ├── chapter.py              # Chapter（文件 IO）
 │   │   └── character.py            # Character
-│   └── ui/                         # PySide6 界面
-│       ├── styles.py               # 5 套主题 + build_style()
+│   └── ui/
+│       ├── styles.py               # 5 套主题
 │       ├── main_window.py          # 主窗口（三栏布局）
 │       ├── sidebar.py              # 侧边栏
 │       ├── editor_panel.py         # 编辑区
-│       ├── agent_panel.py          # 智能体面板（办公室+工作流+对话 整合）
-│       ├── office_scene.py         # 办公室场景（QPainter 绘制，Agent 动画）
+│       ├── agent_panel.py          # 智能体面板（办公室+工作流+对话）
+│       ├── office_scene.py         # 办公室场景（QPainter + Agent 动画）
 │       ├── workflow_bar.py         # 工作流迷你进度条
-│       ├── workflow_panel.py       # 工作流执行引擎（WorkflowThread）
-│       ├── agent_animation.py      # Agent 状态动画（呼吸灯/旋转环）
-│       └── settings_dialog.py      # 设置对话框（外观/模型/智能体）
+│       ├── workflow_panel.py       # WorkflowThread（后台执行）
+│       ├── agent_animation.py      # Agent 指示器动画
+│       └── settings_dialog.py      # 设置对话框
 ```
 
 ## 架构设计
 
-### 项目存储层 (`core/project_io.py`)
+### 文件格式
 
-所有项目数据以目录形式存储，文件读写统一通过 `project_io` 模块：
+- 章节正文：`.txt`（纯文本，不需要 Markdown 语法）
+- 规划文档：`.md`（大纲、人物设定等有结构层级）
+- 细纲：`{n}_标题.outline.md`
+- 灵感：`.md`
+- 章节序号：变宽数字，不补零（`1_xxx.txt`），支持任意位数
+
+### 项目存储 (`core/project_io.py`)
 
 ```python
-init_project_dir(project_dir)      # 创建目录骨架
-save_meta / load_meta              # meta.json 读写
-read_md / write_md                 # MD 文件读写
-scan_chapters(project_dir)         # 扫描 chapters/ 目录
+chapter_filename(number, title)    # "1_第一章.txt"
+scan_chapters(project_dir)         # 按数字排序扫描
+read_md / write_md                 # 文件读写（通用，不区分扩展名）
 load_workflow / save_workflow       # 工作流进度
-list_projects(projects_root)       # 扫描所有项目
 ```
 
 ### LLM 层 (`core/llm/`)
 
-统一用 `LLMClient` 一个类，通过 OpenAI 兼容协议连接所有模型：
-
-```python
-class LLMClient(BaseLLM):
-    def __init__(self, model, api_key="", base_url="https://api.openai.com/v1")
-    async def chat(self, messages, temperature, max_tokens) -> LLMResponse
-    async def stream_chat(self, messages, temperature, max_tokens) -> AsyncIterator[str]
-```
-
-只需 `api_key + base_url + model` 三个参数。Ollama 自动拼接 `/v1` 端点。
+统一 `LLMClient`，OpenAI 兼容协议，只需 `api_key + base_url + model`。
 
 ### Agent 系统 (`core/agents/`)
 
-所有智能体配置集中在 `config/agents.json`，运行时通过 `load_agents()` 加载。
-
-```python
-@dataclass
-class AgentConfig:
-    name: str
-    role: str
-    title: str
-    system_prompt: str
-    skills: list[str]
-    model: str          # 引用 saved_models 的 key，空则用全局默认
-    temperature: float
-    max_tokens: int
-```
-
-Agent 可配置独立模型（如主编用 DeepSeek，写手用 Ollama），互不影响。
-
-智能体重置机制：首次运行时自动将 `agents.json` 复制为 `default_agents.json`，在智能体管理中点击"重置默认"可恢复。
-
-### 数据模型层 (`models/`)
-
-**Project** — 基于目录的项目管理：
-
-```python
-class Project:
-    _project_dir: Path       # 项目目录路径
-
-    def save()               # 保存到目录（meta.json + 章节文件）
-    def load(project_dir)    # 从目录加载
-    def add_chapter(title)   # 添加章节（自动创建文件）
-    def total_words()        # 总字数（从文件读取）
-```
-
-**Chapter** — 轻量元数据，正文通过文件 IO：
-
-```python
-class Chapter:
-    number: int
-    title: str
-    status: ChapterStatus
-    _content_path: str       # 正文文件路径
-    _outline_path: str       # 细纲文件路径
-
-    @property content        # 从文件读取正文
-    @content.setter          # 写入正文到文件
-    @property outline        # 从文件读取细纲
-```
+配置集中在 `config/agents.json`，每个 Agent 可配独立模型。Agent 的 `skills` 字段用于工作流技能匹配。
 
 ### 工作流引擎 (`core/workflow.py`)
 
-技能驱动的多 Agent 协作编排器：
-
 ```python
+class WorkflowMode(Enum):
+    NEW_BOOK / CONTINUE / FILL_GAPS / VALIDATE
+
 class WorkflowRunner:
-    def __init__(self, agents, project_dir, project_info)
-    async def run(workflow, progress)      # 执行完整工作流
-    async def run_single_step(step_id)     # 执行单个步骤
-    def find_agent(skill)                  # 技能匹配
+    async def run(workflow, progress)         # 执行完整工作流
+    async def run_single_step(step_id, n)     # 执行单个步骤
+    def find_agent(skill)                     # 技能匹配
 
-async def generate_workflow(agents, project_info, llm) -> WorkflowDef:
-    """LLM 动态编排 — 根据可用智能体自动生成工作流。"""
+def build_workflow(mode, project_info, start, end) -> WorkflowDef:
+    """根据模式构建工作流定义。"""
 ```
 
-支持：循环步骤（repeat）、定时触发（every）、文件输入/输出、模板变量插值、断点恢复、LLM 动态编排。
+- 章节步骤自动从响应提取标题生成文件名
+- 已有章节文件会被复用（覆盖写入），不重复创建
+- 支持循环步骤（repeat）、定时触发（every）、断点恢复
 
-### 工作流 UI (`ui/workflow_panel.py`)
-
-```python
-class WorkflowPanel(QWidget):
-    """工作流进度面板。"""
-    # 步骤卡片列表 + 状态图标
-    # 总体进度条 + 循环步骤章节进度
-    # 执行日志（QTextEdit）
-    # 控制按钮：开始/停止/重置/AI生成
-    # WorkflowThread(QThread) 后台执行
-
-class WorkflowThread(QThread):
-    """后台线程执行工作流，信号驱动 UI 更新。"""
-    step_started / step_finished / step_error / log_message / workflow_done
-```
-
-入口：菜单栏 → 工作流 → 打开工作流面板 (Ctrl+Shift+W)。
-
-### 模型配置系统
-
-用户配置存储在 `data/config.json`：
-
-```json
-{
-  "current_provider": {
-    "name": "DeepSeek",
-    "type": "openai_compat",
-    "api_key": "sk-xxx",
-    "base_url": "https://api.deepseek.com/v1",
-    "model": "deepseek-chat"
-  },
-  "saved_models": {
-    "DeepSeek Chat": { ... }
-  }
-}
-```
-
-- `current_provider`：全局默认模型
-- `saved_models`：已保存的模型方案，供智能体下拉选择
-
-### UI 架构 (`ui/`)
+### UI 架构
 
 ```
-MainWindow
-├── Sidebar          # 项目管理、章节树、字数统计
-├── EditorPanel      # 正文/大纲/备注 三 Tab
-└── AgentPanel       # 整合面板
-    ├── OfficeScene     # 办公室场景（QPainter，Agent 动画）
-    ├── WorkflowMiniBar # 工作流进度条
-    └── ChatArea        # 对话区（Markdown、SQLite 持久化）
+MainWindow (splitter: 220 / 560 / 620)
+├── Sidebar         # 项目管理、章节树
+├── EditorPanel     # 正文/大纲/备注
+└── AgentPanel      # 整合面板
+    ├── OfficeScene     # 办公室场景（30%）— QPainter 动画
+    ├── WorkflowMiniBar # 进度条 + 开始/停止
+    └── ChatArea        # 对话区（70%）— SQLite 持久化
 ```
 
-聊天记录按项目隔离：每个项目目录下独立 `chat.db`。
-
-- `AgentWorker(QThread)`：后台线程执行 Agent 调用，信号驱动 UI 更新，支持 asyncio task 取消
-- 流式输出：`chunk_received` 信号逐块更新 Markdown 渲染，按 Agent 隔离（`_stream_agent` + `_pending_streams`），切换不影响
-- 聊天记录：SQLite 持久化到 `data/chat.db`，Python 标准库内置，打包无额外依赖
-- Agent 切换时名称行显示当前使用的模型（HTML 富文本）
-- 智能体专属模型通过下拉选择已保存模型方案，不支持手动输入
-- 关闭应用时 `closeEvent` 取消进行中的请求 + 关闭所有 `AsyncOpenAI` 客户端连接
+- 聊天记录按项目隔离：`data/projects/<name>/chat.db`
+- 对话上下文包含全部规划文档 + 所有章节正文
+- `AgentWorker(QThread)` 后台执行，信号驱动 UI
+- 流式输出按 Agent 隔离，切换不影响进行中的流
 
 ### 菜单结构
 
 ```
-├── 文件        # 新建/打开/保存项目、退出
-├── 模型与智能体  # 模型设置、智能体管理
-├── 工作流       # 打开工作流面板、加载默认工作流
-└── 关于        # 外观设置、关于
+├── 文件           # 新建/打开/保存、退出
+├── 模型与智能体     # 模型设置、智能体管理
+├── 工作流          # 开始工作流（模式选择）、加载默认工作流
+└── 关于           # 外观设置、关于
 ```
 
 ## 添加新供应商
@@ -233,30 +140,15 @@ MainWindow
 {"name": "供应商名", "type": "openai_compat", "base_url": "https://api.example.com/v1"}
 ```
 
-只要支持 OpenAI 兼容接口即可，无需修改代码。也可直接在模型设置中手动填写 Base URL。
-
 ## Ollama 本地模型
 
 1. 安装 Ollama：https://ollama.com
-2. 拉取模型：`ollama pull qwen3.5:9b`
-3. 在设置 → 模型中选择 Ollama，模型列表自动列出
-4. 支持局域网内其他 Ollama 实例，修改 Base URL 即可
+2. `ollama pull qwen3.5:9b`
+3. 设置 → 模型中选择 Ollama
 
 ## 扩展智能体
 
-直接在 设置 → 智能体 中添加自定义智能体，配置标题、图标、技能、提示词、专属模型。
-
-或编辑 `config/agents.json` 添加新的内置智能体。
-
-## 数据存储
-
-| 文件 | 说明 |
-|------|------|
-| `data/config.json` | 全局配置（主题、语言、模型、智能体） |
-| `data/chat.db` | 聊天记录（SQLite） |
-| `data/projects/*/` | 小说项目目录 |
-| `config/agents.json` | 智能体配置 |
-| `config/default_agents.json` | 智能体默认配置（重置用） |
+设置 → 智能体 中添加，或编辑 `config/agents.json`。
 
 ## 开发环境
 
@@ -264,7 +156,7 @@ MainWindow
 git clone <repo-url>
 cd novel-writer
 python -m venv .venv
-source .venv/bin/activate   # Linux/Mac
+source .venv/bin/activate
 pip install -e .
 python -m novel_writer
 ```
