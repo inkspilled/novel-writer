@@ -45,7 +45,7 @@ class _AIWorker(QThread):
             from ..core.llm.base import LLMMessage
             messages = [LLMMessage(role="user", content=self.prompt)]
             resp = loop.run_until_complete(
-                self.llm.chat(messages, temperature=0.8, max_tokens=1024)
+                self.llm.chat(messages, temperature=0.7, max_tokens=300)
             )
             loop.close()
             self.finished.emit(resp.content)
@@ -219,29 +219,33 @@ class NewProjectDialog(QDialog):
         title = self.title_edit.text().strip() or "未定"
 
         if field == "theme":
-            prompt = f"""你是一位资深小说主编。请根据以下一句话想法，为一部{genre}题材、{style}风格的小说「{title}」撰写核心立意。
+            prompt = f"""你是小说主编。根据一句话想法写核心立意。
 
-要求：
-1. 明确核心主题（20字内）
-2. 阐述立意内涵（100-200字）
-3. 提炼2-3个核心卖点
-4. 分析目标读者
+题材：{genre}  风格：{style}  书名：{title}
+用户想法：{one_liner}
 
-一句话想法：{one_liner}
+严格按以下格式输出，总字数不超过200字：
 
-请直接输出内容，不要有多余解释。"""
+【核心主题】（10字内的一句话概括）
+【立意】（2-3句话阐述核心内涵，不超过80字）
+【卖点】（2-3个，每个10字内，用逗号分隔）
+【读者】（目标读者群体，20字内）
+
+不要有任何多余解释。"""
         else:
-            prompt = f"""你是一位专业的小说策划。请根据以下一句话方向，为一部{genre}题材、{style}风格的小说「{title}」撰写详细的规划方向。
+            prompt = f"""你是小说策划。根据一句话方向写规划方向。
 
-要求：
-1. 整体构思概述（50字内）
-2. 分卷规划（每卷名称、章节数、核心内容）
-3. 节奏安排（高潮与过渡的分布）
-4. 预计总字数
+题材：{genre}  风格：{style}  书名：{title}
+用户想法：{one_liner}
 
-一句话方向：{one_liner}
+严格按以下格式输出，总字数不超过200字：
 
-请直接输出内容，不要有多余解释。"""
+【整体构思】（30字内概括）
+【分卷】（用"→"连接各卷，格式：卷名(章节数)→卷名(章节数)→…）
+【节奏】（20字内说明高潮分布）
+【预估字数】（如"约60万字"）
+
+不要有任何多余解释。"""
 
         self._set_generating(True)
         self._worker = _AIWorker(self._llm, prompt, self)
@@ -251,10 +255,21 @@ class NewProjectDialog(QDialog):
 
     def _on_ai_done(self, field: str, text: str):
         self._set_generating(False)
+        # 截断过长内容
+        text = text.strip()
+        if len(text) > 300:
+            # 在最后一个句号/换行处截断
+            for sep in ["\n\n", "\n", "。", "；"]:
+                idx = text.rfind(sep, 0, 300)
+                if idx > 100:
+                    text = text[:idx + 1]
+                    break
+            else:
+                text = text[:300]
         if field == "theme":
-            self.theme_edit.setPlainText(text.strip())
+            self.theme_edit.setPlainText(text)
         else:
-            self.direction_edit.setPlainText(text.strip())
+            self.direction_edit.setPlainText(text)
         self._status_label.setText("")
 
     def _on_ai_error(self, error: str):
