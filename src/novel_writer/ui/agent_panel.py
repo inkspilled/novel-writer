@@ -284,18 +284,20 @@ class AgentPanel(QWidget):
         from .office_scene import OfficeScene
         self.office = OfficeScene()
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
-        layout.addWidget(self.office, 4)
+        layout.addWidget(self.office, 7)
 
         # ── 工作流迷你进度条 ──
         from .workflow_bar import WorkflowMiniBar
         self.workflow_bar = WorkflowMiniBar()
+        self.workflow_bar.setMaximumHeight(50)
         layout.addWidget(self.workflow_bar)
 
         # ── Agent 信息行 ──
         header = QWidget()
         header.setObjectName("agentHeader")
+        header.setMaximumHeight(36)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(12, 8, 12, 8)
+        header_layout.setContentsMargins(12, 4, 12, 4)
         header_layout.setSpacing(8)
 
         self.indicator = AgentIndicator()
@@ -343,7 +345,7 @@ class AgentPanel(QWidget):
         self.chat_layout.setSpacing(4)
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
-        layout.addWidget(self.scroll_area, 6)
+        layout.addWidget(self.scroll_area, 3)
 
         # ── 加载指示器 ──
         self._loading_label = QLabel(t("agent_thinking"))
@@ -354,9 +356,10 @@ class AgentPanel(QWidget):
         # ── 输入区 ──
         input_area = QWidget()
         input_area.setObjectName("agentInput")
+        input_area.setMaximumHeight(70)
         input_layout = QVBoxLayout(input_area)
-        input_layout.setContentsMargins(12, 8, 12, 10)
-        input_layout.setSpacing(6)
+        input_layout.setContentsMargins(12, 4, 12, 6)
+        input_layout.setSpacing(4)
 
         self.input_edit = ChatTextEdit()
         self.input_edit.setPlaceholderText(t("agent_ph_input"))
