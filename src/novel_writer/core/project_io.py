@@ -99,15 +99,15 @@ def write_planning(project_dir: Path, name: str, content: str) -> None:
     write_md(planning_path(project_dir, name), content)
 
 
-# ── 章节文件 ──
+# ── 章节文件（正文用 .txt，细纲用 .md） ──
 
-_CHAPTER_RE = re.compile(r"^(\d+)_(.+)\.md$")
+_CHAPTER_RE = re.compile(r"^(\d+)_(.+)\.txt$")
 _CHAPTER_OUTLINE_RE = re.compile(r"^(\d+)_(.+)\.outline\.md$")
 
 
 def chapter_filename(number: int, title: str) -> str:
     safe_title = title or "未命名"
-    return f"{number}_{safe_title}.md"
+    return f"{number}_{safe_title}.txt"
 
 
 def chapter_outline_filename(number: int, title: str) -> str:
