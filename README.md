@@ -24,6 +24,34 @@ python -m novel_writer
 
 支持自定义 Agent，可配置专属模型、技能范围和系统提示词。
 
+## 项目目录结构
+
+每个小说项目独立存储为一个目录：
+
+```
+data/projects/{project_name}/
+├── meta.json                    # 项目元信息（标题、题材、风格、目标字数）
+├── planning/                    # 规划文档
+│   ├── 立意.md                  # 核心立意、卖点、目标读者
+│   ├── 大纲.md                  # 总纲/卷纲/章纲
+│   ├── 人物设定.md              # 主要人物档案
+│   ├── 世界观.md                # 世界观/设定体系
+│   ├── 时间线.md                # 故事时间轴
+│   ├── 主线.md                  # 主线剧情脉络
+│   ├── 支线.md                  # 支线剧情
+│   └── 伏笔.md                  # 伏笔埋设/回收记录
+├── chapters/                    # 章节正文
+│   ├── 001_章节名.md            # 第1章正文
+│   ├── 001_章节名.outline.md    # 第1章细纲（可选）
+│   └── ...
+├── inspiration/                 # 灵感记录
+│   └── 001_主题.md
+├── review/                      # 审校产出
+│   ├── 审核报告.md
+│   └── 校对报告.md
+└── workflow.json                # 工作流进度（断点恢复用）
+```
+
 ## 界面
 
 ```
@@ -82,14 +110,15 @@ python -m novel_writer
 
 ## 数据存储
 
-所有数据存储在项目内 `data/` 目录：
-
 | 文件 | 说明 |
 |------|------|
 | `data/config.json` | 全局配置（主题、语言、模型、智能体） |
 | `data/chat.db` | 聊天记录（SQLite） |
-| `data/projects/*.json` | 小说项目数据 |
+| `data/projects/*/` | 小说项目目录 |
+| `config/agents.json` | 智能体配置 |
+| `config/default_agents.json` | 智能体默认配置（重置用） |
 
 ## 更多
 
 - [开发指南 (DEV_GUIDE.md)](DEV_GUIDE.md) — 技术架构、项目结构
+- [工作流设计 (docs/workflow_design.md)](docs/workflow_design.md) — 自动写作流程设计

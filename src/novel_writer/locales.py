@@ -128,6 +128,7 @@ STRINGS = {
     "settings_btn_add": {"zh": "添加", "en": "Add"},
     "settings_btn_delete": {"zh": "删除", "en": "Delete"},
     "settings_btn_open": {"zh": "打开", "en": "Open"},
+    "settings_btn_reset": {"zh": "重置默认", "en": "Reset Default"},
 
     # ── 对话框 ──
     "chapter_first": {"zh": "第一章", "en": "Chapter 1"},
@@ -157,6 +158,7 @@ STRINGS = {
     "msg_no_projects_saved": {"zh": "暂无已保存的项目", "en": "No saved projects"},
     "msg_agent_not_init": {"zh": "智能体 '{}' 未初始化，请先在设置中配置模型。", "en": "Agent '{}' not initialized. Please configure model in settings."},
     "msg_delete_project": {"zh": "确定删除项目 '{}'？\n此操作不可撤销。", "en": "Delete project '{}'?\nThis cannot be undone."},
+    "msg_reset_agents": {"zh": "确定重置所有智能体为默认配置？\n自定义智能体将被覆盖。", "en": "Reset all agents to default?\nCustom agents will be overwritten."},
     "msg_builtin_no_delete": {"zh": "内置智能体不能删除", "en": "Built-in agents cannot be deleted"},
     "msg_delete_agent": {"zh": "删除 '{}'？", "en": "Delete '{}'?"},
     "msg_agent_exists": {"zh": "'{}' 已存在", "en": "'{}' already exists"},

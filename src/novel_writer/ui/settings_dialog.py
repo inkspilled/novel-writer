@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor
 
 from .styles import THEMES, get_theme_colors
 from ..locales import t, get_languages
-from ..core.agents import load_agents, save_agents
+from ..core.agents import load_agents, save_agents, reset_agents
 from pathlib import Path
 import json
 
@@ -685,8 +685,11 @@ class AgentDialog(QDialog):
         self._btn_del = QPushButton(t("settings_btn_delete"))
         self._btn_del.setObjectName("danger")
         self._btn_del.clicked.connect(self._del_agent)
+        self._btn_reset = QPushButton(t("settings_btn_reset"))
+        self._btn_reset.clicked.connect(self._reset_agents)
         btn_row.addWidget(self._btn_add)
         btn_row.addWidget(self._btn_del)
+        btn_row.addWidget(self._btn_reset)
         left_layout.addLayout(btn_row)
         body.addWidget(left, 1)
 
@@ -824,6 +827,14 @@ class AgentDialog(QDialog):
                                 t("msg_delete_agent", name)) == QMessageBox.StandardButton.Yes:
             del self._agents[name]
             self._refresh_agent_list()
+
+    def _reset_agents(self):
+        if QMessageBox.question(self, t("dialog_confirm"),
+                                t("msg_reset_agents")) == QMessageBox.StandardButton.Yes:
+            self._agents = reset_agents()
+            self._refresh_agent_list()
+            if self.agent_list.count() > 0:
+                self.agent_list.setCurrentRow(0)
 
     def _load_config(self):
         self._refresh_agent_list()

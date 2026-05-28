@@ -24,13 +24,14 @@ from ..models.character import Character
 from ..core.llm import LLMClient
 from ..core.agents import load_agents
 from ..core.agents.base import BaseAgent, AgentConfig
+from ..core import project_io
 
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
 PROJECTS_DIR = DATA_DIR / "projects"
 ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-PROJECT_ROOT = ASSETS_DIR.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 class AgentWorker(QThread):
@@ -283,9 +284,16 @@ class MainWindow(QMainWindow):
             self._save_project()
         title, ok = QInputDialog.getText(self, t("dialog_new_project"), t("dialog_novel_title"))
         if ok and title:
+            # 创建项目目录
+            safe_name = title.replace(" ", "_").replace("/", "_")
+            project_dir = PROJECTS_DIR / safe_name
+            project_dir.mkdir(parents=True, exist_ok=True)
+
             self.project = Project(title=title)
+            self.project.set_project_dir(project_dir)
+            project_io.init_project_dir(project_dir)
             self.project.add_chapter(t("chapter_first"))
-            self._save_project()
+            self.project.save()
             self.sidebar.set_project_title(title)
             self.sidebar.load_chapters(self.project.chapters)
             self.sidebar.update_stats(0, self.project.target_words, len(self.project.chapters))
@@ -298,8 +306,8 @@ class MainWindow(QMainWindow):
         if self.project.title:
             self._save_project()
         PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-        project_files = sorted(PROJECTS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
-        if not project_files:
+        projects_info = project_io.list_projects(PROJECTS_DIR)
+        if not projects_info:
             QMessageBox.information(self, t("dialog_prompt"), t("msg_no_projects_saved"))
             return
 
@@ -310,17 +318,11 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel(t("dialog_select_project")))
         project_list = QListWidget()
-        for f in project_files:
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                title = data.get("title", f.stem)
-                ch_count = len(data.get("chapters", []))
-                words = sum(len(ch.get("content", "")) for ch in data.get("chapters", []))
-                item = QListWidgetItem(f"{title}  ({ch_count} {t('sidebar_chapters')} · {words:,} {t('editor_words')})")
-                item.setData(Qt.ItemDataRole.UserRole, str(f))
-                project_list.addItem(item)
-            except Exception:
-                continue
+        for info in projects_info:
+            item = QListWidgetItem(
+                f"{info['title']}  ({info['chapter_count']} {t('sidebar_chapters')} · {info['total_words']:,} {t('editor_words')})")
+            item.setData(Qt.ItemDataRole.UserRole, str(info["dir"]))
+            project_list.addItem(item)
         if project_list.count() > 0:
             project_list.setCurrentRow(0)
         layout.addWidget(project_list)
@@ -341,7 +343,7 @@ class MainWindow(QMainWindow):
             item = project_list.currentItem()
             if item:
                 path = Path(item.data(Qt.ItemDataRole.UserRole))
-                self._load_project_from_file(path)
+                self._load_project_from_dir(path)
                 dialog.accept()
 
         def do_delete():
@@ -351,7 +353,7 @@ class MainWindow(QMainWindow):
             path = Path(item.data(Qt.ItemDataRole.UserRole))
             title = item.text().split("  (")[0]
             if QMessageBox.question(dialog, t("dialog_confirm_delete"), t("msg_delete_project", title)) == QMessageBox.StandardButton.Yes:
-                path.unlink(missing_ok=True)
+                project_io.delete_project(path)
                 row = project_list.row(item)
                 project_list.takeItem(row)
 
@@ -362,44 +364,10 @@ class MainWindow(QMainWindow):
 
         dialog.exec()
 
-    def _load_project_from_file(self, path: Path):
-        """从 JSON 文件加载项目。"""
+    def _load_project_from_dir(self, path: Path):
+        """从项目目录加载项目。"""
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            self.project = Project(
-                id=data.get("id", ""),
-                title=data.get("title", ""),
-                genre=data.get("genre", ""),
-                style=data.get("style", ""),
-                theme=data.get("theme", ""),
-                target_words=data.get("target_words", 200000),
-                synopsis=data.get("synopsis", ""),
-                world_setting=data.get("world_setting", ""),
-            )
-            for ch_data in data.get("chapters", []):
-                status_str = ch_data.get("status", "outlined")
-                try:
-                    status = ChapterStatus(status_str)
-                except ValueError:
-                    status = ChapterStatus.OUTLINED
-                ch = Chapter(
-                    id=ch_data.get("id", ""),
-                    number=ch_data.get("number", 0),
-                    title=ch_data.get("title", ""),
-                    outline=ch_data.get("outline", ""),
-                    content=ch_data.get("content", ""),
-                    notes=ch_data.get("notes", ""),
-                    status=status,
-                )
-                self.project.chapters.append(ch)
-            for char_data in data.get("characters", []):
-                char = Character(
-                    id=char_data.get("id", ""),
-                    name=char_data.get("name", ""),
-                    personality=char_data.get("personality", ""),
-                    background=char_data.get("background", ""),
-                )
-                self.project.characters.append(char)
+            self.project = Project.load(path)
             self.sidebar.set_project_title(self.project.title)
             self.sidebar.load_chapters(self.project.chapters)
             self.sidebar.update_stats(
@@ -419,6 +387,7 @@ class MainWindow(QMainWindow):
         title, ok = QInputDialog.getText(self, t("dialog_add_chapter"), t("dialog_chapter_title"))
         if ok:
             self.project.add_chapter(title)
+            self.project.save()
             self.sidebar.load_chapters(self.project.chapters)
             self.sidebar.update_stats(
                 self.project.total_words(),
@@ -598,38 +567,14 @@ class MainWindow(QMainWindow):
     def _save_project(self):
         if not self.project.title:
             return
-        PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-        path = PROJECTS_DIR / f"{self.project.id}.json"
-        data = {
-            "id": self.project.id,
-            "title": self.project.title,
-            "genre": self.project.genre,
-            "style": self.project.style,
-            "theme": self.project.theme,
-            "target_words": self.project.target_words,
-            "synopsis": self.project.synopsis,
-            "world_setting": self.project.world_setting,
-            "chapters": [
-                {
-                    "id": ch.id, "number": ch.number, "title": ch.title,
-                    "outline": ch.outline, "content": ch.content, "notes": ch.notes,
-                    "status": ch.status.value if hasattr(ch.status, 'value') else ch.status,
-                    "review_comments": ch.review_comments, "proofread_notes": ch.proofread_notes,
-                }
-                for ch in self.project.chapters
-            ],
-            "characters": [
-                {
-                    "id": c.id, "name": c.name, "aliases": c.aliases,
-                    "gender": c.gender, "age": c.age, "personality": c.personality,
-                    "background": c.background, "appearance": c.appearance,
-                    "relationships": c.relationships, "arc": c.arc, "notes": c.notes,
-                }
-                for c in self.project.characters
-            ],
-        }
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        self.statusBar().showMessage(t("status_saved", str(path)))
+        # 如果还没有项目目录（兼容旧流程），创建一个
+        if not self.project.project_dir:
+            safe_name = self.project.title.replace(" ", "_").replace("/", "_")
+            project_dir = PROJECTS_DIR / safe_name
+            project_dir.mkdir(parents=True, exist_ok=True)
+            self.project.set_project_dir(project_dir)
+        self.project.save()
+        self.statusBar().showMessage(t("status_saved", str(self.project.project_dir)))
 
     def closeEvent(self, event):
         self._stop_worker()
