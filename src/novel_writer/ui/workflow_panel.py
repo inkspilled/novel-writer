@@ -109,13 +109,13 @@ class StepCard(QFrame):
 
 class WorkflowThread(QThread):
     """后台线程执行工作流。"""
-    step_started = Signal(str, int, str)   # step_id, n, agent_title
-    step_finished = Signal(str, int, str)  # step_id, n, agent_title
-    step_error = Signal(str, str)          # step_id, error_msg
-    progress_updated = Signal(dict)        # progress dict
-    log_message = Signal(str)              # 日志消息
-    workflow_done = Signal()               # 全部完成
-    workflow_stopped = Signal()            # 被停止
+    step_started = Signal(str, int, str)        # step_id, n, agent_title
+    step_finished = Signal(str, int, str, str)  # step_id, n, agent_title, response
+    step_error = Signal(str, str)               # step_id, error_msg
+    progress_updated = Signal(dict)             # progress dict
+    log_message = Signal(str)                   # 日志消息
+    workflow_done = Signal()                    # 全部完成
+    workflow_stopped = Signal()                 # 被停止
 
     def __init__(self, runner, workflow, progress, parent=None):
         super().__init__(parent)
@@ -128,12 +128,12 @@ class WorkflowThread(QThread):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
-        # 设置回调
         self.runner.on_step_start = self._on_step_start
         self.runner.on_step_end = self._on_step_end
         self.runner.on_error = self._on_error
 
         try:
+            self.log_message.emit("工作流开始执行...")
             result = self._loop.run_until_complete(
                 self.runner.run(self.workflow, self.progress)
             )
@@ -143,18 +143,19 @@ class WorkflowThread(QThread):
             else:
                 self.workflow_done.emit()
         except Exception as e:
-            self.log_message.emit(f"Error: {e}")
+            import traceback
+            self.log_message.emit(f"错误: {e}\n{traceback.format_exc()}")
             self.workflow_stopped.emit()
         finally:
             self._loop.close()
 
     def _on_step_start(self, step_id, n, agent_title):
         self.step_started.emit(step_id, n, agent_title)
-        self.log_message.emit(f"▸ {step_id} (#{n}) - {agent_title}")
+        self.log_message.emit(f"▸ {agent_title} 开始 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
 
     def _on_step_end(self, step_id, n, agent_title, output):
-        self.step_finished.emit(step_id, n, agent_title)
-        self.log_message.emit(f"✓ {step_id} (#{n}) 完成")
+        self.step_finished.emit(step_id, n, agent_title, output)
+        self.log_message.emit(f"✓ {agent_title} 完成 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
         self.progress_updated.emit(self.progress)
 
     def _on_error(self, step_id, error):

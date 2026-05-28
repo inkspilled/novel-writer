@@ -502,8 +502,33 @@ def build_workflow(
     elif mode == WorkflowMode.VALIDATE:
         data = json.loads(json.dumps(VALIDATE_WORKFLOW))
     elif mode == WorkflowMode.FILL_GAPS:
-        # 查漏补缺：扫描缺失章节，只为缺失的部分生成写作步骤
-        data = {"name": "查漏补缺", "description": "检查并补写缺失章节", "steps": []}
+        # 查漏补缺：扫描缺失或空章节，生成写作步骤
+        from . import project_io as _pio
+        chapters_dir = _pio.PLANNING_DIR  # just to import
+        existing = {}
+        if project_info.get("_project_dir"):
+            from pathlib import Path
+            ch_dir = Path(project_info["_project_dir"]) / _pio.CHAPTERS_DIR
+            if ch_dir.exists():
+                for f in ch_dir.iterdir():
+                    m = _pio._CHAPTER_RE.match(f.name)
+                    if m:
+                        num = int(m.group(1))
+                        # 空文件也算缺失
+                        existing[num] = f.stat().st_size > 0
+        # 找出缺失或空的章节
+        gap_steps = []
+        for n in range(start_chapter, end_chapter + 1):
+            if n not in existing or not existing[n]:
+                gap_steps.append(n)
+        data = {"name": "查漏补缺", "description": f"补写 {len(gap_steps)} 个缺失章节", "steps": [
+            {"id": "chapter", "needs": "正文写作",
+             "prompt": "根据大纲和前文写第{n}章正文。保持与前文连贯，注意人物性格一致。",
+             "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"],
+             "output": "chapters/{n}_chapter.txt", "repeat": end_chapter},
+        ]}
+        # 标记缺失章节
+        data["_gaps"] = gap_steps
     else:
         data = json.loads(json.dumps(DEFAULT_WORKFLOW))
 
