@@ -8,9 +8,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict, field
+import re
+from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
 
 ANTI_PATTERNS_FILE = "anti_patterns.json"
 
@@ -71,7 +71,6 @@ class AntiPatternTracker:
 
     def add_from_review(self, review_text: str, chapter: int):
         """从审稿报告中提取 AI 味问题并记录。"""
-        import re
         # 提取 ai_flavor 相关的问题
         lines = review_text.split("\n")
         current_issue = ""

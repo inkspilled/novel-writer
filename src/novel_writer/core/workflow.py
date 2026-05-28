@@ -10,13 +10,14 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import AsyncIterator, Callable
+from typing import Callable
 
+from . import project_io
 from .agents.base import BaseAgent
 from .llm.base import BaseLLM, LLMMessage
 
@@ -28,7 +29,6 @@ class WorkflowMode(Enum):
     CONTINUE = "continue"           # 续写：从已有章节继续
     FILL_GAPS = "fill_gaps"         # 查漏补缺：检查缺失章节并补写
     VALIDATE = "validate"           # 校验：审核+校对已有章节
-from . import project_io
 
 
 @dataclass
@@ -405,112 +405,8 @@ class WorkflowRunner:
         project_io.save_workflow(self.project_dir, {"progress": progress})
 
 
-# ── LLM 动态编排 ──
-
-ORCHESTRATOR_SYSTEM_PROMPT = """你是一个小说写作工作流编排器。根据用户提供的项目信息和可用智能体的技能列表，生成一个最优的工作流步骤定义。
-
-输出格式为 JSON，结构如下：
-{
-  "name": "工作流名称",
-  "description": "简要描述",
-  "steps": [
-    {
-      "id": "步骤英文标识",
-      "needs": "需要的技能名称（必须与智能体的某个 skill 完全匹配）",
-      "prompt": "给智能体的指令模板，支持 {title} {genre} {style} {n} 等变量",
-      "input": ["输入文件路径，如 planning/大纲.md，prev_chapters 为特殊变量"],
-      "output": "输出文件路径，如 planning/大纲.md，{n} 为章节序号占位",
-      "repeat": 0,
-      "every": 0,
-      "optional": false
-    }
-  ]
-}
-
-规则：
-1. 步骤的 needs 必须与智能体的 skill 完全匹配（区分大小写）
-2. 每个步骤的 output 路径应合理（planning/ 用于规划文件，chapters/ 用于章节）
-3. 章节写作步骤使用 repeat 设置章节数，配合 {n} 占位
-4. 灵感注入等辅助步骤使用 every 设置频率，optional 设为 true
-5. 步骤顺序要合理：先规划后写作，先写后审
-6. 只输出 JSON，不要有任何额外解释"""
-
-
-async def generate_workflow(
-    agents: dict[str, BaseAgent],
-    project_info: dict,
-    llm: BaseLLM,
-    target_chapters: int = 20,
-) -> WorkflowDef:
-    """让 LLM 根据可用智能体动态生成工作流。
-
-    Args:
-        agents: 可用的智能体字典
-        project_info: 项目信息 (title, genre, style, theme 等)
-        llm: 用于生成工作流的 LLM 实例
-        target_chapters: 目标章节数
-
-    Returns:
-        WorkflowDef 生成的工作流定义
-    """
-    # 构建技能列表
-    skills_info = []
-    for name, agent in agents.items():
-        skills_info.append({
-            "name": name,
-            "title": agent.title,
-            "skills": agent.config.skills,
-        })
-
-    user_prompt = f"""项目信息：
-- 书名：{project_info.get('title', '未命名')}
-- 题材：{project_info.get('genre', '未定')}
-- 风格：{project_info.get('style', '未定')}
-- 主题：{project_info.get('theme', '')}
-- 目标章节数：{target_chapters}
-
-可用智能体及其技能：
-{json.dumps(skills_info, ensure_ascii=False, indent=2)}
-
-请根据以上信息生成最优的工作流步骤定义 JSON。"""
-
-    messages = [
-        LLMMessage(role="system", content=ORCHESTRATOR_SYSTEM_PROMPT),
-        LLMMessage(role="user", content=user_prompt),
-    ]
-
-    response = await llm.chat(messages, temperature=0.3, max_tokens=4096)
-
-    # 解析 JSON
-    text = response.content.strip()
-    # 尝试提取 JSON（兼容 markdown 代码块）
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0].strip()
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0].strip()
-
-    data = json.loads(text)
-
-    # 注入项目信息和章节数
-    if "project" not in data:
-        data["project"] = {
-            "title": project_info.get("title", ""),
-            "genre": project_info.get("genre", ""),
-            "style": project_info.get("style", ""),
-            "target_chapters": target_chapters,
-        }
-
-    # 修正 repeat 字段：章节写作步骤设置正确的章节数
-    for step in data.get("steps", []):
-        if step.get("repeat", 0) > 0 and step.get("needs") == "正文写作":
-            step["repeat"] = target_chapters
-
-    return WorkflowDef.from_dict(data)
-
-
 def _extract_chapter_title(content: str, n: int) -> str:
     """从章节正文中提取标题（第一个 Markdown 标题）。"""
-    import re
     for line in content.split("\n"):
         line = line.strip()
         m = re.match(r"^#{1,3}\s+(.+)$", line)
@@ -525,7 +421,6 @@ def _extract_chapter_title(content: str, n: int) -> str:
 
 def _extract_chapter_query(outline: str, n: int) -> str:
     """从大纲中提取第 n 章的描述作为 RAG 查询。"""
-    import re
     lines = outline.split("\n")
     capture = False
     query_lines = []
@@ -544,7 +439,6 @@ def _extract_chapter_query(outline: str, n: int) -> str:
 
 def _sediment_chapter(project_dir, chapter: int, content: str):
     """写后沉淀：从章节正文中提取记忆项 + 追读力分析。"""
-    import re
     from .memory import MemoryScratchpad, MemoryItem
 
     mem = MemoryScratchpad(project_dir)
@@ -622,7 +516,6 @@ def _sediment_chapter(project_dir, chapter: int, content: str):
 
 def _build_character_constraint(char_content: str) -> str:
     """从人物设定内容中提取角色信息，生成写作约束指令。"""
-    import re
 
     lines = char_content.split("\n")
     characters = []

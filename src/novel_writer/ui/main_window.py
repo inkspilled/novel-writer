@@ -17,11 +17,9 @@ from .editor_panel import EditorPanel
 from .agent_panel import AgentPanel
 from .workflow_panel import WorkflowThread
 from .settings_dialog import AppearanceDialog, ModelDialog, AgentDialog
-from .styles import build_style, get_theme_colors
+from .styles import build_style
 from ..locales import t, set_language
 from ..models.project import Project
-from ..models.chapter import Chapter, ChapterStatus
-from ..models.character import Character
 from ..core.llm import LLMClient
 from ..core.agents import load_agents
 from ..core.agents.base import BaseAgent, AgentConfig

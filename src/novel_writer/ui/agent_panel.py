@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QScrollArea, QFrame, QSizePolicy, QApplication,
+    QTextEdit, QScrollArea, QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QKeyEvent
@@ -15,8 +14,6 @@ from PySide6.QtGui import QKeyEvent
 from .agent_animation import AgentIndicator
 from ..locales import t
 from .styles import get_theme_colors
-
-CHAT_DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "chat.db"
 
 # 默认颜色池
 COLOR_POOL = ["#ff6b8a", "#51cf66", "#4da6ff", "#ffd43b", "#cc5de8", "#ff922b",

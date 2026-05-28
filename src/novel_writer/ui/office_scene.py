@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QTimer, Signal, QPointF, QRectF
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QRadialGradient
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRadialGradient
 
 
 class AgentState(Enum):

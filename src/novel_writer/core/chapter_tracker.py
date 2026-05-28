@@ -73,9 +73,6 @@ def track_emotions(mem: MemoryScratchpad, chapter: int, content: str):
         "愧疚": ["愧疚", "自责", "内疚", "后悔", "懊悔"],
     }
 
-    # 提取对话标记中的人名
-    speaker_pattern = r"[「""](\w{2,6})[说道喊叫回应答]"
-
     for emotion, keywords in emotion_keywords.items():
         for kw in keywords:
             if kw in content:

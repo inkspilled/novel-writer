@@ -401,5 +401,3 @@ QWidget#sidebarWidget {{
     border-right: 1px solid {t['divider']};
 }}
 """
-
-MAIN_STYLE = build_style("dark")

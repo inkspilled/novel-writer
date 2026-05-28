@@ -44,9 +44,8 @@ class Project:
         ch_title = title or f"第{number}章"
         ch = Chapter(number=number, title=ch_title)
         if self._project_dir:
-            from ..core.project_io import chapter_path, chapter_outline_path, chapter_filename, chapter_outline_filename
-            ch._content_path = str(chapter_path(self._project_dir, number, ch_title))
-            ch._outline_path = str(chapter_outline_path(self._project_dir, number, ch_title))
+            ch._content_path = str(project_io.chapter_path(self._project_dir, number, ch_title))
+            ch._outline_path = str(project_io.chapter_outline_path(self._project_dir, number, ch_title))
             # 创建空文件
             project_io.write_md(Path(ch._content_path), "")
         self.chapters.append(ch)

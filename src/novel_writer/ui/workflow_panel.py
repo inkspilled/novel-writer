@@ -2,18 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QScrollArea, QFrame, QProgressBar, QSizePolicy, QTextEdit,
-    QSplitter, QMessageBox,
+    QScrollArea, QFrame, QProgressBar, QTextEdit,
+    QMessageBox,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QThread
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, Signal, QThread
 
 from ..locales import t
-from .styles import get_theme_colors
 
 
 # ── 步骤状态枚举 ──

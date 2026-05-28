@@ -10,7 +10,6 @@
 """
 from __future__ import annotations
 
-import json
 import math
 import re
 from collections import Counter, defaultdict
@@ -131,8 +130,7 @@ class RAGRetriever:
         for ch_file in sorted(chapters_dir.glob("*.txt")):
             if ch_file.name.endswith(".outline.md"):
                 continue
-            import re as _re
-            m = _re.match(r"^(\d+)_", ch_file.name)
+            m = re.match(r"^(\d+)_", ch_file.name)
             if not m:
                 continue
             ch_num = int(m.group(1))

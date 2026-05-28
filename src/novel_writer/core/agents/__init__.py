@@ -37,12 +37,4 @@ def reset_agents() -> dict:
     return load_agents()
 
 
-def has_default_agents() -> bool:
-    """是否存在默认智能体备份。"""
-    return DEFAULT_AGENTS_PATH.exists()
-
-
-# 兼容旧名
-load_default_agents = load_agents
-
-__all__ = ["AgentConfig", "BaseAgent", "load_agents", "save_agents", "reset_agents", "load_default_agents"]
+__all__ = ["AgentConfig", "BaseAgent", "load_agents", "save_agents", "reset_agents"]

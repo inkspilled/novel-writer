@@ -3,32 +3,28 @@
 目录结构:
     {project_dir}/
     ├── meta.json
+    ├── cover.png
+    ├── memory.json          # 记忆暂存器（11桶）
+    ├── anti_patterns.json   # 反模式追踪
+    ├── reading_power.json   # 追读力数据
+    ├── rag_index.json       # BM25 检索索引
+    ├── workflow.json
     ├── planning/
     │   ├── 立意.md
     │   ├── 大纲.md
     │   ├── 人物设定.md
-    │   ├── 世界观.md
-    │   ├── 时间线.md
-    │   ├── 主线.md
-    │   ├── 支线.md
-    │   └── 伏笔.md
-    ├── chapters/
-    │   ├── 001_章节名.md
-    │   ├── 001_章节名.outline.md
     │   └── ...
+    ├── chapters/
+    ├── summary/             # 结构化剧情摘要
     ├── inspiration/
-    │   └── 001_主题.md
     ├── review/
-    │   ├── 审核报告.md
-    │   └── 校对报告.md
-    └── workflow.json
+    └── sim_cache/           # 角色推演缓存
 """
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import Any
 
 
 # ── 固定目录名 ──

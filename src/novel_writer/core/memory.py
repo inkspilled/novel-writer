@@ -1,6 +1,6 @@
 """记忆暂存器 — 跨章事实的结构化长期存储。
 
-7 个桶：
+11 个桶：
 - character_state: 角色状态（等级/位置/伤势/情绪）
 - story_facts: 剧情事实（关键事件/转折）
 - world_rules: 世界规则（已揭示的力量体系/禁忌）
@@ -8,6 +8,10 @@
 - open_loops: 未解伏笔/悬念
 - reader_promises: 对读者的承诺（待兑现的期待）
 - relationships: 人物关系变化
+- resources: 资源账本（物品获得/失去）
+- emotional_arcs: 情感弧线（角色情绪变化追踪）
+- info_boundary: 信息边界（谁知道什么/谁不知道什么）
+- subplots: 支线进度（感情线/复仇线/成长线等）
 
 同键去重：新值覆盖旧值（旧值标记 outdated 保留审计）。
 """
@@ -17,7 +21,6 @@ import hashlib
 import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional
 
 MEMORY_FILE = "memory.json"
 
