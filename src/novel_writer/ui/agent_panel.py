@@ -789,49 +789,50 @@ class AgentPanel(QWidget):
     # ── 工作流联动 ──
 
     def on_workflow_step_started(self, step_id: str, n: int, agent_title: str):
-        """工作流步骤开始 — 更新办公室场景中对应 Agent 状态。"""
-        # 根据 agent_title 找到对应的 agent name
+        """工作流步骤开始。"""
         agent_name = self._find_agent_by_title(agent_title)
         if agent_name:
             from .office_scene import AgentState
-            self.office.set_agent_state(agent_name, AgentState.WORKING)
+            desc = f"{step_id} #{n}" if n > 1 else step_id
+            self.office.set_agent_state(agent_name, AgentState.WORKING, task_desc=desc)
             self._on_agent_selected(agent_name)
             self.workflow_bar.set_current_step(step_id, agent_title, n, 0)
+            self.workflow_bar.append_log(f"▸ <b>{agent_title}</b> 开始 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
 
     def on_workflow_step_finished(self, step_id: str, n: int, agent_title: str):
-        """工作流步骤完成 — Agent 庆祝后回到空闲。"""
+        """工作流步骤完成。"""
         agent_name = self._find_agent_by_title(agent_title)
         if agent_name:
             from .office_scene import AgentState
             self.office.set_agent_state(agent_name, AgentState.DONE)
+            self.workflow_bar.append_log(f"✓ <b>{agent_title}</b> 完成 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
 
     def on_workflow_step_error(self, step_id: str, error: str):
         """工作流步骤出错。"""
         from .office_scene import AgentState
-        # 当前正在工作的 Agent 变为 error
         for slot in self.office._slots:
             if slot.state == AgentState.WORKING:
                 self.office.set_agent_state(slot.name, AgentState.ERROR)
+                self.workflow_bar.append_log(f"✗ <b>{slot.title}</b> 出错: {error[:80]}")
                 break
 
     def on_workflow_progress(self, percent: int, step_text: str = ""):
-        """更新工作流进度条。"""
         self.workflow_bar.set_progress(percent, step_text)
 
     def on_workflow_started(self):
-        """工作流开始 — 全员就位。"""
         from .office_scene import AgentState
         for slot in self.office._slots:
             if slot.state != AgentState.WORKING:
                 self.office.set_agent_state(slot.name, AgentState.WAITING)
         self.workflow_bar.set_running(True)
+        self.workflow_bar.append_log("── 工作流开始 ──")
 
     def on_workflow_finished(self):
-        """工作流完成 — 全员庆祝后回到空闲。"""
         from .office_scene import AgentState
         for slot in self.office._slots:
             self.office.set_agent_state(slot.name, AgentState.DONE)
         self.workflow_bar.set_running(False)
+        self.workflow_bar.append_log("── <b>工作流完成！</b> ──")
 
     def _find_agent_by_title(self, title: str) -> str:
         """根据 agent 中文标题找到配置名。"""
