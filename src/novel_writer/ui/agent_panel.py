@@ -273,6 +273,7 @@ class AgentPanel(QWidget):
         self._stream_agent: str = ""
         self._pending_streams: dict[str, tuple] = {}
         self._quick_buttons: list[QPushButton] = []
+        self._db_path: Path | None = None  # 项目级数据库路径
         self._setup_ui()
 
     def _setup_ui(self):
@@ -280,48 +281,38 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Header ──
+        # ── 办公室场景（顶部） ──
+        from .office_scene import OfficeScene
+        self.office = OfficeScene()
+        self.office.agent_clicked.connect(self._on_office_agent_clicked)
+        layout.addWidget(self.office)
+
+        # ── 工作流迷你进度条 ──
+        from .workflow_bar import WorkflowMiniBar
+        self.workflow_bar = WorkflowMiniBar()
+        layout.addWidget(self.workflow_bar)
+
+        # ── Agent 信息行 ──
         header = QWidget()
         header.setObjectName("agentHeader")
-        self.header_layout = QVBoxLayout(header)
-        self.header_layout.setContentsMargins(16, 14, 16, 10)
-        self.header_layout.setSpacing(10)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 8, 12, 8)
+        header_layout.setSpacing(8)
 
-        self._title_label = QLabel(t("agent_workbench"))
-        self._title_label.setStyleSheet("font-size: 15px; font-weight: 700; letter-spacing: -0.3px;")
-        self.header_layout.addWidget(self._title_label)
-
-        # Agent 按钮行（横向滚动）
-        btn_scroll = QScrollArea()
-        btn_scroll.setWidgetResizable(True)
-        btn_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        btn_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        btn_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        btn_scroll.setMaximumHeight(60)
-        self.agent_btn_container = QWidget()
-        self.agent_btn_layout = QHBoxLayout(self.agent_btn_container)
-        self.agent_btn_layout.setSpacing(8)
-        self.agent_btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_scroll.setWidget(self.agent_btn_container)
-        self.header_layout.addWidget(btn_scroll)
-
-        # Agent 信息行
-        info_row = QHBoxLayout()
-        info_row.setSpacing(10)
         self.indicator = AgentIndicator()
-        info_row.addWidget(self.indicator)
+        header_layout.addWidget(self.indicator)
         self.agent_name_label = QLabel(t("agent_select"))
         self.agent_name_label.setWordWrap(True)
-        self.agent_name_label.setStyleSheet("font-size: 14px; font-weight: 600;")
-        info_row.addWidget(self.agent_name_label)
-        info_row.addStretch()
+        self.agent_name_label.setStyleSheet("font-size: 13px; font-weight: 600;")
+        header_layout.addWidget(self.agent_name_label)
+        header_layout.addStretch()
 
         self.btn_clear = QPushButton("\U0001f5d1️")
-        self.btn_clear.setFixedSize(30, 30)
+        self.btn_clear.setFixedSize(26, 26)
         self.btn_clear.setToolTip(t("agent_clear_chat"))
         self.btn_clear.setStyleSheet("""
             QPushButton {
-                border-radius: 6px; font-size: 16px;
+                border-radius: 6px; font-size: 14px;
                 border: 1px solid rgba(255,255,255,0.1);
                 padding: 0;
             }
@@ -331,15 +322,13 @@ class AgentPanel(QWidget):
             }
         """)
         self.btn_clear.clicked.connect(self._clear_current_chat)
-        info_row.addWidget(self.btn_clear)
-        self.header_layout.addLayout(info_row)
-
+        header_layout.addWidget(self.btn_clear)
         layout.addWidget(header)
 
         # ── 快捷操作栏 ──
         self._quick_bar = QWidget()
         self._quick_bar_layout = QHBoxLayout(self._quick_bar)
-        self._quick_bar_layout.setContentsMargins(12, 6, 12, 6)
+        self._quick_bar_layout.setContentsMargins(12, 4, 12, 4)
         self._quick_bar_layout.setSpacing(6)
         self._quick_bar_layout.addStretch()
         self._quick_bar.setVisible(False)
@@ -367,8 +356,8 @@ class AgentPanel(QWidget):
         input_area = QWidget()
         input_area.setObjectName("agentInput")
         input_layout = QVBoxLayout(input_area)
-        input_layout.setContentsMargins(12, 10, 12, 12)
-        input_layout.setSpacing(8)
+        input_layout.setContentsMargins(12, 8, 12, 10)
+        input_layout.setSpacing(6)
 
         self.input_edit = ChatTextEdit()
         self.input_edit.setPlaceholderText(t("agent_ph_input"))
@@ -394,10 +383,6 @@ class AgentPanel(QWidget):
     # ── Agent 按钮管理 ──
 
     def update_agent_buttons(self, agents_cfg: dict):
-        while self.agent_btn_layout.count():
-            item = self.agent_btn_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
         self.agent_buttons.clear()
         self._agents_cfg = agents_cfg
 
@@ -409,28 +394,11 @@ class AgentPanel(QWidget):
             emojis[name] = emoji
             colors[name] = color
 
-            btn = QPushButton(emoji)
-            btn.setFixedSize(48, 48)
-            btn.setToolTip(title)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    border-radius: 24px; font-size: 24px;
-                    border: 2px solid transparent; padding: 0;
-                }}
-                QPushButton:hover {{ border-color: {color}; }}
-                QPushButton:checked {{
-                    border-color: {color};
-                    background-color: rgba(255,255,255,0.06);
-                }}
-            """)
-            btn.setCheckable(True)
-            btn.clicked.connect(lambda checked, n=name: self._on_agent_selected(n))
-            self.agent_btn_layout.addWidget(btn)
-            self.agent_buttons[name] = btn
-
-        self.agent_btn_layout.addStretch()
         AGENT_PANEL_GLOBALS["agent_emojis"] = emojis
         AGENT_PANEL_GLOBALS["agent_colors"] = colors
+
+        # 初始化办公室场景
+        self.office.setup_agents(agents_cfg, colors)
 
     def set_config(self, config: dict):
         """传入应用配置，用于主题感知。"""
@@ -438,13 +406,19 @@ class AgentPanel(QWidget):
 
     # ── Agent 切换 ──
 
+    def _on_office_agent_clicked(self, name: str):
+        """办公室场景中点击了某个 Agent。"""
+        self._on_agent_selected(name)
+
     def _on_agent_selected(self, name: str):
         if self._current_agent and self._current_agent != name:
             self._save_current_chat()
 
         self._current_agent = name
-        for n, btn in self.agent_buttons.items():
-            btn.setChecked(n == name)
+
+        # 更新办公室场景选中态
+        self.office.set_selected(name)
+
         emoji = AGENT_PANEL_GLOBALS["agent_emojis"].get(name, "🤖")
         info = self._agents_cfg.get(name, {})
         title = info.get("title", name)
@@ -692,11 +666,34 @@ class AgentPanel(QWidget):
         self._chat_history.clear()
         self.save_history()
 
+    # ── 项目级数据库管理 ──
+
+    def set_project_db(self, project_dir: Path | None):
+        """切换项目数据库路径。切换前自动保存当前项目的聊天记录。"""
+        if self._db_path and self._chat_history:
+            self.save_history()
+        if project_dir:
+            self._db_path = project_dir / "chat.db"
+        else:
+            self._db_path = None
+        self._chat_history.clear()
+        self._stream_widget = None
+        self._stream_text = ""
+        self._stream_agent = ""
+        self._pending_streams.clear()
+        for msg in self._msg_widgets:
+            msg.deleteLater()
+        self._msg_widgets.clear()
+        if self._db_path:
+            self.load_history()
+
     # ── 聊天记录持久化 (SQLite) ──
 
     def _get_db(self) -> sqlite3.Connection:
-        CHAT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(str(CHAT_DB_PATH))
+        if not self._db_path:
+            raise RuntimeError("未设置项目数据库路径")
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(str(self._db_path))
         db.execute("""CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             agent TEXT NOT NULL,
@@ -708,7 +705,9 @@ class AgentPanel(QWidget):
         return db
 
     def save_history(self):
-        """将当前所有聊天记录写入 SQLite（全量覆盖）。"""
+        """将当前所有聊天记录写入 SQLite（全量覆盖当前项目）。"""
+        if not self._db_path:
+            return
         db = self._get_db()
         try:
             db.execute("DELETE FROM messages")
@@ -722,8 +721,8 @@ class AgentPanel(QWidget):
             db.close()
 
     def load_history(self):
-        """从 SQLite 加载聊天记录。"""
-        if not CHAT_DB_PATH.exists():
+        """从 SQLite 加载当前项目的聊天记录。"""
+        if not self._db_path or not self._db_path.exists():
             return
         db = self._get_db()
         try:
@@ -771,7 +770,7 @@ class AgentPanel(QWidget):
             f"font-size: 11px; color: {fg3};")
         self.btn_clear.setStyleSheet(f"""
             QPushButton {{
-                border-radius: 6px; font-size: 16px;
+                border-radius: 6px; font-size: 14px;
                 border: 1px solid {border};
                 padding: 0;
             }}
@@ -782,15 +781,69 @@ class AgentPanel(QWidget):
         """)
 
         self.indicator.update_theme(colors)
+        self.workflow_bar.apply_theme(colors)
 
         self._apply_quick_style()
         for msg in self._msg_widgets:
             msg.refresh_style()
 
+    # ── 工作流联动 ──
+
+    def on_workflow_step_started(self, step_id: str, n: int, agent_title: str):
+        """工作流步骤开始 — 更新办公室场景中对应 Agent 状态。"""
+        # 根据 agent_title 找到对应的 agent name
+        agent_name = self._find_agent_by_title(agent_title)
+        if agent_name:
+            from .office_scene import AgentState
+            self.office.set_agent_state(agent_name, AgentState.WORKING)
+            self._on_agent_selected(agent_name)
+            self.workflow_bar.set_current_step(step_id, agent_title, n, 0)
+
+    def on_workflow_step_finished(self, step_id: str, n: int, agent_title: str):
+        """工作流步骤完成 — Agent 庆祝后回到空闲。"""
+        agent_name = self._find_agent_by_title(agent_title)
+        if agent_name:
+            from .office_scene import AgentState
+            self.office.set_agent_state(agent_name, AgentState.DONE)
+
+    def on_workflow_step_error(self, step_id: str, error: str):
+        """工作流步骤出错。"""
+        from .office_scene import AgentState
+        # 当前正在工作的 Agent 变为 error
+        for slot in self.office._slots:
+            if slot.state == AgentState.WORKING:
+                self.office.set_agent_state(slot.name, AgentState.ERROR)
+                break
+
+    def on_workflow_progress(self, percent: int, step_text: str = ""):
+        """更新工作流进度条。"""
+        self.workflow_bar.set_progress(percent, step_text)
+
+    def on_workflow_started(self):
+        """工作流开始 — 全员就位。"""
+        from .office_scene import AgentState
+        for slot in self.office._slots:
+            if slot.state != AgentState.WORKING:
+                self.office.set_agent_state(slot.name, AgentState.WAITING)
+        self.workflow_bar.set_running(True)
+
+    def on_workflow_finished(self):
+        """工作流完成 — 全员庆祝后回到空闲。"""
+        from .office_scene import AgentState
+        for slot in self.office._slots:
+            self.office.set_agent_state(slot.name, AgentState.DONE)
+        self.workflow_bar.set_running(False)
+
+    def _find_agent_by_title(self, title: str) -> str:
+        """根据 agent 中文标题找到配置名。"""
+        for name, info in self._agents_cfg.items():
+            if info.get("title", name) == title:
+                return name
+        return ""
+
     # ── 国际化 ──
 
     def retranslate(self):
-        self._title_label.setText(t("agent_workbench"))
         self.agent_name_label.setText(t("agent_select"))
         self.input_edit.setPlaceholderText(t("agent_ph_input"))
         self.btn_run.setText(t("agent_send"))

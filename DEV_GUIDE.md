@@ -52,9 +52,11 @@ novel-writer/
 │       ├── main_window.py          # 主窗口（三栏布局）
 │       ├── sidebar.py              # 侧边栏
 │       ├── editor_panel.py         # 编辑区
-│       ├── agent_panel.py          # Agent 面板（对话、Markdown、SQLite 持久化）
-│       ├── agent_animation.py      # Agent 状态动画
-│       ├── workflow_panel.py       # 工作流进度面板（步骤状态、进度条、执行日志）
+│       ├── agent_panel.py          # 智能体面板（办公室+工作流+对话 整合）
+│       ├── office_scene.py         # 办公室场景（QPainter 绘制，Agent 动画）
+│       ├── workflow_bar.py         # 工作流迷你进度条
+│       ├── workflow_panel.py       # 工作流执行引擎（WorkflowThread）
+│       ├── agent_animation.py      # Agent 状态动画（呼吸灯/旋转环）
 │       └── settings_dialog.py      # 设置对话框（外观/模型/智能体）
 ```
 
@@ -199,9 +201,13 @@ class WorkflowThread(QThread):
 MainWindow
 ├── Sidebar          # 项目管理、章节树、字数统计
 ├── EditorPanel      # 正文/大纲/备注 三 Tab
-├── AgentPanel       # Agent 按钮行、对话、快捷操作、模型信息、SQLite 持久化
-└── WorkflowPanel    # 工作流进度面板（菜单触发的对话框）
+└── AgentPanel       # 整合面板
+    ├── OfficeScene     # 办公室场景（QPainter，Agent 动画）
+    ├── WorkflowMiniBar # 工作流进度条
+    └── ChatArea        # 对话区（Markdown、SQLite 持久化）
 ```
+
+聊天记录按项目隔离：每个项目目录下独立 `chat.db`。
 
 - `AgentWorker(QThread)`：后台线程执行 Agent 调用，信号驱动 UI 更新，支持 asyncio task 取消
 - 流式输出：`chunk_received` 信号逐块更新 Markdown 渲染，按 Agent 隔离（`_stream_agent` + `_pending_streams`），切换不影响

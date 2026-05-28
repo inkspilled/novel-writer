@@ -15,7 +15,7 @@ from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 from .sidebar import Sidebar
 from .editor_panel import EditorPanel
 from .agent_panel import AgentPanel
-from .workflow_panel import WorkflowPanel
+from .workflow_panel import WorkflowThread
 from .settings_dialog import AppearanceDialog, ModelDialog, AgentDialog
 from .styles import build_style, get_theme_colors
 from ..locales import t, set_language
@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         self._setup_menubar_icon()
         self._init_llm()
         self._init_agents()
-        self.agent_panel.load_history()
+        self._setup_workflow()
 
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -192,16 +192,6 @@ class MainWindow(QMainWindow):
         self._manage_action.triggered.connect(self._open_agent_manage)
         self._model_agent_menu.addAction(self._manage_action)
 
-        # 关于
-        self._about_menu = menubar.addMenu(t("menu_about"))
-        self._appearance_action = QAction(t("menu_appearance_open"), self)
-        self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
-        self._appearance_action.triggered.connect(self._open_appearance)
-        self._about_menu.addAction(self._appearance_action)
-        self._about_action = QAction(t("menu_about_app"), self)
-        self._about_action.triggered.connect(self._show_about)
-        self._about_menu.addAction(self._about_action)
-
         # 工作流
         self._workflow_menu = menubar.addMenu(t("workflow_menu"))
         self._workflow_open_action = QAction(t("workflow_menu_open"), self)
@@ -211,6 +201,16 @@ class MainWindow(QMainWindow):
         self._workflow_default_action = QAction(t("workflow_menu_default"), self)
         self._workflow_default_action.triggered.connect(self._load_default_workflow)
         self._workflow_menu.addAction(self._workflow_default_action)
+
+        # 关于
+        self._about_menu = menubar.addMenu(t("menu_about"))
+        self._appearance_action = QAction(t("menu_appearance_open"), self)
+        self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
+        self._appearance_action.triggered.connect(self._open_appearance)
+        self._about_menu.addAction(self._appearance_action)
+        self._about_action = QAction(t("menu_about_app"), self)
+        self._about_action.triggered.connect(self._show_about)
+        self._about_menu.addAction(self._about_action)
 
     def _setup_menubar_icon(self):
         """在状态栏左侧显示应用小图标。"""
@@ -308,6 +308,8 @@ class MainWindow(QMainWindow):
             project_io.init_project_dir(project_dir)
             self.project.add_chapter(t("chapter_first"))
             self.project.save()
+            self.agent_panel.set_project_db(project_dir)
+            self._load_workflow_for_project()
             self.sidebar.set_project_title(title)
             self.sidebar.load_chapters(self.project.chapters)
             self.sidebar.update_stats(0, self.project.target_words, len(self.project.chapters))
@@ -382,6 +384,8 @@ class MainWindow(QMainWindow):
         """从项目目录加载项目。"""
         try:
             self.project = Project.load(path)
+            self.agent_panel.set_project_db(path)
+            self._load_workflow_for_project()
             self.sidebar.set_project_title(self.project.title)
             self.sidebar.load_chapters(self.project.chapters)
             self.sidebar.update_stats(
@@ -600,38 +604,27 @@ class MainWindow(QMainWindow):
 
     # ── 工作流 ──
 
-    def _open_workflow_panel(self):
-        """打开工作流面板对话框。"""
-        if not self.project.title:
-            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
+    def _setup_workflow(self):
+        """初始化工作流：加载定义，连接信号。"""
+        bar = self.agent_panel.workflow_bar
+        bar.start_requested.connect(self._workflow_start)
+        bar.stop_requested.connect(self._workflow_stop)
+        bar.generate_requested.connect(self._workflow_generate)
+        self._wf_runner = None
+        self._wf_thread = None
+        self._wf_def = None
+        self._wf_progress = {}
+
+    def _load_workflow_for_project(self):
+        """为当前项目加载工作流定义。"""
+        if not self.project.project_dir:
             return
-        if not self.agents:
-            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_agents"))
-            return
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(t("workflow_title"))
-        dialog.setMinimumSize(600, 700)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        panel = WorkflowPanel()
-        panel.set_config(self.config)
-        colors = get_theme_colors(self.config.get("theme", "dark"), self.config)
-        panel.apply_theme(colors)
-        layout.addWidget(panel)
-
-        # 加载已有工作流或默认工作流
         saved_wf = project_io.load_workflow(self.project.project_dir)
-        progress = saved_wf.get("progress", {})
-
-        # 尝试从 workflow.json 加载工作流定义
-        wf_def = None
+        self._wf_progress = saved_wf.get("progress", {})
         wf_data = saved_wf.get("workflow")
         if wf_data:
-            wf_def = WorkflowDef.from_dict(wf_data)
+            self._wf_def = WorkflowDef.from_dict(wf_data)
         else:
-            # 使用默认工作流
             wf_data = DEFAULT_WORKFLOW.copy()
             wf_data["project"] = {
                 "title": self.project.title,
@@ -639,34 +632,82 @@ class MainWindow(QMainWindow):
                 "style": self.project.style,
                 "target_chapters": 20,
             }
-            wf_def = WorkflowDef.from_dict(wf_data)
+            self._wf_def = WorkflowDef.from_dict(wf_data)
+        self.agent_panel.workflow_bar.set_has_workflow(True)
+        # 计算已完成百分比
+        done = sum(1 for v in self._wf_progress.values() if v == "done")
+        total = len(self._wf_def.steps) if self._wf_def else 1
+        self.agent_panel.workflow_bar.set_progress(int(done / total * 100))
 
-        panel.load_workflow(wf_def, progress)
+    def _workflow_start(self):
+        """开始/继续执行工作流。"""
+        if not self._wf_def:
+            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
+            return
+        if not self.agents:
+            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_agents"))
+            return
 
-        # 连接信号
-        def on_start():
-            if not self.agents:
-                QMessageBox.warning(dialog, t("dialog_error"), t("workflow_no_agents"))
-                return
-            # 每次启动前重新构建 runner（确保 agent 最新）
-            runner = WorkflowRunner(
-                agents=self.agents,
-                project_dir=self.project.project_dir,
-                project_info=wf_def.project,
-            )
-            panel.start_execution(runner, wf_def, progress)
+        self._wf_runner = WorkflowRunner(
+            agents=self.agents,
+            project_dir=self.project.project_dir,
+            project_info=self._wf_def.project,
+        )
 
-        def on_finished():
-            self.statusBar().showMessage(t("workflow_finished"))
+        # 连接 runner 回调到 agent panel
+        self._wf_runner.on_step_start = lambda sid, n, title: (
+            self.agent_panel.on_workflow_step_started(sid, n, title),
+            self.agent_panel.workflow_bar.set_current_step(sid, title, n, 0),
+        )
+        self._wf_runner.on_step_end = lambda sid, n, title, out: (
+            self.agent_panel.on_workflow_step_finished(sid, n, title),
+        )
+        self._wf_runner.on_error = lambda sid, err: (
+            self.agent_panel.on_workflow_step_error(sid, err),
+        )
 
-        def on_generate():
-            self._generate_workflow(panel, dialog)
+        # 创建后台线程执行
+        from .workflow_panel import WorkflowThread
+        self._wf_thread = WorkflowThread(
+            self._wf_runner, self._wf_def, self._wf_progress
+        )
+        self._wf_thread.log_message.connect(
+            lambda msg: self.statusBar().showMessage(msg, 5000)
+        )
+        self._wf_thread.progress_updated.connect(self._on_wf_progress)
+        self._wf_thread.workflow_done.connect(self._on_wf_done)
+        self._wf_thread.workflow_stopped.connect(self._on_wf_stopped)
 
-        panel.workflow_started.connect(on_start)
-        panel.workflow_finished.connect(on_finished)
-        panel.generate_requested.connect(on_generate)
+        self.agent_panel.on_workflow_started()
+        self._wf_thread.start()
 
-        dialog.exec()
+    def _workflow_stop(self):
+        if self._wf_thread and self._wf_thread.isRunning():
+            self._wf_thread.request_stop()
+
+    def _on_wf_progress(self, progress: dict):
+        self._wf_progress = progress
+        done = sum(1 for v in progress.values() if v == "done")
+        total = len(self._wf_def.steps) if self._wf_def else 1
+        self.agent_panel.on_workflow_progress(int(done / total * 100))
+
+    def _on_wf_done(self):
+        self._wf_thread = None
+        self.agent_panel.on_workflow_finished()
+        self.agent_panel.workflow_bar.set_progress(100)
+        self.statusBar().showMessage(t("workflow_finished"))
+
+    def _on_wf_stopped(self):
+        self._wf_thread = None
+        self.agent_panel.workflow_bar.set_running(False)
+        self.statusBar().showMessage(t("workflow_stopped"))
+
+    def _open_workflow_panel(self):
+        """打开工作流面板（保留兼容，实际通过 workflow_bar 操作）。"""
+        if not self.project.title:
+            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
+            return
+        self._workflow_start()
 
     def _load_default_workflow(self):
         """加载默认工作流到当前项目。"""
@@ -684,16 +725,19 @@ class MainWindow(QMainWindow):
             "workflow": wf_data,
             "progress": {},
         })
+        self._load_workflow_for_project()
         self.statusBar().showMessage(t("workflow_generated"))
 
-    def _generate_workflow(self, panel: WorkflowPanel, dialog: QDialog):
+    def _workflow_generate(self):
         """用 LLM 动态生成工作流。"""
+        if not self.project.title:
+            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
+            return
         if not self.llm:
-            QMessageBox.warning(dialog, t("dialog_error"), t("workflow_no_agents"))
+            QMessageBox.warning(self, t("dialog_error"), t("workflow_no_agents"))
             return
 
-        panel._append_log(t("workflow_generating"))
-        panel._btn_generate.setEnabled(False)
+        self.statusBar().showMessage(t("workflow_generating"))
 
         project_info = {
             "title": self.project.title,
@@ -702,11 +746,10 @@ class MainWindow(QMainWindow):
             "theme": self.project.theme,
         }
 
-        # 使用后台线程避免阻塞 UI
         from PySide6.QtCore import QThread, Signal as QSignal
 
         class GenThread(QThread):
-            done = QSignal(object)  # WorkflowDef or Exception
+            done = QSignal(object)
             def __init__(self, agents, project_info, llm):
                 super().__init__()
                 self.agents = agents
@@ -726,24 +769,24 @@ class MainWindow(QMainWindow):
                 finally:
                     loop.close()
 
-        target_ch = 20
         self._gen_thread = GenThread(self.agents, project_info, self.llm)
 
         def on_gen_done(result):
-            panel._btn_generate.setEnabled(True)
             if isinstance(result, Exception):
-                panel._append_log(t("workflow_gen_fail", str(result)))
+                self.statusBar().showMessage(t("workflow_gen_fail", str(result)))
                 return
-            # 保存并加载新工作流
             wf_dict = result.to_dict()
-            wf_dict["project"]["target_chapters"] = target_ch
+            wf_dict["project"]["target_chapters"] = 20
             project_io.save_workflow(self.project.project_dir, {
                 "workflow": wf_dict,
                 "progress": {},
             })
-            result.project["target_chapters"] = target_ch
-            panel.load_workflow(result, {})
-            panel._append_log(t("workflow_generated"))
+            result.project["target_chapters"] = 20
+            self._wf_def = result
+            self._wf_progress = {}
+            self.agent_panel.workflow_bar.set_has_workflow(True)
+            self.agent_panel.workflow_bar.set_progress(0)
+            self.statusBar().showMessage(t("workflow_generated"))
 
         self._gen_thread.done.connect(on_gen_done)
         self._gen_thread.start()
@@ -762,6 +805,8 @@ class MainWindow(QMainWindow):
                     loop.close()
             except Exception:
                 pass
+        # 保存聊天记录和项目
+        self.agent_panel.save_history()
         if self.project.title:
             self._save_project()
         event.accept()
