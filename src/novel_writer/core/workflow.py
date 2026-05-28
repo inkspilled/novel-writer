@@ -276,6 +276,16 @@ class WorkflowRunner:
                 return
             project_io.write_md(out_path, response.content)
 
+        # 写后沉淀：章节写完后提取记忆项
+        if step.id == "chapter" and response:
+            _sediment_chapter(self.project_dir, n, response.content)
+
+        # 审稿后：提取反模式
+        if step.id == "review" and response:
+            from .anti_patterns import AntiPatternTracker
+            tracker = AntiPatternTracker(self.project_dir)
+            tracker.add_from_review(response.content, n)
+
         if self.on_step_end:
             self.on_step_end(step.id, n, agent.title, response.content)
 
@@ -293,27 +303,48 @@ class WorkflowRunner:
             self._save_progress(progress)
 
     def _build_context(self, input_files: list[str], n: int) -> str:
-        """读取输入文件，拼接上下文。"""
+        """三层记忆组装：工作记忆（近章）+ 语义记忆（暂存器）+ 文件上下文。"""
         parts = []
         char_file_content = ""
+
+        # ── 语义记忆：记忆暂存器 ──
+        from .memory import MemoryScratchpad
+        mem = MemoryScratchpad(self.project_dir)
+        memory_text = mem.build_memory_text(limit_per_bucket=5)
+        if memory_text:
+            parts.append(f"=== 长期记忆 ===\n{memory_text}")
+
+        # ── 反模式约束 ──
+        from .anti_patterns import AntiPatternTracker
+        tracker = AntiPatternTracker(self.project_dir)
+        constraint_text = tracker.get_constraint_text()
+        if constraint_text:
+            parts.append(constraint_text)
+
         for f in input_files:
             if f == "prev_chapters":
-                # 注入最新剧情摘要（如有）
+                # 工作记忆：最新摘要 + 最近 3 章全文
                 summary = project_io.latest_summary(self.project_dir)
                 if summary:
                     parts.append(f"=== 剧情摘要 ===\n{summary}")
-                # 读取前面所有章节
                 chapters_dir = self.project_dir / project_io.CHAPTERS_DIR
                 if chapters_dir.exists():
-                    for i in range(1, n):
+                    # 只读最近 3 章全文（工作记忆窗口）
+                    start = max(1, n - 3)
+                    for i in range(start, n):
                         for ch_file in sorted(chapters_dir.glob(f"{i}_*.txt")):
                             if ch_file.name.endswith(".outline.md"):
                                 continue
                             content = project_io.read_md(ch_file)
                             if content:
                                 parts.append(f"=== 第{i}章 ===\n{content}")
+                    # 更早的章节只读摘要（如有）
+                    for i in range(1, start):
+                        for ch_file in sorted(chapters_dir.glob(f"{i}_*.txt")):
+                            if ch_file.name.endswith(".outline.md"):
+                                continue
+                            # 更早章节已有摘要在 memory 中，不重复读全文
             elif "*" in f:
-                # 通配符匹配
                 target = self.project_dir / f
                 parent = target.parent
                 pattern = target.name
@@ -332,7 +363,7 @@ class WorkflowRunner:
                             char_file_content = content
                         parts.append(content)
 
-        # 角色约束：从人物设定中提取角色信息，生成写作约束
+        # 角色约束
         if char_file_content:
             constraint = _build_character_constraint(char_file_content)
             if constraint:
@@ -467,6 +498,68 @@ def _extract_chapter_title(content: str, n: int) -> str:
     return f"第{n}章"
 
 
+def _sediment_chapter(project_dir, chapter: int, content: str):
+    """写后沉淀：从章节正文中提取记忆项，写入记忆暂存器。"""
+    import re
+    from .memory import MemoryScratchpad, MemoryItem
+
+    mem = MemoryScratchpad(project_dir)
+
+    # 提取出现的人物名（通过对话符号「」和引号）
+    names_in_text = set()
+    for m in re.finditer(r"[「""]([^「」""]{1,20})[」""]", content):
+        names_in_text.add(m.group(1))
+
+    # 提取可能的状态变化（X突破了/晋升为/受伤了/死了）
+    state_patterns = [
+        (r"(\w+)(突破|晋升|升级|进阶)", "实力变化"),
+        (r"(\w+)(受伤|重伤|濒死|死亡|陨落)", "身体状态"),
+        (r"(\w+)(到达|来到|离开|前往|回到)", "位置变化"),
+    ]
+    for pat, field_name in state_patterns:
+        for m in re.finditer(pat, content):
+            subj = m.group(1)
+            if len(subj) >= 2 and len(subj) <= 6:
+                mem.upsert(MemoryItem(
+                    category="character_state",
+                    subject=subj,
+                    field=field_name,
+                    value=m.group(0),
+                    source_chapter=chapter,
+                ))
+
+    # 提取伏笔关键词（如果/竟然/原来/没想到）
+    foreshadow_patterns = [
+        r"(?:竟然|居然|原来|没想到|殊不知)([^。，！？]{5,40})",
+        r"(?:如果|倘若|万一)([^。，！？]{5,40})",
+    ]
+    for pat in foreshadow_patterns:
+        for m in re.finditer(pat, content):
+            val = m.group(0)[:60]
+            mem.upsert(MemoryItem(
+                category="open_loops",
+                subject=f"第{chapter}章伏笔",
+                field="悬念",
+                value=val,
+                source_chapter=chapter,
+                payload={"urgency": 0.6},
+            ))
+
+    # 记录章节事件
+    title = _extract_chapter_title(content, chapter)
+    first_para = content.split("\n\n")[0][:100] if content else ""
+    mem.upsert(MemoryItem(
+        category="story_facts",
+        subject=f"第{chapter}章 {title}",
+        field="剧情",
+        value=first_para,
+        source_chapter=chapter,
+    ))
+
+    mem.compact()
+    mem.save()
+
+
 def _build_character_constraint(char_content: str) -> str:
     """从人物设定内容中提取角色信息，生成写作约束指令。"""
     import re
@@ -534,7 +627,7 @@ DEFAULT_WORKFLOW = {
         {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
         {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
-        {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份精炼摘要。要求：1)关键剧情转折点 2)人物状态变化 3)伏笔埋设与回收 4)未解悬念。控制在500字以内，方便后续写作时快速回顾。", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
+        {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.txt"], "output": "review/校对报告.md"},
@@ -549,7 +642,7 @@ CONTINUE_WORKFLOW = {
     "description": "从已有章节继续写作",
     "steps": [
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
-        {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份精炼摘要。要求：1)关键剧情转折点 2)人物状态变化 3)伏笔埋设与回收 4)未解悬念。控制在500字以内，方便后续写作时快速回顾。", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
+        {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.txt"], "output": "review/校对报告.md"},
