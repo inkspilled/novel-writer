@@ -78,8 +78,7 @@ class OfficeScene(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(200)
-        self.setMaximumHeight(260)
+        self.setMinimumHeight(160)
         self._slots: list[AgentSlot] = []
         self._frame_counter = 0
         self._hover_slot: AgentSlot | None = None

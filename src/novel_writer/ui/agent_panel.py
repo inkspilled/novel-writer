@@ -262,7 +262,6 @@ class AgentPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumWidth(300)
-        self.setMaximumWidth(560)
         self.agent_buttons: dict[str, QPushButton] = {}
         self._current_agent = ""
         self._agents_cfg: dict = {}
@@ -281,11 +280,11 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── 办公室场景（顶部） ──
+        # ── 办公室场景（占 30%） ──
         from .office_scene import OfficeScene
         self.office = OfficeScene()
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
-        layout.addWidget(self.office)
+        layout.addWidget(self.office, 3)
 
         # ── 工作流迷你进度条 ──
         from .workflow_bar import WorkflowMiniBar
@@ -334,7 +333,7 @@ class AgentPanel(QWidget):
         self._quick_bar.setVisible(False)
         layout.addWidget(self._quick_bar)
 
-        # ── 聊天区域 ──
+        # ── 聊天区域（占 70%） ──
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -344,7 +343,7 @@ class AgentPanel(QWidget):
         self.chat_layout.setSpacing(4)
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
-        layout.addWidget(self.scroll_area, 1)
+        layout.addWidget(self.scroll_area, 7)
 
         # ── 加载指示器 ──
         self._loading_label = QLabel(t("agent_thinking"))

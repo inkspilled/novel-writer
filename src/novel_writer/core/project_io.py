@@ -101,19 +101,16 @@ def write_planning(project_dir: Path, name: str, content: str) -> None:
 
 # ── 章节文件 ──
 
-# 匹配任意位数的数字序号（兼容旧的 3 位格式和任意长度）
 _CHAPTER_RE = re.compile(r"^(\d+)_(.+)\.md$")
 _CHAPTER_OUTLINE_RE = re.compile(r"^(\d+)_(.+)\.outline\.md$")
 
 
 def chapter_filename(number: int, title: str) -> str:
-    """章节正文文件名。不补零，支持任意章节数。"""
     safe_title = title or "未命名"
     return f"{number}_{safe_title}.md"
 
 
 def chapter_outline_filename(number: int, title: str) -> str:
-    """章节细纲文件名。不补零，支持任意章节数。"""
     safe_title = title or "未命名"
     return f"{number}_{safe_title}.outline.md"
 
@@ -136,10 +133,9 @@ def scan_chapters(project_dir: Path) -> list[dict]:
         return []
 
     result = []
-    for f in sorted(chapters_dir.iterdir()):
+    for f in chapters_dir.iterdir():
         if not f.is_file():
             continue
-        # 跳过 outline 文件
         if f.name.endswith(".outline.md"):
             continue
         m = _CHAPTER_RE.match(f.name)
@@ -154,6 +150,7 @@ def scan_chapters(project_dir: Path) -> list[dict]:
             "content_path": f,
             "outline_path": outline if outline.exists() else None,
         })
+    result.sort(key=lambda x: x["number"])
     return result
 
 

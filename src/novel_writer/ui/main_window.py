@@ -26,7 +26,7 @@ from ..core.llm import LLMClient
 from ..core.agents import load_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 from ..core import project_io
-from ..core.workflow import WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, generate_workflow, WorkflowMode, build_workflow
+from ..core.workflow import WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, WorkflowMode, build_workflow
 
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
@@ -148,8 +148,8 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.agent_panel)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setSizes([240, 700, 380])
+        splitter.setStretchFactor(2, 1)
+        splitter.setSizes([220, 560, 620])
         self.setCentralWidget(splitter)
         self.statusBar().showMessage(t("status_ready"))
 
@@ -469,20 +469,31 @@ class MainWindow(QMainWindow):
             parts.append(f"题材: {self.project.genre}")
             parts.append(f"风格: {self.project.style}")
             parts.append(f"主题: {self.project.theme}")
-            parts.append(f"简介: {self.project.synopsis}")
+            if self.project.synopsis:
+                parts.append(f"简介: {self.project.synopsis}")
         if self.project.characters:
             chars = "\n".join(f"- {c.name}: {c.personality}" for c in self.project.characters)
             parts.append(f"人物设定:\n{chars}")
         if self.project.world_setting:
             parts.append(f"世界观:\n{self.project.world_setting}")
-        idx = self.editor._current_chapter_idx
-        if 0 <= idx < len(self.project.chapters):
-            ch = self.project.chapters[idx]
-            parts.append(f"当前章节: 第{ch.number}章 {ch.title}")
-            if ch.outline:
-                parts.append(f"章节大纲:\n{ch.outline}")
-            if ch.content:
-                parts.append(f"已有正文:\n{ch.content[:2000]}")
+
+        # 读取 planning 目录下的规划文档
+        if self.project.project_dir:
+            planning_dir = self.project.project_dir / "planning"
+            if planning_dir.exists():
+                for f in sorted(planning_dir.glob("*.md")):
+                    content = project_io.read_md(f)
+                    if content:
+                        parts.append(f"=== {f.stem} ===\n{content}")
+
+        # 读取所有章节内容
+        if self.project.project_dir:
+            chapters_dir = self.project.project_dir / "chapters"
+            if chapters_dir.exists():
+                for ch in self.project.chapters:
+                    if ch.content:
+                        parts.append(f"=== 第{ch.number}章 {ch.title} ===\n{ch.content}")
+
         return "\n\n".join(parts)
 
     def _on_agent_finished(self, agent_name: str, response: str):
@@ -609,7 +620,6 @@ class MainWindow(QMainWindow):
         bar = self.agent_panel.workflow_bar
         bar.start_requested.connect(self._workflow_start)
         bar.stop_requested.connect(self._workflow_stop)
-        bar.generate_requested.connect(self._workflow_generate)
         self._wf_runner = None
         self._wf_thread = None
         self._wf_def = None
@@ -835,69 +845,6 @@ class MainWindow(QMainWindow):
         })
         self._load_workflow_for_project()
         self.statusBar().showMessage(t("workflow_generated"))
-
-    def _workflow_generate(self):
-        """用 LLM 动态生成工作流。"""
-        if not self.project.title:
-            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
-            return
-        if not self.llm:
-            QMessageBox.warning(self, t("dialog_error"), t("workflow_no_agents"))
-            return
-
-        self.statusBar().showMessage(t("workflow_generating"))
-
-        project_info = {
-            "title": self.project.title,
-            "genre": self.project.genre,
-            "style": self.project.style,
-            "theme": self.project.theme,
-        }
-
-        from PySide6.QtCore import QThread, Signal as QSignal
-
-        class GenThread(QThread):
-            done = QSignal(object)
-            def __init__(self, agents, project_info, llm):
-                super().__init__()
-                self.agents = agents
-                self.project_info = project_info
-                self.llm = llm
-            def run(self):
-                import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    result = loop.run_until_complete(
-                        generate_workflow(self.agents, self.project_info, self.llm)
-                    )
-                    self.done.emit(result)
-                except Exception as e:
-                    self.done.emit(e)
-                finally:
-                    loop.close()
-
-        self._gen_thread = GenThread(self.agents, project_info, self.llm)
-
-        def on_gen_done(result):
-            if isinstance(result, Exception):
-                self.statusBar().showMessage(t("workflow_gen_fail", str(result)))
-                return
-            wf_dict = result.to_dict()
-            wf_dict["project"]["target_chapters"] = 20
-            project_io.save_workflow(self.project.project_dir, {
-                "workflow": wf_dict,
-                "progress": {},
-            })
-            result.project["target_chapters"] = 20
-            self._wf_def = result
-            self._wf_progress = {}
-            self.agent_panel.workflow_bar.set_has_workflow(True)
-            self.agent_panel.workflow_bar.set_progress(0)
-            self.statusBar().showMessage(t("workflow_generated"))
-
-        self._gen_thread.done.connect(on_gen_done)
-        self._gen_thread.start()
 
     def closeEvent(self, event):
         self._stop_worker()
