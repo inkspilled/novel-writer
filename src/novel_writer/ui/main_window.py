@@ -772,32 +772,40 @@ class MainWindow(QMainWindow):
             project_info=self._wf_def.project,
         )
 
-        # 连接 runner 回调到 agent panel
-        self._wf_runner.on_step_start = lambda sid, n, title: (
-            self.agent_panel.on_workflow_step_started(sid, n, title),
-            self.agent_panel.workflow_bar.set_current_step(sid, title, n, 0),
-        )
-        self._wf_runner.on_step_end = lambda sid, n, title, out: (
-            self.agent_panel.on_workflow_step_finished(sid, n, title),
-        )
-        self._wf_runner.on_error = lambda sid, err: (
-            self.agent_panel.on_workflow_step_error(sid, err),
-        )
-
         # 创建后台线程执行
         from .workflow_panel import WorkflowThread
         self._wf_thread = WorkflowThread(
             self._wf_runner, self._wf_def, self._wf_progress
         )
-        self._wf_thread.log_message.connect(
-            lambda msg: self.statusBar().showMessage(msg, 5000)
-        )
+
+        # 连接线程信号（WorkflowThread.run() 会覆盖 runner 回调，所以连信号）
+        self._wf_thread.step_started.connect(self._on_wf_step_started)
+        self._wf_thread.step_finished.connect(self._on_wf_step_finished)
+        self._wf_thread.step_error.connect(self._on_wf_step_error)
         self._wf_thread.progress_updated.connect(self._on_wf_progress)
+        self._wf_thread.log_message.connect(self._on_wf_log)
         self._wf_thread.workflow_done.connect(self._on_wf_done)
         self._wf_thread.workflow_stopped.connect(self._on_wf_stopped)
 
         self.agent_panel.on_workflow_started()
         self._wf_thread.start()
+
+    def _on_wf_step_started(self, step_id: str, n: int, agent_title: str):
+        self.agent_panel.on_workflow_step_started(step_id, n, agent_title)
+        self.agent_panel.workflow_bar.set_current_step(step_id, agent_title, n, 0)
+
+    def _on_wf_step_finished(self, step_id: str, n: int, agent_title: str):
+        self.agent_panel.on_workflow_step_finished(step_id, n, agent_title)
+        # 章节步骤完成后刷新侧边栏
+        if step_id == "chapter":
+            self._refresh_chapters()
+
+    def _on_wf_step_error(self, step_id: str, error: str):
+        self.agent_panel.on_workflow_step_error(step_id, error)
+
+    def _on_wf_log(self, msg: str):
+        self.agent_panel.workflow_bar.append_log(msg)
+        self.statusBar().showMessage(msg, 5000)
 
     def _workflow_stop(self):
         if self._wf_thread and self._wf_thread.isRunning():
@@ -813,12 +821,41 @@ class MainWindow(QMainWindow):
         self._wf_thread = None
         self.agent_panel.on_workflow_finished()
         self.agent_panel.workflow_bar.set_progress(100)
+        self._refresh_chapters()
         self.statusBar().showMessage(t("workflow_finished"))
 
     def _on_wf_stopped(self):
         self._wf_thread = None
         self.agent_panel.workflow_bar.set_running(False)
+        self._refresh_chapters()
         self.statusBar().showMessage(t("workflow_stopped"))
+
+    def _refresh_chapters(self):
+        """从磁盘重新加载章节列表到侧边栏。"""
+        if not self.project.project_dir:
+            return
+        # 重新扫描章节文件
+        scanned = project_io.scan_chapters(self.project.project_dir)
+        # 更新 Project 对象的 chapters 列表
+        existing = {ch.number: ch for ch in self.project.chapters}
+        for item in scanned:
+            if item["number"] not in existing:
+                from .models.chapter import Chapter
+                ch = Chapter(
+                    number=item["number"],
+                    title=item["title"],
+                    _content_path=str(item["content_path"]),
+                    _outline_path=str(item["outline_path"]) if item["outline_path"] else "",
+                )
+                self.project.chapters.append(ch)
+        self.project.chapters.sort(key=lambda c: c.number)
+        # 刷新侧边栏
+        self.sidebar.load_chapters(self.project.chapters)
+        self.sidebar.update_stats(
+            self.project.total_words(),
+            self.project.target_words,
+            len(self.project.chapters),
+        )
 
     def _open_workflow_panel(self):
         """打开工作流面板（保留兼容，实际通过 workflow_bar 操作）。"""
