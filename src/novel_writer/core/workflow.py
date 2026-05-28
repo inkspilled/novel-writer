@@ -321,6 +321,13 @@ class WorkflowRunner:
         if constraint_text:
             parts.append(constraint_text)
 
+        # ── 追读力指导 ──
+        from .reading_power import ReadingPowerTracker
+        rp_tracker = ReadingPowerTracker(self.project_dir)
+        rp_guidance = rp_tracker.build_guidance(n)
+        if rp_guidance:
+            parts.append(rp_guidance)
+
         for f in input_files:
             if f == "prev_chapters":
                 # 工作记忆：最新摘要 + 最近 3 章全文
@@ -338,12 +345,24 @@ class WorkflowRunner:
                             content = project_io.read_md(ch_file)
                             if content:
                                 parts.append(f"=== 第{i}章 ===\n{content}")
-                    # 更早的章节只读摘要（如有）
-                    for i in range(1, start):
-                        for ch_file in sorted(chapters_dir.glob(f"{i}_*.txt")):
-                            if ch_file.name.endswith(".outline.md"):
-                                continue
-                            # 更早章节已有摘要在 memory 中，不重复读全文
+
+                # RAG 检索：从更早章节中检索与当前大纲相关的段落
+                try:
+                    from .rag import RAGRetriever
+                    rag = RAGRetriever(self.project_dir)
+                    rag.load_chapters(up_to_chapter=start)
+                    # 用大纲摘要作为查询
+                    outline_path = self.project_dir / "planning" / "大纲.md"
+                    if outline_path.exists():
+                        outline = project_io.read_md(outline_path)
+                        # 取大纲中关于第 n 章的描述作为查询
+                        query = _extract_chapter_query(outline, n)
+                        if query:
+                            rag_text = rag.retrieve(query, top_k=3)
+                            if rag_text:
+                                parts.append(rag_text)
+                except Exception:
+                    pass  # RAG 失败不影响写作
             elif "*" in f:
                 target = self.project_dir / f
                 parent = target.parent
@@ -498,8 +517,27 @@ def _extract_chapter_title(content: str, n: int) -> str:
     return f"第{n}章"
 
 
+def _extract_chapter_query(outline: str, n: int) -> str:
+    """从大纲中提取第 n 章的描述作为 RAG 查询。"""
+    import re
+    lines = outline.split("\n")
+    capture = False
+    query_lines = []
+    for line in lines:
+        if re.match(rf"^#.*第\s*{n}\s*章", line) or re.match(rf"^#.*{n}\.", line):
+            capture = True
+            continue
+        if capture:
+            if re.match(r"^#", line) and "第" not in line:
+                break
+            query_lines.append(line)
+            if len(query_lines) >= 5:
+                break
+    return " ".join(query_lines).strip()[:200]
+
+
 def _sediment_chapter(project_dir, chapter: int, content: str):
-    """写后沉淀：从章节正文中提取记忆项，写入记忆暂存器。"""
+    """写后沉淀：从章节正文中提取记忆项 + 追读力分析。"""
     import re
     from .memory import MemoryScratchpad, MemoryItem
 
@@ -558,6 +596,15 @@ def _sediment_chapter(project_dir, chapter: int, content: str):
 
     mem.compact()
     mem.save()
+
+    # 追读力分析
+    try:
+        from .reading_power import ReadingPowerTracker
+        rp_tracker = ReadingPowerTracker(project_dir)
+        rp = rp_tracker.analyze_chapter(content, chapter)
+        rp_tracker.record(rp)
+    except Exception:
+        pass
 
 
 def _build_character_constraint(char_content: str) -> str:
