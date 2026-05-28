@@ -22,58 +22,57 @@ class WorkflowMiniBar(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 6, 12, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(12, 4, 12, 4)
+        layout.setSpacing(2)
 
-        # 第一行：标题 + 按钮
+        # 单行：标题 + 进度条 + 状态 + 按钮
         row = QHBoxLayout()
         row.setSpacing(6)
+
         self._title_label = QLabel(t("workflow_title"))
-        self._title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
+        self._title_label.setStyleSheet("font-size: 10px; font-weight: 600;")
         row.addWidget(self._title_label)
-        row.addStretch()
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setFixedHeight(12)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setFormat("%p%")
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        row.addWidget(self._progress_bar, 1)
+
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet("font-size: 10px; color: gray;")
+        row.addWidget(self._status_label)
 
         self._btn_log = QPushButton("📋")
-        self._btn_log.setFixedSize(24, 24)
+        self._btn_log.setFixedSize(20, 20)
         self._btn_log.setToolTip("展开/收起执行日志")
-        self._btn_log.setStyleSheet("font-size: 12px; padding: 0; border-radius: 4px;")
+        self._btn_log.setStyleSheet("font-size: 11px; padding: 0; border-radius: 4px;")
         self._btn_log.clicked.connect(self._toggle_log)
         row.addWidget(self._btn_log)
 
         self._btn_start = QPushButton(t("workflow_start"))
-        self._btn_start.setFixedHeight(24)
+        self._btn_start.setFixedHeight(22)
         self._btn_start.setObjectName("primary")
         self._btn_start.setStyleSheet("font-size: 10px; padding: 2px 8px;")
         self._btn_start.clicked.connect(self.start_requested.emit)
         row.addWidget(self._btn_start)
 
         self._btn_stop = QPushButton(t("workflow_stop"))
-        self._btn_stop.setFixedHeight(24)
+        self._btn_stop.setFixedHeight(22)
         self._btn_stop.setObjectName("danger")
         self._btn_stop.setStyleSheet("font-size: 10px; padding: 2px 8px;")
         self._btn_stop.setVisible(False)
         self._btn_stop.clicked.connect(self.stop_requested.emit)
         row.addWidget(self._btn_stop)
+
         layout.addLayout(row)
-
-        # 进度条
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setFixedHeight(16)
-        self._progress_bar.setTextVisible(True)
-        self._progress_bar.setFormat("%p%")
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
-        layout.addWidget(self._progress_bar)
-
-        # 状态文本
-        self._status_label = QLabel("")
-        self._status_label.setStyleSheet("font-size: 10px; color: gray;")
-        layout.addWidget(self._status_label)
 
         # 执行日志（默认隐藏）
         self._log_area = QTextEdit()
         self._log_area.setReadOnly(True)
-        self._log_area.setMaximumHeight(200)
+        self._log_area.setMaximumHeight(160)
         self._log_area.setStyleSheet(
             "font-size: 10px; font-family: Consolas, monospace; "
             "background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06); "
@@ -119,8 +118,8 @@ class WorkflowMiniBar(QWidget):
         elevated = colors.get("elevated", "#242430")
         fg3 = colors.get("fg3", "#5a5a66")
         self._progress_bar.setStyleSheet(
-            f"QProgressBar {{ background: {elevated}; border-radius: 8px; border: none; "
-            f"color: #ffffff; font-size: 10px; font-weight: bold; text-align: center; }}"
-            f"QProgressBar::chunk {{ background: {accent}; border-radius: 8px; }}"
+            f"QProgressBar {{ background: {elevated}; border-radius: 6px; border: none; "
+            f"color: #ffffff; font-size: 9px; font-weight: bold; text-align: center; }}"
+            f"QProgressBar::chunk {{ background: {accent}; border-radius: 6px; }}"
         )
         self._status_label.setStyleSheet(f"font-size: 10px; color: {fg3};")

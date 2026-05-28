@@ -298,6 +298,10 @@ class WorkflowRunner:
         char_file_content = ""
         for f in input_files:
             if f == "prev_chapters":
+                # 注入最新剧情摘要（如有）
+                summary = project_io.latest_summary(self.project_dir)
+                if summary:
+                    parts.append(f"=== 剧情摘要 ===\n{summary}")
                 # 读取前面所有章节
                 chapters_dir = self.project_dir / project_io.CHAPTERS_DIR
                 if chapters_dir.exists():
@@ -530,6 +534,7 @@ DEFAULT_WORKFLOW = {
         {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
         {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份精炼摘要。要求：1)关键剧情转折点 2)人物状态变化 3)伏笔埋设与回收 4)未解悬念。控制在500字以内，方便后续写作时快速回顾。", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.txt"], "output": "review/校对报告.md"},
@@ -544,6 +549,7 @@ CONTINUE_WORKFLOW = {
     "description": "从已有章节继续写作",
     "steps": [
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份精炼摘要。要求：1)关键剧情转折点 2)人物状态变化 3)伏笔埋设与回收 4)未解悬念。控制在500字以内，方便后续写作时快速回顾。", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.txt"], "output": "review/校对报告.md"},

@@ -37,6 +37,7 @@ PLANNING_DIR = "planning"
 CHAPTERS_DIR = "chapters"
 INSPIRATION_DIR = "inspiration"
 REVIEW_DIR = "review"
+SUMMARY_DIR = "summary"
 META_FILE = "meta.json"
 WORKFLOW_FILE = "workflow.json"
 
@@ -51,7 +52,7 @@ PLANNING_FILES = [
 
 def init_project_dir(project_dir: Path) -> None:
     """创建项目的目录骨架。"""
-    for sub in (PLANNING_DIR, CHAPTERS_DIR, INSPIRATION_DIR, REVIEW_DIR):
+    for sub in (PLANNING_DIR, CHAPTERS_DIR, INSPIRATION_DIR, REVIEW_DIR, SUMMARY_DIR):
         (project_dir / sub).mkdir(parents=True, exist_ok=True)
 
 
@@ -177,6 +178,23 @@ def scan_inspirations(project_dir: Path) -> list[dict]:
             continue
         result.append({"number": int(m.group(1)), "title": m.group(2), "path": f})
     return result
+
+
+# ── Summary 文件 ──
+
+def summary_filename(n: int) -> str:
+    return f"第1-{n}章摘要.md"
+
+
+def latest_summary(project_dir: Path) -> str:
+    """读取 summary/ 目录下最新的摘要文件内容。"""
+    sum_dir = project_dir / SUMMARY_DIR
+    if not sum_dir.exists():
+        return ""
+    files = sorted(sum_dir.glob("第*章摘要.md"), reverse=True)
+    if files:
+        return read_md(files[0])
+    return ""
 
 
 # ── Review 文件 ──
