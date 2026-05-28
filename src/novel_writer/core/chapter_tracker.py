@@ -31,7 +31,7 @@ def track_resources(mem: MemoryScratchpad, chapter: int, content: str):
                     mem.upsert(MemoryItem(
                         category="resources",
                         subject=owner,
-                        field=f"持有:{item}",
+                        aspect=f"持有:{item}",
                         value=f"{action}「{item}」",
                         source_chapter=chapter,
                         payload={"action": action, "item": item},
@@ -51,7 +51,7 @@ def track_resources(mem: MemoryScratchpad, chapter: int, content: str):
                 mem.upsert(MemoryItem(
                     category="resources",
                     subject=owner,
-                    field=f"失去:{item}",
+                    aspect=f"失去:{item}",
                     value=f"失去「{item}」",
                     source_chapter=chapter,
                     payload={"action": "失去", "item": item},
@@ -84,7 +84,7 @@ def track_emotions(mem: MemoryScratchpad, chapter: int, content: str):
                         mem.upsert(MemoryItem(
                             category="emotional_arcs",
                             subject=name,
-                            field=f"第{chapter}章情绪",
+                            aspect=f"第{chapter}章情绪",
                             value=emotion,
                             source_chapter=chapter,
                             payload={"emotion": emotion, "keyword": kw},
@@ -110,7 +110,7 @@ def track_info_boundary(mem: MemoryScratchpad, chapter: int, content: str):
                     mem.upsert(MemoryItem(
                         category="info_boundary",
                         subject=knower,
-                        field="已知信息",
+                        aspect="已知信息",
                         value=info[:60],
                         source_chapter=chapter,
                         payload={"info": info[:60]},
@@ -129,7 +129,7 @@ def track_info_boundary(mem: MemoryScratchpad, chapter: int, content: str):
                 mem.upsert(MemoryItem(
                     category="info_boundary",
                     subject=who,
-                    field="未知信息",
+                    aspect="未知信息",
                     value=info[:40],
                     source_chapter=chapter,
                     payload={"info": info[:40], "hidden": True},
@@ -169,7 +169,7 @@ def track_subplots(mem: MemoryScratchpad, chapter: int, content: str):
                     mem.upsert(MemoryItem(
                         category="subplots",
                         subject=subplot,
-                        field="进度",
+                        aspect="进度",
                         value=f"{progress}: {snippet}",
                         source_chapter=chapter,
                         payload={"status": progress, "keywords": [kw]},

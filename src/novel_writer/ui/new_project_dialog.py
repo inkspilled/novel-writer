@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QComboBox, QSpinBox, QPushButton, QFileDialog,
-    QGroupBox, QFormLayout, QInputDialog, QMessageBox,
+    QGroupBox, QFormLayout, QInputDialog, QMessageBox, QWidget,
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QPixmap
@@ -67,7 +67,19 @@ class NewProjectDialog(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        # 滚动区域
+        from PySide6.QtWidgets import QScrollArea, QSizePolicy
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(12)
 
         # ── 基本信息 ──
         basic_group = QGroupBox("基本信息")
@@ -101,7 +113,7 @@ class NewProjectDialog(QDialog):
         cover_row.addLayout(cover_btn_col)
         basic_form.addRow("封面:", cover_row)
 
-        layout.addWidget(basic_group)
+        content_layout.addWidget(basic_group)
 
         # ── 题材与风格 ──
         genre_group = QGroupBox("题材与风格")

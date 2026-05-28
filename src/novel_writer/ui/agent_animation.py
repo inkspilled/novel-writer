@@ -12,7 +12,7 @@ class AgentIndicator(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(60, 60)
+        self.setFixedSize(32, 32)
         self._opacity = 0.3
         self._angle = 0
         self._active = False
@@ -68,11 +68,11 @@ class AgentIndicator(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         center = self.rect().center()
-        r = 25
+        r = 13
 
         if self._active:
             # 外圈旋转弧线
-            pen = QPen(self._color, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            pen = QPen(self._color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             painter.setOpacity(self._opacity * 0.6)
             painter.drawArc(center.x() - r, center.y() - r, r * 2, r * 2,
@@ -81,7 +81,7 @@ class AgentIndicator(QWidget):
                             (self._angle + 180) * 16, 120 * 16)
 
             # 内圈呼吸灯
-            inner_r = 15
+            inner_r = 8
             painter.setOpacity(self._opacity)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self._color)
@@ -91,7 +91,7 @@ class AgentIndicator(QWidget):
             painter.setOpacity(0.3)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self._inactive_color)
-            painter.drawEllipse(center, 8, 8)
+            painter.drawEllipse(center, 5, 5)
 
         painter.end()
 

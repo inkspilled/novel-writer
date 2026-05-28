@@ -121,6 +121,19 @@ def build_workflow(mode, project_info, start, end) -> WorkflowDef:
 - 章节步骤自动从响应提取标题生成文件名
 - 已有章节文件会被复用（覆盖写入），不重复创建
 - 支持循环步骤（repeat）、定时触发（every）、断点恢复
+- **智能跳过**：已有内容的章节在 LLM 调用前跳过，提升效率
+- **定时步骤**：灵感（每3章）、推演（每章）、润色（每2章）、校验（每章）、摘要（每5章）
+
+### 智能上下文组装 (`_build_context`)
+
+```python
+1. 长期记忆（11桶）      # memory.py: MemoryScratchpad
+2. 反模式约束             # anti_patterns.py: AntiPatternTracker
+3. 追读力指导             # reading_power.py: ReadingPowerTracker
+4. 角色推演结果           # character_sim.py: load_sim_cache
+5. 最新摘要 + 最近3章全文 # project_io.latest_summary
+6. RAG检索结果            # rag.py: RAGRetriever
+```
 
 ### UI 架构
 

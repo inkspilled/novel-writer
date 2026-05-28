@@ -53,15 +53,16 @@ class Sidebar(QWidget):
         self._section_label.setStyleSheet("font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; padding: 8px 0 4px 0;")
         layout.addWidget(self._section_label)
 
-        # 章节树
+        # 章节树（占据剩余空间）
         self.chapter_tree = QTreeWidget()
         self.chapter_tree.setHeaderHidden(True)
         self.chapter_tree.setRootIsDecorated(False)
         self.chapter_tree.setIndentation(0)
+        self.chapter_tree.setMinimumHeight(200)
         self.chapter_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.chapter_tree.customContextMenuRequested.connect(self._on_context_menu)
         self.chapter_tree.currentItemChanged.connect(self._on_item_changed)
-        layout.addWidget(self.chapter_tree)
+        layout.addWidget(self.chapter_tree, 1)  # stretch=1 占满剩余空间
 
         # 添加章节
         self.btn_add_chapter = QPushButton(t("sidebar_add_chapter"))
@@ -75,10 +76,9 @@ class Sidebar(QWidget):
         self.stats_label.setStyleSheet("font-size: 11px; padding: 4px 0;")
         layout.addWidget(self.stats_label)
 
-        layout.addStretch()
-
     def load_chapters(self, chapters: list):
         self.chapter_tree.clear()
+        self.chapter_tree.setUpdatesEnabled(False)  # 防止无障碍警告
         icons = {"outlined": "📝", "drafted": "✍️", "proofread": "🔍",
                  "reviewed": "✅", "polished": "✨", "final": "📖"}
         for i, ch in enumerate(chapters):
@@ -87,10 +87,13 @@ class Sidebar(QWidget):
             item.setText(0, f"{icon}  {ch.title or t('sidebar_unnamed_chapter')}")
             item.setData(0, Qt.ItemDataRole.UserRole, i)
             self.chapter_tree.addTopLevelItem(item)
+        self.chapter_tree.setUpdatesEnabled(True)  # 重新启用更新
 
     def update_stats(self, total_words: int, target_words: int, chapter_count: int):
-        pct = (total_words / target_words * 100) if target_words > 0 else 0
-        self.stats_label.setText(t("sidebar_stats", chapter_count, f"{total_words:,}", pct))
+        base = f"{chapter_count}章  {total_words:,}字"
+        if target_words > 0 and total_words >= target_words:
+            base += "  🎉 目标达成！"
+        self.stats_label.setText(base)
 
     def set_project_title(self, title: str):
         self.project_label.setText(title or t("sidebar_unnamed"))

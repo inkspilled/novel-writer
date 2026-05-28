@@ -36,7 +36,7 @@ class MemoryItem:
     id: str = ""
     category: str = ""
     subject: str = ""
-    field: str = ""
+    aspect: str = ""
     value: str = ""
     status: str = "active"  # active / outdated / contradicted
     source_chapter: int = 0
@@ -46,7 +46,7 @@ class MemoryItem:
     def dedup_key(self) -> str:
         if self.category in ("open_loops", "reader_promises"):
             return f"{self.category}:{self.subject}"
-        return f"{self.category}:{self.subject}:{self.field}"
+        return f"{self.category}:{self.subject}:{self.aspect}"
 
     def ensure_id(self):
         if not self.id:
@@ -86,7 +86,7 @@ class MemoryScratchpad:
         # 同键去重
         for existing in bucket:
             if existing.get("status") == "active":
-                exist_key = f"{existing.get('category', '')}:{existing.get('subject', '')}:{existing.get('field', '')}"
+                exist_key = f"{existing.get('category', '')}:{existing.get('subject', '')}:{existing.get('aspect', '')}"
                 if existing.get("category") in ("open_loops", "reader_promises"):
                     exist_key = f"{existing.get('category', '')}:{existing.get('subject', '')}"
                 if exist_key == key:
@@ -146,7 +146,7 @@ class MemoryScratchpad:
             # 再保留每个同键最新的一条 outdated
             for item in items:
                 if item.get("status") == "outdated":
-                    key = f"{item.get('subject', '')}:{item.get('field', '')}"
+                    key = f"{item.get('subject', '')}:{item.get('aspect', '')}"
                     if key not in seen_keys:
                         seen_keys[key] = len(keep)
                         keep.append(item)
@@ -176,10 +176,10 @@ class MemoryScratchpad:
             for item in items:
                 subj = item.get("subject", "")
                 val = item.get("value", "")
-                fld = item.get("field", "")
+                asp = item.get("aspect", "")
                 ch = item.get("source_chapter", 0)
-                if fld:
-                    lines.append(f"- [{subj}] {fld}: {val}（第{ch}章）")
+                if asp:
+                    lines.append(f"- [{subj}] {asp}: {val}（第{ch}章）")
                 else:
                     lines.append(f"- [{subj}] {val}（第{ch}章）")
             parts.append("\n".join(lines))

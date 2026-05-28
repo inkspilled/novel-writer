@@ -52,7 +52,7 @@ class WorkflowMiniBar(QWidget):
         self._btn_log.clicked.connect(self._toggle_log)
         row.addWidget(self._btn_log)
 
-        self._btn_start = QPushButton(t("workflow_start"))
+        self._btn_start = QPushButton("执行模式")
         self._btn_start.setFixedHeight(22)
         self._btn_start.setObjectName("primary")
         self._btn_start.setStyleSheet("font-size: 10px; padding: 2px 8px;")
@@ -72,7 +72,8 @@ class WorkflowMiniBar(QWidget):
         # 执行日志（默认隐藏）
         self._log_area = QTextEdit()
         self._log_area.setReadOnly(True)
-        self._log_area.setMaximumHeight(160)
+        self._log_area.setMinimumHeight(80)
+        self._log_area.setMaximumHeight(180)
         self._log_area.setStyleSheet(
             "font-size: 10px; font-family: Consolas, monospace; "
             "background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06); "

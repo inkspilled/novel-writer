@@ -150,7 +150,11 @@ class WorkflowRunner:
         if progress is None:
             progress = {}
 
-        for step in workflow.steps:
+        # 预处理：分离定时步骤和普通步骤
+        periodic_steps = [s for s in workflow.steps if s.every > 0]
+        normal_steps = [s for s in workflow.steps if s.every == 0]
+
+        for step in normal_steps:
             if self._stop:
                 break
 
@@ -158,22 +162,42 @@ class WorkflowRunner:
             if step_progress == "done":
                 continue
 
-            if step.every > 0:
-                # 定时触发步骤
-                await self._run_periodic(step, workflow.project, progress)
-            elif step.repeat > 0:
+            if step.repeat > 0:
                 # 循环步骤（如逐章写作）
-                # 续写模式：从指定的起始章节开始
                 default_start = workflow.project.get("_start_chapter", 1)
                 start = default_start
                 if isinstance(step_progress, dict):
                     start = max(step_progress.get("current", default_start), default_start)
-                for n in range(start, step.repeat + 1):
+                # 查漏补缺模式：只执行缺失章节
+                gaps = workflow.project.get("_gaps", [])
+                chapters_to_write = gaps if gaps else list(range(start, step.repeat + 1))
+                for n in chapters_to_write:
                     if self._stop:
                         break
+                    # 章前定时步骤（灵感、角色推演）
+                    for ps in periodic_steps:
+                        if self._stop:
+                            break
+                        if ps.id in ("inspiration", "sim") and n % ps.every == 0:
+                            ps_key = f"{ps.id}_{n}"
+                            if progress.get(ps_key) != "done":
+                                await self._run_single(ps, workflow.project, n, progress)
+                                progress[ps_key] = "done"
+                                self._save_progress(progress)
+                    # 执行章节写作
                     await self._run_single(step, workflow.project, n, progress)
                     progress[step.id] = {"current": n, "total": step.repeat}
                     self._save_progress(progress)
+                    # 章后定时步骤（润色、校验、摘要）
+                    for ps in periodic_steps:
+                        if self._stop:
+                            break
+                        if ps.id in ("polish", "proofread", "summary") and n % ps.every == 0:
+                            ps_key = f"{ps.id}_{n}"
+                            if progress.get(ps_key) != "done":
+                                await self._run_single(ps, workflow.project, n, progress)
+                                progress[ps_key] = "done"
+                                self._save_progress(progress)
             else:
                 # 单次步骤
                 await self._run_single(step, workflow.project, 1, progress)
@@ -233,6 +257,18 @@ class WorkflowRunner:
                 return
             raise WorkflowError(f"没有智能体能做「{step.needs}」")
 
+        # 章节写作：提前检查是否已有内容，跳过 LLM 调用
+        if step.id == "chapter":
+            existing = self._find_chapter_file(n)
+            if existing:
+                existing_path = self.project_dir / "chapters" / existing
+                if existing_path.exists() and existing_path.stat().st_size > 0:
+                    if self.on_step_start:
+                        self.on_step_start(step.id, n, agent.title)
+                    if self.on_step_end:
+                        self.on_step_end(step.id, n, agent.title, f"[跳过] 第{n}章已有内容，不覆写")
+                    return
+
         if self.on_step_start:
             self.on_step_start(step.id, n, agent.title)
 
@@ -252,12 +288,6 @@ class WorkflowRunner:
             # 检查是否已有该章节文件
             existing = self._find_chapter_file(n)
             if existing:
-                # 已有文件且非空 → 跳过，绝不覆写用户内容
-                existing_path = self.project_dir / "chapters" / existing
-                if existing_path.exists() and existing_path.stat().st_size > 0:
-                    if self.on_step_end:
-                        self.on_step_end(step.id, n, agent.title, f"[跳过] 第{n}章已有内容，不覆写")
-                    return
                 output = f"chapters/{existing}"
             else:
                 title = _extract_chapter_title(response.content, n)
@@ -292,7 +322,10 @@ class WorkflowRunner:
     async def _run_periodic(self, step: WorkflowStep, project: dict, progress: dict):
         """定时触发步骤（如每 N 章注入一次灵感）。"""
         total_chapters = project.get("target_chapters", 20)
-        for n in range(step.every, total_chapters + 1, step.every):
+        start_chapter = project.get("_start_chapter", 1)
+        # 从起始章节的下一个 every 倍数开始
+        first = max(step.every, ((start_chapter - 1) // step.every + 1) * step.every)
+        for n in range(first, total_chapters + 1, step.every):
             if self._stop:
                 break
             step_key = f"{step.id}_{n}"
@@ -461,7 +494,7 @@ def _sediment_chapter(project_dir, chapter: int, content: str):
                 mem.upsert(MemoryItem(
                     category="character_state",
                     subject=subj,
-                    field=field_name,
+                    aspect=field_name,
                     value=m.group(0),
                     source_chapter=chapter,
                 ))
@@ -477,7 +510,7 @@ def _sediment_chapter(project_dir, chapter: int, content: str):
             mem.upsert(MemoryItem(
                 category="open_loops",
                 subject=f"第{chapter}章伏笔",
-                field="悬念",
+                aspect="悬念",
                 value=val,
                 source_chapter=chapter,
                 payload={"urgency": 0.6},
@@ -489,7 +522,7 @@ def _sediment_chapter(project_dir, chapter: int, content: str):
     mem.upsert(MemoryItem(
         category="story_facts",
         subject=f"第{chapter}章 {title}",
-        field="剧情",
+        aspect="剧情",
         value=first_para,
         source_chapter=chapter,
     ))
@@ -595,12 +628,13 @@ CONTINUE_WORKFLOW = {
     "name": "续写",
     "description": "从已有章节继续写作",
     "steps": [
+        {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
-        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【角色推演】中各角色的自然反应来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
+        {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
         {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
-        {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
-        {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.txt"], "output": "review/校对报告.md"},
     ],
 }
 
@@ -675,6 +709,9 @@ def build_workflow(
         "style": project_info.get("style", ""),
         "target_chapters": end_chapter,
     }
+    # 查漏补缺模式：记录缺失章节
+    if mode == WorkflowMode.FILL_GAPS and "_gaps" in data:
+        data["project"]["_gaps"] = data.pop("_gaps")
 
     # 为需要循环的步骤设置 repeat
     total = end_chapter - start_chapter + 1

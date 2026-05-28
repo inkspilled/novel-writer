@@ -277,40 +277,39 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── 办公室场景（占 45%） ──
+        # ── 办公室场景（占 35%） ──
         from .office_scene import OfficeScene
         self.office = OfficeScene()
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
-        layout.addWidget(self.office, 3)
+        layout.addWidget(self.office, 35)
 
-        # ── 工作流迷你进度条 ──
+        # ── 工作流迷你进度条（含日志） ──
         from .workflow_bar import WorkflowMiniBar
         self.workflow_bar = WorkflowMiniBar()
-        self.workflow_bar.setMaximumHeight(50)
-        layout.addWidget(self.workflow_bar)
+        self.workflow_bar.setMaximumHeight(220)
+        layout.addWidget(self.workflow_bar, 0)
 
         # ── Agent 信息行 ──
         header = QWidget()
         header.setObjectName("agentHeader")
-        header.setMaximumHeight(36)
+        header.setMaximumHeight(32)
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(12, 4, 12, 4)
-        header_layout.setSpacing(8)
+        header_layout.setContentsMargins(12, 2, 12, 2)
+        header_layout.setSpacing(6)
 
         self.indicator = AgentIndicator()
         header_layout.addWidget(self.indicator)
         self.agent_name_label = QLabel(t("agent_select"))
-        self.agent_name_label.setWordWrap(True)
         self.agent_name_label.setStyleSheet("font-size: 13px; font-weight: 600;")
         header_layout.addWidget(self.agent_name_label)
         header_layout.addStretch()
 
         self.btn_clear = QPushButton("\U0001f5d1️")
-        self.btn_clear.setFixedSize(26, 26)
+        self.btn_clear.setFixedSize(24, 24)
         self.btn_clear.setToolTip(t("agent_clear_chat"))
         self.btn_clear.setStyleSheet("""
             QPushButton {
-                border-radius: 6px; font-size: 14px;
+                border-radius: 6px; font-size: 13px;
                 border: 1px solid rgba(255,255,255,0.1);
                 padding: 0;
             }
@@ -323,6 +322,13 @@ class AgentPanel(QWidget):
         header_layout.addWidget(self.btn_clear)
         layout.addWidget(header)
 
+        # ── 未打开项目提示 ──
+        self._no_project_hint = QLabel("💡 请先打开或新建项目")
+        self._no_project_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._no_project_hint.setStyleSheet("color: gray; font-size: 12px; padding: 8px;")
+        self._no_project_hint.setVisible(True)
+        layout.addWidget(self._no_project_hint)
+
         # ── 快捷操作栏 ──
         self._quick_bar = QWidget()
         self._quick_bar_layout = QHBoxLayout(self._quick_bar)
@@ -332,7 +338,7 @@ class AgentPanel(QWidget):
         self._quick_bar.setVisible(False)
         layout.addWidget(self._quick_bar)
 
-        # ── 聊天区域（占 55%） ──
+        # ── 聊天区域（占 45%） ──
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -342,7 +348,7 @@ class AgentPanel(QWidget):
         self.chat_layout.setSpacing(4)
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
-        layout.addWidget(self.scroll_area, 4)
+        layout.addWidget(self.scroll_area, 45)
 
         # ── 加载指示器 ──
         self._loading_label = QLabel(t("agent_thinking"))
@@ -350,17 +356,18 @@ class AgentPanel(QWidget):
         self._loading_label.setStyleSheet("color: gray; padding: 4px 16px; font-size: 12px;")
         layout.addWidget(self._loading_label)
 
-        # ── 输入区 ──
+        # ── 输入区（占 20%，最小 120px） ──
         input_area = QWidget()
         input_area.setObjectName("agentInput")
-        input_area.setMaximumHeight(70)
+        input_area.setMinimumHeight(120)
         input_layout = QVBoxLayout(input_area)
-        input_layout.setContentsMargins(12, 4, 12, 6)
-        input_layout.setSpacing(4)
+        input_layout.setContentsMargins(12, 6, 12, 8)
+        input_layout.setSpacing(6)
 
         self.input_edit = ChatTextEdit()
         self.input_edit.setPlaceholderText(t("agent_ph_input"))
-        self.input_edit.setMaximumHeight(90)
+        self.input_edit.setMinimumHeight(60)
+        self.input_edit.setEnabled(False)
         self.input_edit.submit.connect(self._on_send)
         input_layout.addWidget(self.input_edit)
 
@@ -373,11 +380,15 @@ class AgentPanel(QWidget):
         self.btn_run.setObjectName("primary")
         self.btn_run.setFixedHeight(34)
         self.btn_run.setFixedWidth(80)
+        self.btn_run.setEnabled(False)
         self.btn_run.clicked.connect(self._on_send)
         btn_row.addWidget(self.btn_run)
         input_layout.addLayout(btn_row)
 
-        layout.addWidget(input_area)
+        layout.addWidget(input_area, 20)
+
+        # 初始状态：禁用交互
+        self._project_loaded = False
 
     # ── Agent 按钮管理 ──
 
@@ -496,6 +507,8 @@ class AgentPanel(QWidget):
 
     def _on_send(self):
         import sys
+        if not self._project_loaded:
+            return
         text = self.input_edit.toPlainText().strip()
         if not text or not self._current_agent:
             print(f"[DEBUG] _on_send blocked: text={repr(text[:50] if text else '')}, agent={self._current_agent!r}", file=sys.stderr)
@@ -673,8 +686,16 @@ class AgentPanel(QWidget):
             self.save_history()
         if project_dir:
             self._db_path = project_dir / "chat.db"
+            self._project_loaded = True
+            self._no_project_hint.setVisible(False)
+            self.input_edit.setEnabled(True)
+            self.btn_run.setEnabled(True)
         else:
             self._db_path = None
+            self._project_loaded = False
+            self._no_project_hint.setVisible(True)
+            self.input_edit.setEnabled(False)
+            self.btn_run.setEnabled(False)
         self._chat_history.clear()
         self._stream_widget = None
         self._stream_text = ""

@@ -467,6 +467,8 @@ class MainWindow(QMainWindow):
 
     def _on_agent_run(self, agent_name: str, user_input: str):
         import sys
+        if not self.project.title:
+            return
         agent = self.agents.get(agent_name)
         print(f"[DEBUG] _on_agent_run: agent={agent_name!r}, has_agent={agent is not None}, input={repr(user_input[:80])}", file=sys.stderr)
         if not agent:
@@ -738,13 +740,13 @@ class MainWindow(QMainWindow):
         def on_mode_changed(idx):
             mode = mode_combo.currentData()
             if mode == WorkflowMode.CONTINUE:
-                # 扫描已有章节数，自动设置起始章节
+                # 扫描已有章节数，自动设置起始章节（锁死不可改）
                 chapters = project_io.scan_chapters(self.project.project_dir)
                 if chapters:
                     last_num = max(c["number"] for c in chapters)
                     start_spin.setValue(last_num + 1)
                     end_spin.setValue(last_num + 20)
-                start_spin.setEnabled(True)
+                start_spin.setEnabled(False)  # 锁死起始章节
                 end_spin.setEnabled(True)
                 chapter_group.setTitle("续写范围")
             elif mode == WorkflowMode.NEW_BOOK:
@@ -784,6 +786,9 @@ class MainWindow(QMainWindow):
 
     def _workflow_start(self):
         """开始执行工作流 — 先弹出模式选择对话框。"""
+        if not self.project.title:
+            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
+            return
         if not self.agents:
             QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_agents"))
             return
@@ -793,6 +798,17 @@ class MainWindow(QMainWindow):
             return
 
         mode, start_ch, end_ch = result
+
+        # 新书模式：检查是否已有章节内容
+        if mode == WorkflowMode.NEW_BOOK and self.project.project_dir:
+            chapters = project_io.scan_chapters(self.project.project_dir)
+            has_content = any(c["content_path"].stat().st_size > 0 for c in chapters)
+            if has_content:
+                QMessageBox.warning(
+                    self, t("dialog_prompt"),
+                    "该项目已有章节内容，不能执行新书工作流。\n请使用「续写」或「查漏补缺」模式。"
+                )
+                return
 
         # 构建工作流
         project_info = {
