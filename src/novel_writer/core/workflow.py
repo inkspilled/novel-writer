@@ -600,6 +600,13 @@ def _sediment_chapter(project_dir, chapter: int, content: str):
         source_chapter=chapter,
     ))
 
+    # 四维追踪：资源/情感/信息边界/支线
+    try:
+        from .chapter_tracker import track_all
+        track_all(mem, chapter, content)
+    except Exception:
+        pass
+
     mem.compact()
     mem.save()
 

@@ -24,6 +24,7 @@ MEMORY_FILE = "memory.json"
 BUCKETS = [
     "character_state", "story_facts", "world_rules",
     "timeline", "open_loops", "reader_promises", "relationships",
+    "resources", "emotional_arcs", "info_boundary", "subplots",
 ]
 
 
@@ -159,6 +160,10 @@ class MemoryScratchpad:
             "open_loops": "未解伏笔",
             "reader_promises": "读者期待",
             "relationships": "人物关系",
+            "resources": "资源账本",
+            "emotional_arcs": "情感弧线",
+            "info_boundary": "信息边界",
+            "subplots": "支线进度",
         }
         for b in BUCKETS:
             items = self.get_active(b)[:limit_per_bucket]
