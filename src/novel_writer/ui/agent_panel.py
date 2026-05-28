@@ -284,7 +284,7 @@ class AgentPanel(QWidget):
         from .office_scene import OfficeScene
         self.office = OfficeScene()
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
-        layout.addWidget(self.office, 3)
+        layout.addWidget(self.office, 4)
 
         # ── 工作流迷你进度条 ──
         from .workflow_bar import WorkflowMiniBar
@@ -343,7 +343,7 @@ class AgentPanel(QWidget):
         self.chat_layout.setSpacing(4)
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
-        layout.addWidget(self.scroll_area, 7)
+        layout.addWidget(self.scroll_area, 6)
 
         # ── 加载指示器 ──
         self._loading_label = QLabel(t("agent_thinking"))
