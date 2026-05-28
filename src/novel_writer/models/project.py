@@ -18,8 +18,10 @@ class Project:
     genre: str = ""  # 题材：玄幻、都市、科幻...
     style: str = ""  # 风格：轻松、严肃、悬疑...
     theme: str = ""  # 核心主题
+    direction: str = ""  # 规划方向
     target_words: int = 200000  # 目标字数
     synopsis: str = ""  # 简介/立意
+    cover: str = ""  # 封面图片路径
     world_setting: str = ""  # 世界观设定
     chapters: list[Chapter] = field(default_factory=list)
     characters: list[Character] = field(default_factory=list)
@@ -78,8 +80,10 @@ class Project:
             "genre": self.genre,
             "style": self.style,
             "theme": self.theme,
+            "direction": self.direction,
             "target_words": self.target_words,
             "synopsis": self.synopsis,
+            "cover": self.cover,
             "world_setting": self.world_setting,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -115,8 +119,10 @@ class Project:
             genre=meta.get("genre", ""),
             style=meta.get("style", ""),
             theme=meta.get("theme", ""),
+            direction=meta.get("direction", ""),
             target_words=meta.get("target_words", 200000),
             synopsis=meta.get("synopsis", ""),
+            cover=meta.get("cover", ""),
             world_setting=meta.get("world_setting", ""),
             created_at=meta.get("created_at", ""),
             updated_at=meta.get("updated_at", ""),

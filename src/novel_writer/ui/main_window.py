@@ -297,25 +297,64 @@ class MainWindow(QMainWindow):
         # 先保存当前项目
         if self.project.title:
             self._save_project()
-        title, ok = QInputDialog.getText(self, t("dialog_new_project"), t("dialog_novel_title"))
-        if ok and title:
-            # 创建项目目录
-            safe_name = title.replace(" ", "_").replace("/", "_")
-            project_dir = PROJECTS_DIR / safe_name
-            project_dir.mkdir(parents=True, exist_ok=True)
 
-            self.project = Project(title=title)
-            self.project.set_project_dir(project_dir)
-            project_io.init_project_dir(project_dir)
-            self.project.add_chapter(t("chapter_first"))
-            self.project.save()
-            self.agent_panel.set_project_db(project_dir)
-            self._load_workflow_for_project()
-            self.sidebar.set_project_title(title)
-            self.sidebar.load_chapters(self.project.chapters)
-            self.sidebar.update_stats(0, self.project.target_words, len(self.project.chapters))
-            self.editor.clear()
-            self.statusBar().showMessage(t("status_created", title))
+        from .new_project_dialog import NewProjectDialog
+        dialog = NewProjectDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        data = dialog.get_data()
+        title = data["title"]
+
+        # 创建项目目录
+        safe_name = title.replace(" ", "_").replace("/", "_")
+        project_dir = PROJECTS_DIR / safe_name
+        project_dir.mkdir(parents=True, exist_ok=True)
+
+        # 复制封面到项目目录
+        cover_rel = ""
+        if data["cover"]:
+            import shutil
+            src = Path(data["cover"])
+            ext = src.suffix or ".png"
+            dst = project_dir / f"cover{ext}"
+            shutil.copy2(src, dst)
+            cover_rel = f"cover{ext}"
+
+        self.project = Project(
+            title=title,
+            genre=data["genre"],
+            style=data["style"],
+            theme=data["theme"],
+            direction=data["direction"],
+            target_words=data["target_words"],
+            synopsis=data["synopsis"],
+            cover=cover_rel,
+        )
+        self.project.set_project_dir(project_dir)
+        project_io.init_project_dir(project_dir)
+
+        # 保存立意文档
+        ideation_content = f"# {title}\n\n"
+        ideation_content += f"## 核心立意\n\n{data['theme']}\n\n"
+        ideation_content += f"## 规划方向\n\n{data['direction']}\n\n"
+        if data["synopsis"]:
+            ideation_content += f"## 简介\n\n{data['synopsis']}\n\n"
+        ideation_content += f"## 基本信息\n\n"
+        ideation_content += f"- 题材：{data['genre']}\n"
+        ideation_content += f"- 风格：{data['style']}\n"
+        ideation_content += f"- 目标字数：{data['target_words']:,}\n"
+        project_io.write_md(project_dir / "planning" / "立意.md", ideation_content)
+
+        self.project.add_chapter(t("chapter_first"))
+        self.project.save()
+        self.agent_panel.set_project_db(project_dir)
+        self._load_workflow_for_project()
+        self.sidebar.set_project_title(title)
+        self.sidebar.load_chapters(self.project.chapters)
+        self.sidebar.update_stats(0, self.project.target_words, len(self.project.chapters))
+        self.editor.clear()
+        self.statusBar().showMessage(t("status_created", title))
 
     def _open_project(self):
         """打开已有项目。"""
