@@ -113,9 +113,9 @@ MainWindow (splitter: 220 / 560 / 620)
 ├── Sidebar         # 项目管理、章节树
 ├── EditorPanel     # 正文/大纲/备注
 └── AgentPanel      # 整合面板
-    ├── OfficeScene     # 办公室场景（30%）— QPainter 动画
-    ├── WorkflowMiniBar # 进度条 + 开始/停止
-    └── ChatArea        # 对话区（70%）— SQLite 持久化
+    ├── OfficeScene     # 办公室场景（40%）— QPainter + 脉冲光圈 + 任务标签
+    ├── WorkflowMiniBar # 进度条 + 执行日志 + 开始/停止
+    └── ChatArea        # 对话区（60%）— SQLite 持久化
 ```
 
 - 聊天记录按项目隔离：`data/projects/<name>/chat.db`
