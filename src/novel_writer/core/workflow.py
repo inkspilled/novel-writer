@@ -204,6 +204,10 @@ class WorkflowRunner:
         if step.id == "chapter":
             existing = self._find_chapter_file(n)
             if existing:
+                # 已有文件且非空 → 跳过，绝不覆写用户内容
+                existing_path = self.project_dir / "chapters" / existing
+                if existing_path.exists() and existing_path.stat().st_size > 0:
+                    return f"[跳过] 第{n}章已有内容，不覆写"
                 output = f"chapters/{existing}"
             else:
                 title = _extract_chapter_title(response.content, n)
@@ -241,9 +245,15 @@ class WorkflowRunner:
         # 确定输出路径
         output = step.output
         if step.id == "chapter":
-            # 检查是否已有该章节文件，有则复用
+            # 检查是否已有该章节文件
             existing = self._find_chapter_file(n)
             if existing:
+                # 已有文件且非空 → 跳过，绝不覆写用户内容
+                existing_path = self.project_dir / "chapters" / existing
+                if existing_path.exists() and existing_path.stat().st_size > 0:
+                    if self.on_step_end:
+                        self.on_step_end(step.id, n, agent.title, f"[跳过] 第{n}章已有内容，不覆写")
+                    return
                 output = f"chapters/{existing}"
             else:
                 title = _extract_chapter_title(response.content, n)
@@ -585,7 +595,7 @@ def build_workflow(
                 gap_steps.append(n)
         data = {"name": "查漏补缺", "description": f"补写 {len(gap_steps)} 个缺失章节", "steps": [
             {"id": "chapter", "needs": "正文写作",
-             "prompt": "根据大纲和前文写第{n}章正文。保持与前文连贯，注意人物性格一致。",
+             "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。",
              "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"],
              "output": "chapters/{n}_chapter.txt", "repeat": end_chapter},
         ]}
