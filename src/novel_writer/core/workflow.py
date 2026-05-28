@@ -13,11 +13,21 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
 from .agents.base import BaseAgent
 from .llm.base import BaseLLM, LLMMessage
+
+
+# ── 工作流模式 ──
+
+class WorkflowMode(Enum):
+    NEW_BOOK = "new_book"           # 新书：从立意到审校全流程
+    CONTINUE = "continue"           # 续写：从已有章节继续
+    FILL_GAPS = "fill_gaps"         # 查漏补缺：检查缺失章节并补写
+    VALIDATE = "validate"           # 校验：审核+校对已有章节
 from . import project_io
 
 
@@ -140,9 +150,11 @@ class WorkflowRunner:
                 await self._run_periodic(step, workflow.project, progress)
             elif step.repeat > 0:
                 # 循环步骤（如逐章写作）
-                start = 1
+                # 续写模式：从指定的起始章节开始
+                default_start = workflow.project.get("_start_chapter", 1)
+                start = default_start
                 if isinstance(step_progress, dict):
-                    start = step_progress.get("current", 1)
+                    start = max(step_progress.get("current", default_start), default_start)
                 for n in range(start, step.repeat + 1):
                     if self._stop:
                         break
@@ -175,7 +187,15 @@ class WorkflowRunner:
         prompt = self._format_prompt(step.prompt, workflow.project, n)
         response = await agent.run(prompt, context=context)
 
-        output = step.output.format(n=n, **workflow.project)
+        # 确定输出路径
+        if step.id == "chapter":
+            title = _extract_chapter_title(response.content, n)
+            output = f"chapters/{project_io.chapter_filename(n, title)}"
+        elif step.id == "inspiration":
+            output = f"inspiration/{project_io.inspiration_filename(n, '灵感')}"
+        else:
+            output = step.output.format(n=n, **workflow.project)
+
         if output:
             project_io.write_md(self.project_dir / output, response.content)
 
@@ -201,7 +221,18 @@ class WorkflowRunner:
                 self.on_error(step.id, str(e))
             raise
 
-        output = step.output.format(n=n, **project)
+        # 确定输出路径
+        output = step.output
+        if step.id == "chapter":
+            # 章节步骤：从响应中提取标题，使用标准命名格式
+            title = _extract_chapter_title(response.content, n)
+            output = f"chapters/{project_io.chapter_filename(n, title)}"
+        elif step.id == "inspiration":
+            # 灵感步骤：使用标准命名格式
+            output = f"inspiration/{project_io.inspiration_filename(n, '灵感')}"
+        else:
+            output = step.output.format(n=n, **project)
+
         if output:
             project_io.write_md(self.project_dir / output, response.content)
 
@@ -230,7 +261,7 @@ class WorkflowRunner:
                 chapters_dir = self.project_dir / project_io.CHAPTERS_DIR
                 if chapters_dir.exists():
                     for i in range(1, n):
-                        for ch_file in sorted(chapters_dir.glob(f"{i:03d}_*.md")):
+                        for ch_file in sorted(chapters_dir.glob(f"{i}_*.md")):
                             if ch_file.name.endswith(".outline.md"):
                                 continue
                             content = project_io.read_md(ch_file)
@@ -367,6 +398,21 @@ async def generate_workflow(
     return WorkflowDef.from_dict(data)
 
 
+def _extract_chapter_title(content: str, n: int) -> str:
+    """从章节正文中提取标题（第一个 Markdown 标题）。"""
+    import re
+    for line in content.split("\n"):
+        line = line.strip()
+        m = re.match(r"^#{1,3}\s+(.+)$", line)
+        if m:
+            title = m.group(1).strip()
+            # 清理标题中的特殊字符
+            title = re.sub(r"[*_`#\[\]()]", "", title).strip()
+            if title:
+                return title[:50]  # 限制长度
+    return f"第{n}章"
+
+
 # ── 工作流模板 ──
 
 DEFAULT_WORKFLOW = {
@@ -381,9 +427,85 @@ DEFAULT_WORKFLOW = {
         {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点。", "input": ["planning/大纲.md"], "output": "planning/主线.md"},
         {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
         {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
-        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲写第{n}章正文。保持与前文连贯，注意人物性格一致。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n:03d}.md"},
-        {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n:03d}_灵感.md", "every": 3, "optional": True},
+        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲写第{n}章正文。保持与前文连贯，注意人物性格一致。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.md"},
+        {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.md"], "output": "review/审核报告.md"},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.md"], "output": "review/校对报告.md"},
     ],
 }
+
+
+# ── 续写工作流 ──
+
+CONTINUE_WORKFLOW = {
+    "name": "续写",
+    "description": "从已有章节继续写作",
+    "steps": [
+        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。保持与前文连贯，注意人物性格一致。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.md"},
+        {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
+        {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.md"], "output": "review/审核报告.md"},
+        {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.md"], "output": "review/校对报告.md"},
+    ],
+}
+
+
+# ── 校验工作流 ──
+
+VALIDATE_WORKFLOW = {
+    "name": "校验",
+    "description": "审核+校对已有章节",
+    "steps": [
+        {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.md"], "output": "review/审核报告.md"},
+        {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.md"], "output": "review/校对报告.md"},
+    ],
+}
+
+
+def build_workflow(
+    mode: WorkflowMode,
+    project_info: dict,
+    start_chapter: int = 1,
+    end_chapter: int = 20,
+) -> WorkflowDef:
+    """根据模式构建工作流定义。
+
+    Args:
+        mode: 工作流模式
+        project_info: 项目信息
+        start_chapter: 起始章节号（续写模式用）
+        end_chapter: 结束章节号
+    """
+    if mode == WorkflowMode.NEW_BOOK:
+        data = json.loads(json.dumps(DEFAULT_WORKFLOW))
+    elif mode == WorkflowMode.CONTINUE:
+        data = json.loads(json.dumps(CONTINUE_WORKFLOW))
+    elif mode == WorkflowMode.VALIDATE:
+        data = json.loads(json.dumps(VALIDATE_WORKFLOW))
+    elif mode == WorkflowMode.FILL_GAPS:
+        # 查漏补缺：扫描缺失章节，只为缺失的部分生成写作步骤
+        data = {"name": "查漏补缺", "description": "检查并补写缺失章节", "steps": []}
+    else:
+        data = json.loads(json.dumps(DEFAULT_WORKFLOW))
+
+    # 设置项目信息
+    data["project"] = {
+        "title": project_info.get("title", ""),
+        "genre": project_info.get("genre", ""),
+        "style": project_info.get("style", ""),
+        "target_chapters": end_chapter,
+    }
+
+    # 为需要循环的步骤设置 repeat
+    total = end_chapter - start_chapter + 1
+    for step in data.get("steps", []):
+        if step.get("id") == "chapter":
+            step["repeat"] = end_chapter
+            # 续写模式：prompt 中提示从第几章开始
+            if mode == WorkflowMode.CONTINUE:
+                step["prompt"] = f"根据大纲和前文写第{{n}}章正文。这是第{start_chapter}章到第{end_chapter}章的续写部分。保持与前文连贯，注意人物性格一致。"
+
+    wf = WorkflowDef.from_dict(data)
+    # 续写模式：跳过已完成的章节
+    if mode == WorkflowMode.CONTINUE:
+        wf.project["_start_chapter"] = start_chapter
+    return wf

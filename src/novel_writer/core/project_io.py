@@ -101,20 +101,24 @@ def write_planning(project_dir: Path, name: str, content: str) -> None:
 
 # ── 章节文件 ──
 
-_CHAPTER_RE = re.compile(r"^(\d{3})_(.+)\.md$")
-_CHAPTER_OUTLINE_RE = re.compile(r"^(\d{3})_(.+)\.outline\.md$")
+# 匹配任意位数的数字序号（兼容旧的 3 位和新的 4 位格式）
+_CHAPTER_RE = re.compile(r"^(\d+)_(.+)\.md$")
+_CHAPTER_OUTLINE_RE = re.compile(r"^(\d+)_(.+)\.outline\.md$")
+
+# 默认使用 4 位零填充（支持 0001-9999 章）
+CHAPTER_DIGITS = 4
 
 
 def chapter_filename(number: int, title: str) -> str:
     """章节正文文件名。"""
     safe_title = title or "未命名"
-    return f"{number:03d}_{safe_title}.md"
+    return f"{number:0{CHAPTER_DIGITS}d}_{safe_title}.md"
 
 
 def chapter_outline_filename(number: int, title: str) -> str:
     """章节细纲文件名。"""
     safe_title = title or "未命名"
-    return f"{number:03d}_{safe_title}.outline.md"
+    return f"{number:0{CHAPTER_DIGITS}d}_{safe_title}.outline.md"
 
 
 def chapter_path(project_dir: Path, number: int, title: str) -> Path:
@@ -158,12 +162,12 @@ def scan_chapters(project_dir: Path) -> list[dict]:
 
 # ── 灵感文件 ──
 
-_INSPIRATION_RE = re.compile(r"^(\d{3})_(.+)\.md$")
+_INSPIRATION_RE = re.compile(r"^(\d+)_(.+)\.md$")
 
 
 def inspiration_filename(number: int, title: str) -> str:
     safe_title = title or "灵感"
-    return f"{number:03d}_{safe_title}.md"
+    return f"{number:0{CHAPTER_DIGITS}d}_{safe_title}.md"
 
 
 def scan_inspirations(project_dir: Path) -> list[dict]:

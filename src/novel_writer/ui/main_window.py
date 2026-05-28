@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter, QInputDialog,
     QMessageBox, QDialog, QVBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QHBoxLayout, QLabel,
+    QPushButton, QHBoxLayout, QLabel, QComboBox, QSpinBox, QGroupBox,
 )
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
@@ -26,7 +26,7 @@ from ..core.llm import LLMClient
 from ..core.agents import load_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 from ..core import project_io
-from ..core.workflow import WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, generate_workflow
+from ..core.workflow import WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, generate_workflow, WorkflowMode, build_workflow
 
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
@@ -639,14 +639,122 @@ class MainWindow(QMainWindow):
         total = len(self._wf_def.steps) if self._wf_def else 1
         self.agent_panel.workflow_bar.set_progress(int(done / total * 100))
 
+    def _show_mode_dialog(self) -> tuple[WorkflowMode, int, int] | None:
+        """显示工作流模式选择对话框，返回 (mode, start_ch, end_ch) 或 None。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("workflow_title"))
+        dialog.setMinimumWidth(380)
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # 模式选择
+        mode_group = QGroupBox("工作流模式")
+        mode_layout = QVBoxLayout(mode_group)
+        mode_combo = QComboBox()
+        mode_combo.addItem("📖 新书 — 从立意到审校全流程", WorkflowMode.NEW_BOOK)
+        mode_combo.addItem("✍️ 续写 — 从已有章节继续", WorkflowMode.CONTINUE)
+        mode_combo.addItem("🔍 查漏补缺 — 检查并补写缺失章节", WorkflowMode.FILL_GAPS)
+        mode_combo.addItem("✅ 校验 — 审核+校对已有章节", WorkflowMode.VALIDATE)
+        mode_layout.addWidget(mode_combo)
+        layout.addWidget(mode_group)
+
+        # 章节范围
+        chapter_group = QGroupBox("章节范围")
+        chapter_layout = QHBoxLayout(chapter_group)
+
+        chapter_layout.addWidget(QLabel("从第"))
+        start_spin = QSpinBox()
+        start_spin.setRange(1, 99999)
+        start_spin.setValue(1)
+        chapter_layout.addWidget(start_spin)
+        chapter_layout.addWidget(QLabel("章"))
+
+        chapter_layout.addWidget(QLabel("到第"))
+        end_spin = QSpinBox()
+        end_spin.setRange(1, 99999)
+        end_spin.setValue(20)
+        chapter_layout.addWidget(end_spin)
+        chapter_layout.addWidget(QLabel("章"))
+
+        layout.addWidget(chapter_group)
+
+        # 续写模式：自动检测起始章节
+        def on_mode_changed(idx):
+            mode = mode_combo.currentData()
+            if mode == WorkflowMode.CONTINUE:
+                # 扫描已有章节数，自动设置起始章节
+                chapters = project_io.scan_chapters(self.project.project_dir)
+                if chapters:
+                    last_num = max(c["number"] for c in chapters)
+                    start_spin.setValue(last_num + 1)
+                    end_spin.setValue(last_num + 20)
+                start_spin.setEnabled(True)
+                end_spin.setEnabled(True)
+                chapter_group.setTitle("续写范围")
+            elif mode == WorkflowMode.NEW_BOOK:
+                start_spin.setValue(1)
+                start_spin.setEnabled(False)
+                end_spin.setEnabled(True)
+                chapter_group.setTitle("目标章节数")
+            elif mode == WorkflowMode.FILL_GAPS:
+                start_spin.setEnabled(False)
+                end_spin.setEnabled(False)
+                chapter_group.setTitle("自动检测缺失章节")
+            elif mode == WorkflowMode.VALIDATE:
+                start_spin.setEnabled(False)
+                end_spin.setEnabled(False)
+                chapter_group.setTitle("校验全部章节")
+
+        mode_combo.currentIndexChanged.connect(on_mode_changed)
+        on_mode_changed(0)  # 初始化
+
+        # 按钮
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton(t("settings_cancel"))
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_row.addWidget(btn_cancel)
+        btn_ok = QPushButton(t("workflow_start"))
+        btn_ok.setObjectName("primary")
+        btn_ok.clicked.connect(dialog.accept)
+        btn_row.addWidget(btn_ok)
+        layout.addLayout(btn_row)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+
+        mode = mode_combo.currentData()
+        return (mode, start_spin.value(), end_spin.value())
+
     def _workflow_start(self):
-        """开始/继续执行工作流。"""
-        if not self._wf_def:
-            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
-            return
+        """开始执行工作流 — 先弹出模式选择对话框。"""
         if not self.agents:
             QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_agents"))
             return
+
+        result = self._show_mode_dialog()
+        if not result:
+            return
+
+        mode, start_ch, end_ch = result
+
+        # 构建工作流
+        project_info = {
+            "title": self.project.title,
+            "genre": self.project.genre,
+            "style": self.project.style,
+            "theme": self.project.theme,
+        }
+        self._wf_def = build_workflow(mode, project_info, start_ch, end_ch)
+        self._wf_progress = {}
+
+        # 保存工作流定义
+        wf_dict = self._wf_def.to_dict()
+        project_io.save_workflow(self.project.project_dir, {
+            "workflow": wf_dict,
+            "progress": {},
+        })
 
         self._wf_runner = WorkflowRunner(
             agents=self.agents,
