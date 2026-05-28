@@ -58,8 +58,9 @@ class WorkflowMiniBar(QWidget):
 
         # 进度条
         self._progress_bar = QProgressBar()
-        self._progress_bar.setFixedHeight(6)
-        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(16)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setFormat("%p%")
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         layout.addWidget(self._progress_bar)
@@ -118,7 +119,8 @@ class WorkflowMiniBar(QWidget):
         elevated = colors.get("elevated", "#242430")
         fg3 = colors.get("fg3", "#5a5a66")
         self._progress_bar.setStyleSheet(
-            f"QProgressBar {{ background: {elevated}; border-radius: 3px; border: none; }}"
-            f"QProgressBar::chunk {{ background: {accent}; border-radius: 3px; }}"
+            f"QProgressBar {{ background: {elevated}; border-radius: 8px; border: none; "
+            f"color: #ffffff; font-size: 10px; font-weight: bold; text-align: center; }}"
+            f"QProgressBar::chunk {{ background: {accent}; border-radius: 8px; }}"
         )
         self._status_label.setStyleSheet(f"font-size: 10px; color: {fg3};")
