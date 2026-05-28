@@ -15,8 +15,9 @@ from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 from .sidebar import Sidebar
 from .editor_panel import EditorPanel
 from .agent_panel import AgentPanel
+from .workflow_panel import WorkflowPanel
 from .settings_dialog import AppearanceDialog, ModelDialog, AgentDialog
-from .styles import build_style
+from .styles import build_style, get_theme_colors
 from ..locales import t, set_language
 from ..models.project import Project
 from ..models.chapter import Chapter, ChapterStatus
@@ -25,6 +26,7 @@ from ..core.llm import LLMClient
 from ..core.agents import load_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 from ..core import project_io
+from ..core.workflow import WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, generate_workflow
 
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
@@ -56,6 +58,8 @@ class AgentWorker(QThread):
             self._loop.call_soon_threadsafe(self._task.cancel)
 
     def run(self):
+        import sys
+        print(f"[DEBUG] AgentWorker.run: agent={self.agent.name!r}, input={repr(self.user_input[:80])}", file=sys.stderr)
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
@@ -197,6 +201,16 @@ class MainWindow(QMainWindow):
         self._about_action = QAction(t("menu_about_app"), self)
         self._about_action.triggered.connect(self._show_about)
         self._about_menu.addAction(self._about_action)
+
+        # 工作流
+        self._workflow_menu = menubar.addMenu(t("workflow_menu"))
+        self._workflow_open_action = QAction(t("workflow_menu_open"), self)
+        self._workflow_open_action.setShortcut(QKeySequence("Ctrl+Shift+W"))
+        self._workflow_open_action.triggered.connect(self._open_workflow_panel)
+        self._workflow_menu.addAction(self._workflow_open_action)
+        self._workflow_default_action = QAction(t("workflow_menu_default"), self)
+        self._workflow_default_action.triggered.connect(self._load_default_workflow)
+        self._workflow_menu.addAction(self._workflow_default_action)
 
     def _setup_menubar_icon(self):
         """在状态栏左侧显示应用小图标。"""
@@ -412,12 +426,15 @@ class MainWindow(QMainWindow):
             )
 
     def _on_agent_run(self, agent_name: str, user_input: str):
+        import sys
         agent = self.agents.get(agent_name)
+        print(f"[DEBUG] _on_agent_run: agent={agent_name!r}, has_agent={agent is not None}, input={repr(user_input[:80])}", file=sys.stderr)
         if not agent:
             QMessageBox.warning(self, t("dialog_error"), t("msg_agent_not_init", agent_name))
             return
         self._stop_worker()
         context = self._build_context(agent_name)
+        print(f"[DEBUG] context_len={len(context)}, context_preview={repr(context[:200])}", file=sys.stderr)
         self.agent_panel.set_working(True, agent_name)
         self._worker = AgentWorker(agent, user_input, context)
         self._worker.chunk_received.connect(lambda chunk: self._on_agent_stream(agent_name, chunk))
@@ -477,6 +494,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"{t('dialog_error')}: {e}")
 
     def _on_agent_error(self, error: str):
+        import sys
+        print(f"[DEBUG] _on_agent_error: {error}", file=sys.stderr)
         self.agent_panel.set_working(False)
         self.statusBar().showMessage(f"{t('dialog_error')}: {error}")
         try:
@@ -549,6 +568,9 @@ class MainWindow(QMainWindow):
         self._about_menu.setTitle(t("menu_about"))
         self._appearance_action.setText(t("menu_appearance_open"))
         self._about_action.setText(t("menu_about_app"))
+        self._workflow_menu.setTitle(t("workflow_menu"))
+        self._workflow_open_action.setText(t("workflow_menu_open"))
+        self._workflow_default_action.setText(t("workflow_menu_default"))
         # 侧边栏
         self.sidebar.retranslate()
         # 编辑区
@@ -575,6 +597,156 @@ class MainWindow(QMainWindow):
             self.project.set_project_dir(project_dir)
         self.project.save()
         self.statusBar().showMessage(t("status_saved", str(self.project.project_dir)))
+
+    # ── 工作流 ──
+
+    def _open_workflow_panel(self):
+        """打开工作流面板对话框。"""
+        if not self.project.title:
+            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
+            return
+        if not self.agents:
+            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_agents"))
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(t("workflow_title"))
+        dialog.setMinimumSize(600, 700)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        panel = WorkflowPanel()
+        panel.set_config(self.config)
+        colors = get_theme_colors(self.config.get("theme", "dark"), self.config)
+        panel.apply_theme(colors)
+        layout.addWidget(panel)
+
+        # 加载已有工作流或默认工作流
+        saved_wf = project_io.load_workflow(self.project.project_dir)
+        progress = saved_wf.get("progress", {})
+
+        # 尝试从 workflow.json 加载工作流定义
+        wf_def = None
+        wf_data = saved_wf.get("workflow")
+        if wf_data:
+            wf_def = WorkflowDef.from_dict(wf_data)
+        else:
+            # 使用默认工作流
+            wf_data = DEFAULT_WORKFLOW.copy()
+            wf_data["project"] = {
+                "title": self.project.title,
+                "genre": self.project.genre,
+                "style": self.project.style,
+                "target_chapters": 20,
+            }
+            wf_def = WorkflowDef.from_dict(wf_data)
+
+        panel.load_workflow(wf_def, progress)
+
+        # 连接信号
+        def on_start():
+            if not self.agents:
+                QMessageBox.warning(dialog, t("dialog_error"), t("workflow_no_agents"))
+                return
+            # 每次启动前重新构建 runner（确保 agent 最新）
+            runner = WorkflowRunner(
+                agents=self.agents,
+                project_dir=self.project.project_dir,
+                project_info=wf_def.project,
+            )
+            panel.start_execution(runner, wf_def, progress)
+
+        def on_finished():
+            self.statusBar().showMessage(t("workflow_finished"))
+
+        def on_generate():
+            self._generate_workflow(panel, dialog)
+
+        panel.workflow_started.connect(on_start)
+        panel.workflow_finished.connect(on_finished)
+        panel.generate_requested.connect(on_generate)
+
+        dialog.exec()
+
+    def _load_default_workflow(self):
+        """加载默认工作流到当前项目。"""
+        if not self.project.title:
+            QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
+            return
+        wf_data = DEFAULT_WORKFLOW.copy()
+        wf_data["project"] = {
+            "title": self.project.title,
+            "genre": self.project.genre,
+            "style": self.project.style,
+            "target_chapters": 20,
+        }
+        project_io.save_workflow(self.project.project_dir, {
+            "workflow": wf_data,
+            "progress": {},
+        })
+        self.statusBar().showMessage(t("workflow_generated"))
+
+    def _generate_workflow(self, panel: WorkflowPanel, dialog: QDialog):
+        """用 LLM 动态生成工作流。"""
+        if not self.llm:
+            QMessageBox.warning(dialog, t("dialog_error"), t("workflow_no_agents"))
+            return
+
+        panel._append_log(t("workflow_generating"))
+        panel._btn_generate.setEnabled(False)
+
+        project_info = {
+            "title": self.project.title,
+            "genre": self.project.genre,
+            "style": self.project.style,
+            "theme": self.project.theme,
+        }
+
+        # 使用后台线程避免阻塞 UI
+        from PySide6.QtCore import QThread, Signal as QSignal
+
+        class GenThread(QThread):
+            done = QSignal(object)  # WorkflowDef or Exception
+            def __init__(self, agents, project_info, llm):
+                super().__init__()
+                self.agents = agents
+                self.project_info = project_info
+                self.llm = llm
+            def run(self):
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(
+                        generate_workflow(self.agents, self.project_info, self.llm)
+                    )
+                    self.done.emit(result)
+                except Exception as e:
+                    self.done.emit(e)
+                finally:
+                    loop.close()
+
+        target_ch = 20
+        self._gen_thread = GenThread(self.agents, project_info, self.llm)
+
+        def on_gen_done(result):
+            panel._btn_generate.setEnabled(True)
+            if isinstance(result, Exception):
+                panel._append_log(t("workflow_gen_fail", str(result)))
+                return
+            # 保存并加载新工作流
+            wf_dict = result.to_dict()
+            wf_dict["project"]["target_chapters"] = target_ch
+            project_io.save_workflow(self.project.project_dir, {
+                "workflow": wf_dict,
+                "progress": {},
+            })
+            result.project["target_chapters"] = target_ch
+            panel.load_workflow(result, {})
+            panel._append_log(t("workflow_generated"))
+
+        self._gen_thread.done.connect(on_gen_done)
+        self._gen_thread.start()
 
     def closeEvent(self, event):
         self._stop_worker()

@@ -522,11 +522,14 @@ class AgentPanel(QWidget):
     # ── 发送 ──
 
     def _on_send(self):
+        import sys
         text = self.input_edit.toPlainText().strip()
         if not text or not self._current_agent:
+            print(f"[DEBUG] _on_send blocked: text={repr(text[:50] if text else '')}, agent={self._current_agent!r}", file=sys.stderr)
             return
         self.add_user_message(text)
         self.input_edit.clear()
+        print(f"[DEBUG] _on_send emitting: agent={self._current_agent!r}, text={repr(text[:80])}", file=sys.stderr)
         self.agent_run_requested.emit(self._current_agent, text)
 
     def _send_quick_action(self, prompt: str):

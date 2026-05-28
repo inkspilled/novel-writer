@@ -23,7 +23,8 @@
 | 模板变量插值 | ✅ 已实现 | {n}, {title}, {genre} 等 |
 | 进度回调 | ✅ 已实现 | on_step_start / on_step_end |
 | 断点恢复 | ✅ 已实现 | workflow.json 保存进度 |
-| LLM 动态编排 | 🔲 设计中 | 根据可用智能体动态生成工作流 |
+| UI 进度面板 | ✅ 已实现 | workflow_panel.py 步骤状态、进度条、执行日志 |
+| LLM 动态编排 | ✅ 已实现 | generate_workflow() 根据智能体技能自动生成工作流 |
 | 质量门控 | 🔲 设计中 | 审核不过自动重写 |
 
 ## 架构
@@ -172,9 +173,26 @@ def _build_context(self, input_files: list[str], n: int) -> str:
 ### LLM 动态编排（可选）
 
 ```python
-async def generate_workflow(agents: dict, project_info: dict, llm: BaseLLM) -> dict:
+async def generate_workflow(agents: dict, project_info: dict, llm: BaseLLM) -> WorkflowDef:
     """让 LLM 根据可用智能体动态生成工作流。"""
 ```
+
+LLM 根据项目信息（书名、题材、风格）和可用智能体的技能列表，自动生成最优的工作流步骤定义。生成的工作流自动保存到 `workflow.json`。
+
+### UI 进度面板
+
+```python
+class WorkflowPanel(QWidget):
+    """工作流进度面板 — 显示步骤状态、进度条、执行日志。"""
+```
+
+面板功能：
+- 步骤卡片列表：每个步骤显示状态图标（○ 等待 / ◉ 运行 / ● 完成 / ✗ 出错）
+- 总体进度条：实时显示工作流完成百分比
+- 循环步骤进度：显示当前章节 / 总章节数
+- 执行日志：实时输出每步的执行信息
+- 控制按钮：开始/停止/重置/ AI 生成工作流
+- 菜单入口：工作流(Ctrl+Shift+W) 打开面板
 
 ## 项目目录结构
 
@@ -229,8 +247,8 @@ data/projects/{project_name}/
 | P1 | 循环步骤（逐章写作） | ✅ 已完成 |
 | P1 | 文件读写 + 上下文传递 | ✅ 已完成 |
 | P2 | 进度保存 + 断点恢复 | ✅ 已完成 |
-| P2 | UI 进度面板 | 🔲 待实现 |
-| P3 | LLM 动态编排 | 🔲 待实现 |
+| P2 | UI 进度面板 | ✅ 已完成 |
+| P3 | LLM 动态编排 | ✅ 已完成 |
 | P3 | 定时灵感注入 | ✅ 已完成 |
 | P4 | 质量门控（审核不过重写） | 🔲 待实现 |
 

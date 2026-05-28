@@ -54,6 +54,7 @@ novel-writer/
 │       ├── editor_panel.py         # 编辑区
 │       ├── agent_panel.py          # Agent 面板（对话、Markdown、SQLite 持久化）
 │       ├── agent_animation.py      # Agent 状态动画
+│       ├── workflow_panel.py       # 工作流进度面板（步骤状态、进度条、执行日志）
 │       └── settings_dialog.py      # 设置对话框（外观/模型/智能体）
 ```
 
@@ -145,9 +146,30 @@ class WorkflowRunner:
     async def run(workflow, progress)      # 执行完整工作流
     async def run_single_step(step_id)     # 执行单个步骤
     def find_agent(skill)                  # 技能匹配
+
+async def generate_workflow(agents, project_info, llm) -> WorkflowDef:
+    """LLM 动态编排 — 根据可用智能体自动生成工作流。"""
 ```
 
-支持：循环步骤（repeat）、定时触发（every）、文件输入/输出、模板变量插值、断点恢复。
+支持：循环步骤（repeat）、定时触发（every）、文件输入/输出、模板变量插值、断点恢复、LLM 动态编排。
+
+### 工作流 UI (`ui/workflow_panel.py`)
+
+```python
+class WorkflowPanel(QWidget):
+    """工作流进度面板。"""
+    # 步骤卡片列表 + 状态图标
+    # 总体进度条 + 循环步骤章节进度
+    # 执行日志（QTextEdit）
+    # 控制按钮：开始/停止/重置/AI生成
+    # WorkflowThread(QThread) 后台执行
+
+class WorkflowThread(QThread):
+    """后台线程执行工作流，信号驱动 UI 更新。"""
+    step_started / step_finished / step_error / log_message / workflow_done
+```
+
+入口：菜单栏 → 工作流 → 打开工作流面板 (Ctrl+Shift+W)。
 
 ### 模型配置系统
 
@@ -177,7 +199,8 @@ class WorkflowRunner:
 MainWindow
 ├── Sidebar          # 项目管理、章节树、字数统计
 ├── EditorPanel      # 正文/大纲/备注 三 Tab
-└── AgentPanel       # Agent 按钮行、对话、快捷操作、模型信息、SQLite 持久化
+├── AgentPanel       # Agent 按钮行、对话、快捷操作、模型信息、SQLite 持久化
+└── WorkflowPanel    # 工作流进度面板（菜单触发的对话框）
 ```
 
 - `AgentWorker(QThread)`：后台线程执行 Agent 调用，信号驱动 UI 更新，支持 asyncio task 取消
@@ -192,6 +215,7 @@ MainWindow
 ```
 ├── 文件        # 新建/打开/保存项目、退出
 ├── 模型与智能体  # 模型设置、智能体管理
+├── 工作流       # 打开工作流面板、加载默认工作流
 └── 关于        # 外观设置、关于
 ```
 
