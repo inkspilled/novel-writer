@@ -218,7 +218,11 @@ class WorkflowRunner:
             output = step.output.format(n=n, **workflow.project)
 
         if output:
-            project_io.write_md(self.project_dir / output, response.content)
+            # 规划文档保护：已有内容的 planning/ 文件不覆盖
+            out_path = self.project_dir / output
+            if output.startswith("planning/") and out_path.exists() and out_path.stat().st_size > 0:
+                return f"[跳过] {output} 已有内容，不覆写"
+            project_io.write_md(out_path, response.content)
 
         return response.content
 
@@ -264,7 +268,13 @@ class WorkflowRunner:
             output = step.output.format(n=n, **project)
 
         if output:
-            project_io.write_md(self.project_dir / output, response.content)
+            # 规划文档保护：已有内容的 planning/ 文件不覆盖
+            out_path = self.project_dir / output
+            if output.startswith("planning/") and out_path.exists() and out_path.stat().st_size > 0:
+                if self.on_step_end:
+                    self.on_step_end(step.id, n, agent.title, f"[跳过] {output} 已有内容，不覆写")
+                return
+            project_io.write_md(out_path, response.content)
 
         if self.on_step_end:
             self.on_step_end(step.id, n, agent.title, response.content)
