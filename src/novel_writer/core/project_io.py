@@ -252,5 +252,11 @@ def list_projects(projects_root: Path) -> list[dict]:
 def delete_project(project_dir: Path) -> None:
     """删除整个项目目录。"""
     import shutil
+    import time
     if project_dir.exists():
-        shutil.rmtree(project_dir)
+        try:
+            shutil.rmtree(project_dir)
+        except PermissionError:
+            # 文件被锁定，等待后重试
+            time.sleep(0.5)
+            shutil.rmtree(project_dir, ignore_errors=True)
