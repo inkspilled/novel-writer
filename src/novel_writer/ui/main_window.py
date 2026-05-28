@@ -481,10 +481,19 @@ class MainWindow(QMainWindow):
         if self.project.project_dir:
             planning_dir = self.project.project_dir / "planning"
             if planning_dir.exists():
+                char_content = ""
                 for f in sorted(planning_dir.glob("*.md")):
                     content = project_io.read_md(f)
                     if content:
                         parts.append(f"=== {f.stem} ===\n{content}")
+                        if f.name == "人物设定.md":
+                            char_content = content
+                # 角色约束
+                if char_content:
+                    from ..core.workflow import _build_character_constraint
+                    constraint = _build_character_constraint(char_content)
+                    if constraint:
+                        parts.append(constraint)
 
         # 读取所有章节内容
         if self.project.project_dir:

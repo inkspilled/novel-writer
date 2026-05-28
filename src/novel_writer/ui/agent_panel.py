@@ -280,11 +280,11 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── 办公室场景（占 30%） ──
+        # ── 办公室场景（占 60%） ──
         from .office_scene import OfficeScene
         self.office = OfficeScene()
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
-        layout.addWidget(self.office, 7)
+        layout.addWidget(self.office, 6)
 
         # ── 工作流迷你进度条 ──
         from .workflow_bar import WorkflowMiniBar
@@ -335,7 +335,7 @@ class AgentPanel(QWidget):
         self._quick_bar.setVisible(False)
         layout.addWidget(self._quick_bar)
 
-        # ── 聊天区域（占 70%） ──
+        # ── 聊天区域（占 40%） ──
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -345,7 +345,7 @@ class AgentPanel(QWidget):
         self.chat_layout.setSpacing(4)
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
-        layout.addWidget(self.scroll_area, 3)
+        layout.addWidget(self.scroll_area, 4)
 
         # ── 加载指示器 ──
         self._loading_label = QLabel(t("agent_thinking"))

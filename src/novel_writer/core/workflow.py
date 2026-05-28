@@ -275,6 +275,7 @@ class WorkflowRunner:
     def _build_context(self, input_files: list[str], n: int) -> str:
         """读取输入文件，拼接上下文。"""
         parts = []
+        char_file_content = ""
         for f in input_files:
             if f == "prev_chapters":
                 # 读取前面所有章节
@@ -303,7 +304,16 @@ class WorkflowRunner:
                 if p.exists():
                     content = project_io.read_md(p)
                     if content:
+                        if f.endswith("人物设定.md"):
+                            char_file_content = content
                         parts.append(content)
+
+        # 角色约束：从人物设定中提取角色信息，生成写作约束
+        if char_file_content:
+            constraint = _build_character_constraint(char_file_content)
+            if constraint:
+                parts.append(constraint)
+
         return "\n\n".join(parts)
 
     def _format_prompt(self, template: str, project: dict, n: int) -> str:
@@ -433,6 +443,58 @@ def _extract_chapter_title(content: str, n: int) -> str:
     return f"第{n}章"
 
 
+def _build_character_constraint(char_content: str) -> str:
+    """从人物设定内容中提取角色信息，生成写作约束指令。"""
+    import re
+
+    lines = char_content.split("\n")
+    characters = []
+    protagonist = ""
+
+    # 解析人物设定：匹配 "### 角色名" 或 "## 角色名" 格式
+    for i, line in enumerate(lines):
+        m = re.match(r"^#{2,4}\s+(.+?)$", line.strip())
+        if m:
+            name = m.group(1).strip()
+            # 跳过非角色标题（如 "一、核心人物设定" 之类的章节标题）
+            if re.match(r"^[一二三四五六七八九十]", name):
+                continue
+            if name in ("核心同伴", "关键对立/引导角色", "关系网络", "动态演进"):
+                continue
+            # 检查是否标记为主角
+            is_protagonist = False
+            for j in range(i + 1, min(i + 10, len(lines))):
+                if re.match(r"^#{2,4}\s+", lines[j].strip()):
+                    break
+                if "主角" in lines[j] or "protagonist" in lines[j].lower():
+                    is_protagonist = True
+                    break
+            characters.append(name)
+            if is_protagonist and not protagonist:
+                protagonist = name
+
+    # 如果没找到显式主角标记，用第一个角色
+    if characters and not protagonist:
+        protagonist = characters[0]
+
+    if not characters:
+        return ""
+
+    # 生成约束指令
+    parts = ["=== 【写作约束 · 角色锚定】 ==="]
+    parts.append(f"主角：{protagonist}")
+    parts.append(f"已登场角色：{', '.join(characters)}")
+    parts.append("")
+    parts.append("【强制规则】：")
+    parts.append(f"1. 本小说主角是「{protagonist}」，全文必须以他/她为核心视角展开，不得中途更换主角。")
+    parts.append("2. 严格使用人物设定中的角色名，不得擅自改名、拆分、合并角色。")
+    parts.append("3. 未在人物设定中出现的新角色，不得突然作为重要角色登场。如需引入新角色，必须先铺垫，且不能喧宾夺主。")
+    parts.append("4. 每个角色的性格、说话方式、行为必须与其人物设定一致，不得前后矛盾。")
+    parts.append(f"5. 除「{protagonist}」外，其他角色不得替代主角推动主线剧情。")
+
+    return "\n".join(parts)
+
+
 # ── 工作流模板 ──
 
 DEFAULT_WORKFLOW = {
@@ -447,7 +509,7 @@ DEFAULT_WORKFLOW = {
         {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点。", "input": ["planning/大纲.md"], "output": "planning/主线.md"},
         {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
         {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
-        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲写第{n}章正文。保持与前文连贯，注意人物性格一致。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.txt"], "output": "review/校对报告.md"},
@@ -461,7 +523,7 @@ CONTINUE_WORKFLOW = {
     "name": "续写",
     "description": "从已有章节继续写作",
     "steps": [
-        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。保持与前文连贯，注意人物性格一致。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.txt"], "output": "review/校对报告.md"},
@@ -547,7 +609,7 @@ def build_workflow(
             step["repeat"] = end_chapter
             # 续写模式：prompt 中提示从第几章开始
             if mode == WorkflowMode.CONTINUE:
-                step["prompt"] = f"根据大纲和前文写第{{n}}章正文。这是第{start_chapter}章到第{end_chapter}章的续写部分。保持与前文连贯，注意人物性格一致。"
+                step["prompt"] = f"根据大纲和前文写第{{n}}章正文。这是第{start_chapter}章到第{end_chapter}章的续写部分。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。"
 
     wf = WorkflowDef.from_dict(data)
     # 续写模式：跳过已完成的章节

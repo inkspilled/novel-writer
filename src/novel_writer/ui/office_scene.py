@@ -215,8 +215,9 @@ class OfficeScene(QWidget):
         painter.drawText(int(w * 0.03), int(h * 0.74) + 12, "🏋️🏃")
 
     def _draw_desk(self, painter: QPainter, slot: AgentSlot, w: int, h: int):
-        x = int(slot.desk_x * w + slot.offset_x * w)
-        y = int(slot.desk_y * h + slot.offset_y * h)
+        # 桌子位置固定，不随 agent 移动
+        x = int(slot.desk_x * w)
+        y = int(slot.desk_y * h)
         # 桌子
         dw, dh = 60, 30
         desk = QRectF(x - dw / 2, y - dh / 2, dw, dh)
