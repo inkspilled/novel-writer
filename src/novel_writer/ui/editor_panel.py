@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QTabWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QPushButton,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QTextOption
@@ -12,6 +12,7 @@ from ..locales import t
 class EditorPanel(QWidget):
 
     content_changed = Signal()
+    save_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,11 +39,18 @@ class EditorPanel(QWidget):
         self.word_count_label.setStyleSheet("font-size: 12px; font-weight: 500;")
         self.word_count_label.setMinimumWidth(60)
         toolbar_layout.addWidget(self.word_count_label)
+
+        self.save_btn = QPushButton(t("editor_save"))
+        self.save_btn.setObjectName("primary")
+        self.save_btn.setFixedHeight(32)
+        self.save_btn.setFixedWidth(72)
+        self.save_btn.setStyleSheet("font-size: 12px; padding: 4px 12px;")
+        self.save_btn.clicked.connect(self.save_requested.emit)
+        toolbar_layout.addWidget(self.save_btn)
+
         layout.addWidget(toolbar)
 
-        # Tab
-        self.tabs = QTabWidget()
-
+        # 正文编辑区（无 Tab）
         self.content_edit = QTextEdit()
         self.content_edit.setPlaceholderText(t("editor_ph_content"))
         self.content_edit.setAcceptRichText(False)
@@ -51,59 +59,30 @@ class EditorPanel(QWidget):
         font.setStyleHint(QFont.StyleHint.SansSerif)
         self.content_edit.setFont(font)
         self.content_edit.textChanged.connect(self._on_text_changed)
-        self.tabs.addTab(self.content_edit, t("editor_tab_content"))
-
-        self.outline_edit = QTextEdit()
-        self.outline_edit.setPlaceholderText(t("editor_ph_outline"))
-        self.outline_edit.setAcceptRichText(False)
-        self.tabs.addTab(self.outline_edit, t("editor_tab_outline"))
-
-        self.notes_edit = QTextEdit()
-        self.notes_edit.setPlaceholderText(t("editor_ph_notes"))
-        self.notes_edit.setAcceptRichText(False)
-        self.tabs.addTab(self.notes_edit, t("editor_tab_notes"))
-
-        layout.addWidget(self.tabs)
+        layout.addWidget(self.content_edit)
 
     def load_chapter(self, chapter):
         self._current_chapter_idx = chapter.number - 1 if hasattr(chapter, 'number') else -1
         self.chapter_title.setText(f"第{chapter.number}章 {chapter.title}" if hasattr(chapter, 'number') else "")
-        for edit in (self.content_edit, self.outline_edit, self.notes_edit):
-            edit.blockSignals(True)
+        self.content_edit.blockSignals(True)
         self.content_edit.setPlainText(chapter.content or "")
-        self.outline_edit.setPlainText(chapter.outline or "")
-        self.notes_edit.setPlainText(chapter.notes or "")
-        for edit in (self.content_edit, self.outline_edit, self.notes_edit):
-            edit.blockSignals(False)
+        self.content_edit.blockSignals(False)
         self._update_word_count()
 
     def get_content(self) -> str:
         return self.content_edit.toPlainText()
 
-    def get_outline(self) -> str:
-        return self.outline_edit.toPlainText()
-
-    def get_notes(self) -> str:
-        return self.notes_edit.toPlainText()
-
     def set_content(self, text: str):
         self.content_edit.setPlainText(text)
 
     def retranslate(self):
-        """刷新文本。"""
         self.chapter_title.setText(t("editor_select_chapter"))
         self.content_edit.setPlaceholderText(t("editor_ph_content"))
-        self.outline_edit.setPlaceholderText(t("editor_ph_outline"))
-        self.notes_edit.setPlaceholderText(t("editor_ph_notes"))
-        self.tabs.setTabText(0, t("editor_tab_content"))
-        self.tabs.setTabText(1, t("editor_tab_outline"))
-        self.tabs.setTabText(2, t("editor_tab_notes"))
+        self.save_btn.setText(t("editor_save"))
 
     def clear(self):
         self.chapter_title.setText(t("editor_select_chapter"))
         self.content_edit.clear()
-        self.outline_edit.clear()
-        self.notes_edit.clear()
         self.word_count_label.setText(f"0 {t('editor_words')}")
 
     def _on_text_changed(self):

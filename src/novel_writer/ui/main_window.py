@@ -159,6 +159,7 @@ class MainWindow(QMainWindow):
         self.sidebar.chapter_add_requested.connect(self._add_chapter)
         self.agent_panel.agent_run_requested.connect(self._on_agent_run)
         self.editor.content_changed.connect(self._on_content_changed)
+        self.editor.save_requested.connect(self._save_project)
 
     def _setup_menu(self):
         menubar = self.menuBar()
@@ -421,8 +422,6 @@ class MainWindow(QMainWindow):
         idx = self.editor._current_chapter_idx
         if 0 <= idx < len(self.project.chapters):
             self.project.chapters[idx].content = self.editor.get_content()
-            self.project.chapters[idx].outline = self.editor.get_outline()
-            self.project.chapters[idx].notes = self.editor.get_notes()
             self.sidebar.update_stats(
                 self.project.total_words(),
                 self.project.target_words,

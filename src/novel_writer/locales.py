@@ -42,11 +42,8 @@ STRINGS = {
     "editor_select_chapter": {"zh": "选择一个章节开始写作", "en": "Select a chapter to start writing"},
     "editor_words": {"zh": "字", "en": "words"},
     "editor_tab_content": {"zh": "正文", "en": "Content"},
-    "editor_tab_outline": {"zh": "大纲", "en": "Outline"},
-    "editor_tab_notes": {"zh": "备注", "en": "Notes"},
     "editor_ph_content": {"zh": "在这里开始写作", "en": "Start writing here"},
-    "editor_ph_outline": {"zh": "章节大纲", "en": "Chapter outline"},
-    "editor_ph_notes": {"zh": "写作备注", "en": "Writing notes"},
+    "editor_save": {"zh": "保存", "en": "Save"},
 
     # ── Agent 面板 ──
     "agent_workbench": {"zh": "智能体工作台", "en": "Agent Workbench"},

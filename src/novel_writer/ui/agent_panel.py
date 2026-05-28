@@ -280,11 +280,11 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── 办公室场景（占 60%） ──
+        # ── 办公室场景（占 45%） ──
         from .office_scene import OfficeScene
         self.office = OfficeScene()
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
-        layout.addWidget(self.office, 6)
+        layout.addWidget(self.office, 3)
 
         # ── 工作流迷你进度条 ──
         from .workflow_bar import WorkflowMiniBar
@@ -335,7 +335,7 @@ class AgentPanel(QWidget):
         self._quick_bar.setVisible(False)
         layout.addWidget(self._quick_bar)
 
-        # ── 聊天区域（占 40%） ──
+        # ── 聊天区域（占 55%） ──
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)

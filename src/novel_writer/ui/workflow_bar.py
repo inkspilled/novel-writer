@@ -73,7 +73,7 @@ class WorkflowMiniBar(QWidget):
         # 执行日志（默认隐藏）
         self._log_area = QTextEdit()
         self._log_area.setReadOnly(True)
-        self._log_area.setMaximumHeight(120)
+        self._log_area.setMaximumHeight(200)
         self._log_area.setStyleSheet(
             "font-size: 10px; font-family: Consolas, monospace; "
             "background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06); "
