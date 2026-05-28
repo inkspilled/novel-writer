@@ -7,7 +7,9 @@
 | Python | >= 3.10 | 运行时 |
 | PySide6 | >= 6.7 | GUI 框架 |
 | Pydantic | >= 2.0 | 数据模型 |
-| openai | >= 1.0 | 统一 LLM 接口（OpenAI 兼容协议） |
+| openai | >= 1.0 | OpenAI 兼容 LLM 接口 |
+| anthropic | >= 0.40 | Claude 原生接口 |
+| httpx | >= 0.27 | Ollama HTTP 接口 |
 
 ## 项目结构
 
@@ -37,7 +39,10 @@ novel-writer/
 │   ├── core/
 │   │   ├── llm/
 │   │   │   ├── base.py             # BaseLLM + LLMMessage/LLMResponse
-│   │   │   └── client.py           # 统一 LLMClient（OpenAI 兼容）
+│   │   │   ├── client.py           # 统一 LLMClient（OpenAI 兼容）
+│   │   │   ├── claude.py           # ClaudeLLM（Anthropic 原生）
+│   │   │   ├── ollama.py           # OllamaLLM（本地模型）
+│   │   │   └── openai_compat.py    # OpenAICompatLLM
 │   │   ├── agents/
 │   │   │   ├── __init__.py         # load_agents() / save_agents()
 │   │   │   └── base.py             # BaseAgent + AgentConfig
@@ -47,8 +52,10 @@ novel-writer/
 │   │   ├── project.py              # Project（基于目录的存储）
 │   │   ├── chapter.py              # Chapter（文件 IO）
 │   │   └── character.py            # Character
+│   ├── storage/                    # 存储抽象层
+│   ├── assets/                     # 图标资源（icon.svg, status_icon.png）
 │   └── ui/
-│       ├── styles.py               # 5 套主题
+│       ├── styles.py               # 4 套主题（深夜墨/晨雾白/远山蓝/苍山绿）
 │       ├── main_window.py          # 主窗口（三栏布局）
 │       ├── sidebar.py              # 侧边栏
 │       ├── editor_panel.py         # 编辑区
@@ -57,7 +64,7 @@ novel-writer/
 │       ├── workflow_bar.py         # 工作流迷你进度条
 │       ├── workflow_panel.py       # WorkflowThread（后台执行）
 │       ├── agent_animation.py      # Agent 指示器动画
-│       └── settings_dialog.py      # 设置对话框
+│       └── settings_dialog.py      # 设置对话框（外观/模型/智能体）
 ```
 
 ## 架构设计
@@ -81,7 +88,16 @@ load_workflow / save_workflow       # 工作流进度
 
 ### LLM 层 (`core/llm/`)
 
-统一 `LLMClient`，OpenAI 兼容协议，只需 `api_key + base_url + model`。
+多驱动架构，支持三种后端：
+
+| 驱动 | 文件 | 协议 | 适用场景 |
+|------|------|------|----------|
+| `LLMClient` | `client.py` | OpenAI 兼容 | DeepSeek/Kimi/GLM/通义/OpenAI |
+| `ClaudeLLM` | `claude.py` | Anthropic 原生 | Claude 系列（需 `anthropic` 包） |
+| `OllamaLLM` | `ollama.py` | Ollama HTTP | 本地模型（qwen3.5 等） |
+| `OpenAICompatLLM` | `openai_compat.py` | OpenAI 兼容 | 通用 OpenAI 兼容接口 |
+
+统一接口：`api_key + base_url + model`，切换后端只需改配置。
 
 ### Agent 系统 (`core/agents/`)
 
@@ -110,16 +126,18 @@ def build_workflow(mode, project_info, start, end) -> WorkflowDef:
 
 ```
 MainWindow (splitter: 220 / 560 / 620)
-├── Sidebar         # 项目管理、章节树
+├── Sidebar         # 项目管理、章节树、字数统计
 ├── EditorPanel     # 正文/大纲/备注
 └── AgentPanel      # 整合面板
-    ├── OfficeScene     # 办公室场景（40%）— QPainter + 脉冲光圈 + 任务标签
-    ├── WorkflowMiniBar # 进度条 + 执行日志 + 开始/停止
-    └── ChatArea        # 对话区（60%）— SQLite 持久化
+    ├── OfficeScene     # 办公室场景 — QPainter + Agent 动画
+    ├── WorkflowMiniBar # 进度条（百分比）+ 执行日志 + 开始/停止
+    └── ChatArea        # 对话区 — SQLite 持久化
 ```
 
+- 右侧面板布局：办公室场景占大部分空间，下方依次是进度条、执行日志、对话区
 - 聊天记录按项目隔离：`data/projects/<name>/chat.db`
 - 对话上下文包含全部规划文档 + 所有章节正文
+- 工作流调用 Agent 时对话自动写入聊天记录
 - `AgentWorker(QThread)` 后台执行，信号驱动 UI
 - 流式输出按 Agent 隔离，切换不影响进行中的流
 
@@ -140,11 +158,23 @@ MainWindow (splitter: 220 / 560 / 620)
 {"name": "供应商名", "type": "openai_compat", "base_url": "https://api.example.com/v1"}
 ```
 
+支持的类型：
+- `openai_compat` — OpenAI 兼容协议（DeepSeek/Kimi/GLM/通义/OpenAI）
+- `ollama` — 本地 Ollama 模型
+
+## Claude 原生接口
+
+使用 `anthropic` 包直连，无需代理：
+
+1. 安装依赖：`pip install anthropic`
+2. 设置 → 模型 → 选择 Claude 供应商
+3. 填入 API Key，选择模型（如 `claude-sonnet-4-20250514`）
+
 ## Ollama 本地模型
 
 1. 安装 Ollama：https://ollama.com
 2. `ollama pull qwen3.5:9b`
-3. 设置 → 模型中选择 Ollama
+3. 设置 → 模型中选择 Ollama，自动检测已安装模型
 
 ## 扩展智能体
 
