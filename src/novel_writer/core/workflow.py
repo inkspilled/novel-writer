@@ -131,6 +131,19 @@ class WorkflowRunner:
     def stop(self):
         self._stop = True
 
+    def _find_chapter_file(self, n: int) -> str | None:
+        """查找第 n 章的已有文件名，找到则返回文件名（不含目录）。"""
+        chapters_dir = self.project_dir / project_io.CHAPTERS_DIR
+        if not chapters_dir.exists():
+            return None
+        for f in chapters_dir.iterdir():
+            if not f.is_file():
+                continue
+            m = project_io._CHAPTER_RE.match(f.name)
+            if m and int(m.group(1)) == n:
+                return f.name
+        return None
+
     async def run(self, workflow: WorkflowDef, progress: dict | None = None) -> dict:
         """执行完整工作流，返回进度状态。"""
         self._stop = False
@@ -189,8 +202,12 @@ class WorkflowRunner:
 
         # 确定输出路径
         if step.id == "chapter":
-            title = _extract_chapter_title(response.content, n)
-            output = f"chapters/{project_io.chapter_filename(n, title)}"
+            existing = self._find_chapter_file(n)
+            if existing:
+                output = f"chapters/{existing}"
+            else:
+                title = _extract_chapter_title(response.content, n)
+                output = f"chapters/{project_io.chapter_filename(n, title)}"
         elif step.id == "inspiration":
             output = f"inspiration/{project_io.inspiration_filename(n, '灵感')}"
         else:
@@ -224,11 +241,14 @@ class WorkflowRunner:
         # 确定输出路径
         output = step.output
         if step.id == "chapter":
-            # 章节步骤：从响应中提取标题，使用标准命名格式
-            title = _extract_chapter_title(response.content, n)
-            output = f"chapters/{project_io.chapter_filename(n, title)}"
+            # 检查是否已有该章节文件，有则复用
+            existing = self._find_chapter_file(n)
+            if existing:
+                output = f"chapters/{existing}"
+            else:
+                title = _extract_chapter_title(response.content, n)
+                output = f"chapters/{project_io.chapter_filename(n, title)}"
         elif step.id == "inspiration":
-            # 灵感步骤：使用标准命名格式
             output = f"inspiration/{project_io.inspiration_filename(n, '灵感')}"
         else:
             output = step.output.format(n=n, **project)
