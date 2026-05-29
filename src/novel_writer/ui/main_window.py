@@ -176,6 +176,10 @@ class MainWindow(QMainWindow):
         self._save_action.setShortcut(QKeySequence.StandardKey.Save)
         self._save_action.triggered.connect(self._save_project)
         self._file_menu.addAction(self._save_action)
+        self._settings_action = QAction("项目设置", self)
+        self._settings_action.setShortcut(QKeySequence("Ctrl+Shift+,"))
+        self._settings_action.triggered.connect(self._open_project_settings)
+        self._file_menu.addAction(self._settings_action)
         self._file_menu.addSeparator()
         self._exit_action = QAction(t("menu_exit"), self)
         self._exit_action.setShortcut(QKeySequence.StandardKey.Quit)
@@ -590,6 +594,46 @@ class MainWindow(QMainWindow):
             self._init_llm()
             self._init_agents()
             self.statusBar().showMessage(t("status_settings_saved"))
+
+    def _open_project_settings(self):
+        """打开项目设置对话框。"""
+        if not self.project.title:
+            QMessageBox.information(self, t("dialog_prompt"), "请先打开或新建项目")
+            return
+        from .new_project_dialog import NewProjectDialog
+        project_data = {
+            "title": self.project.title,
+            "genre": self.project.genre,
+            "style": self.project.style,
+            "target_words": self.project.target_words,
+            "theme": self.project.theme,
+            "direction": self.project.direction,
+            "synopsis": self.project.synopsis,
+            "cover": self.project.cover,
+            "_project_dir": str(self.project.project_dir) if self.project.project_dir else "",
+        }
+        dialog = NewProjectDialog(llm=self.llm, parent=self, project_data=project_data)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            # 更新项目信息
+            self.project.title = data["title"]
+            self.project.genre = data["genre"]
+            self.project.style = data["style"]
+            self.project.target_words = data["target_words"]
+            self.project.theme = data["theme"]
+            self.project.direction = data["direction"]
+            self.project.synopsis = data["synopsis"]
+            # 更新封面
+            if data["cover"] and self.project.project_dir:
+                import shutil
+                src = Path(data["cover"])
+                ext = src.suffix or ".png"
+                dst = self.project.project_dir / f"cover{ext}"
+                shutil.copy2(src, dst)
+                self.project.cover = f"cover{ext}"
+            self._save_project()
+            self.sidebar.set_project_title(self.project.title)
+            self.statusBar().showMessage("项目设置已保存")
 
     def _open_appearance(self):
         """打开外观设置对话框。"""

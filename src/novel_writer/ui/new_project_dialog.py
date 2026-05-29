@@ -54,16 +54,20 @@ class _AIWorker(QThread):
 
 
 class NewProjectDialog(QDialog):
-    """新建项目对话框。"""
+    """新建/编辑项目对话框。"""
 
-    def __init__(self, llm=None, parent=None):
+    def __init__(self, llm=None, parent=None, project_data=None):
         super().__init__(parent)
-        self.setWindowTitle(t("dialog_new_project"))
-        self.setMinimumWidth(520)
+        self.setWindowTitle("编辑项目" if project_data else t("dialog_new_project"))
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(500)
         self._cover_path = ""
         self._llm = llm
         self._worker = None
+        self._project_data = project_data
         self._setup_ui()
+        if project_data:
+            self._load_data(project_data)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -85,10 +89,14 @@ class NewProjectDialog(QDialog):
 
         # ── 基本信息 ──
         basic_group = QGroupBox("基本信息")
+        basic_group.setMinimumHeight(180)
         basic_form = QFormLayout(basic_group)
+        basic_form.setSpacing(10)
 
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("请输入小说名称")
+        if project_data:
+            self.title_edit.setEnabled(False)  # 编辑模式不允许修改书名
         basic_form.addRow("书名 *:", self.title_edit)
 
         # 封面
@@ -325,6 +333,32 @@ class NewProjectDialog(QDialog):
         self._cover_path = ""
         self.cover_label.clear()
         self.cover_label.setText("无封面")
+
+    def _load_data(self, data: dict):
+        """加载项目数据到对话框。"""
+        self.title_edit.setText(data.get("title", ""))
+        self.genre_combo.setCurrentText(data.get("genre", ""))
+        self.style_combo.setCurrentText(data.get("style", ""))
+        self.words_spin.setValue(data.get("target_words", 200000))
+        self.theme_edit.setPlainText(data.get("theme", ""))
+        self.direction_edit.setPlainText(data.get("direction", ""))
+        self.synopsis_edit.setPlainText(data.get("synopsis", ""))
+        # 加载封面
+        cover = data.get("cover", "")
+        if cover:
+            project_dir = data.get("_project_dir")
+            if project_dir:
+                cover_path = Path(project_dir) / cover
+                if cover_path.exists():
+                    self._cover_path = str(cover_path)
+                    pixmap = QPixmap(str(cover_path))
+                    if not pixmap.isNull():
+                        scaled = pixmap.scaled(
+                            80, 100,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        self.cover_label.setPixmap(scaled)
 
     def _on_create(self):
         title = self.title_edit.text().strip()
