@@ -348,7 +348,6 @@ class MainWindow(QMainWindow):
         ideation_content += f"- 目标字数：{data['target_words']:,}\n"
         project_io.write_md(project_dir / "planning" / "立意.md", ideation_content)
 
-        self.project.add_chapter(t("chapter_first"))
         self.project.save()
         self.agent_panel.set_project_db(project_dir)
         self._load_workflow_for_project()
