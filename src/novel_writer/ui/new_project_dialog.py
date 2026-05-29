@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QTextEdit, QComboBox, QSpinBox, QPushButton, QFileDialog,
     QGroupBox, QFormLayout, QInputDialog, QMessageBox, QWidget,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QPixmap
@@ -59,8 +60,7 @@ class NewProjectDialog(QDialog):
     def __init__(self, llm=None, parent=None, project_data=None):
         super().__init__(parent)
         self.setWindowTitle("编辑项目" if project_data else t("dialog_new_project"))
-        self.setMinimumWidth(560)
-        self.setMinimumHeight(500)
+        self.setMinimumSize(580, 600)
         self._cover_path = ""
         self._llm = llm
         self._worker = None
@@ -70,33 +70,29 @@ class NewProjectDialog(QDialog):
             self._load_data(project_data)
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(8)
-        layout.setContentsMargins(8, 8, 8, 8)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(12, 12, 12, 12)
 
-        # 滚动区域
-        from PySide6.QtWidgets import QScrollArea, QSizePolicy
+        # 整体滚动区域
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setSpacing(12)
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
+        layout = QVBoxLayout(content)
+        layout.setSpacing(16)
 
         # ── 基本信息 ──
         basic_group = QGroupBox("基本信息")
-        basic_group.setMinimumHeight(180)
         basic_form = QFormLayout(basic_group)
         basic_form.setSpacing(10)
+        basic_form.setContentsMargins(16, 20, 16, 16)
 
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("请输入小说名称")
+        self.title_edit.setMinimumHeight(32)
         if self._project_data:
-            self.title_edit.setEnabled(False)  # 编辑模式不允许修改书名
+            self.title_edit.setEnabled(False)
         basic_form.addRow("书名 *:", self.title_edit)
 
         # 封面
@@ -122,21 +118,24 @@ class NewProjectDialog(QDialog):
         cover_btn_col.addStretch()
         cover_row.addLayout(cover_btn_col)
         basic_form.addRow("封面:", cover_row)
-
-        content_layout.addWidget(basic_group)
+        layout.addWidget(basic_group)
 
         # ── 题材与风格 ──
         genre_group = QGroupBox("题材与风格")
         genre_form = QFormLayout(genre_group)
+        genre_form.setSpacing(10)
+        genre_form.setContentsMargins(16, 20, 16, 16)
 
         self.genre_combo = QComboBox()
         self.genre_combo.addItems(GENRES)
         self.genre_combo.setEditable(True)
+        self.genre_combo.setMinimumHeight(30)
         genre_form.addRow("题材 *:", self.genre_combo)
 
         self.style_combo = QComboBox()
         self.style_combo.addItems(STYLES)
         self.style_combo.setEditable(True)
+        self.style_combo.setMinimumHeight(30)
         genre_form.addRow("风格 *:", self.style_combo)
 
         self.words_spin = QSpinBox()
@@ -144,13 +143,15 @@ class NewProjectDialog(QDialog):
         self.words_spin.setSingleStep(50000)
         self.words_spin.setValue(200000)
         self.words_spin.setSuffix(" 字")
+        self.words_spin.setMinimumHeight(30)
         genre_form.addRow("目标字数:", self.words_spin)
-
         layout.addWidget(genre_group)
 
         # ── 立意与方向（必填） ──
         concept_group = QGroupBox("立意与方向（必填）")
         concept_layout = QVBoxLayout(concept_group)
+        concept_layout.setSpacing(10)
+        concept_layout.setContentsMargins(16, 20, 16, 16)
 
         # 核心立意 + AI 按钮
         row1 = QHBoxLayout()
@@ -168,7 +169,8 @@ class NewProjectDialog(QDialog):
             "例：在末世废墟中，一个失去记忆的少年通过破解一个个诡异规则，"
             "逐渐发现自己是唯一能终结这场灾难的关键。核心卖点是规则解密+身份悬疑。"
         )
-        self.theme_edit.setMaximumHeight(80)
+        self.theme_edit.setMinimumHeight(80)
+        self.theme_edit.setMaximumHeight(120)
         concept_layout.addWidget(self.theme_edit)
 
         # 规划方向 + AI 按钮
@@ -187,38 +189,44 @@ class NewProjectDialog(QDialog):
             "例：全书分3卷，第1卷（30章）新手村生存，第2卷（50章）势力对抗，"
             "第3卷（40章）终极真相。前期密集解谜，中期格局扩大，后期情感爆发。"
         )
-        self.direction_edit.setMaximumHeight(80)
+        self.direction_edit.setMinimumHeight(80)
+        self.direction_edit.setMaximumHeight(120)
         concept_layout.addWidget(self.direction_edit)
-
         layout.addWidget(concept_group)
 
         # ── 简介 ──
         synopsis_group = QGroupBox("简介")
         syn_layout = QVBoxLayout(synopsis_group)
+        syn_layout.setContentsMargins(16, 20, 16, 16)
         self.synopsis_edit = QTextEdit()
         self.synopsis_edit.setPlaceholderText("一句话或一段话介绍你的故事（可后续补充）")
-        self.synopsis_edit.setMaximumHeight(60)
+        self.synopsis_edit.setMinimumHeight(60)
+        self.synopsis_edit.setMaximumHeight(100)
         syn_layout.addWidget(self.synopsis_edit)
         layout.addWidget(synopsis_group)
 
-        # ── 状态栏 ──
+        layout.addStretch()
+
+        scroll.setWidget(content)
+        main_layout.addWidget(scroll)
+
+        # ── 状态栏 + 按钮（固定在底部） ──
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("font-size: 11px; color: gray;")
-        layout.addWidget(self._status_label)
+        main_layout.addWidget(self._status_label)
 
-        # ── 按钮 ──
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         self.btn_cancel = QPushButton(t("settings_cancel"))
         self.btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(self.btn_cancel)
-        self.btn_create = QPushButton("创建项目")
+        self.btn_create = QPushButton("创建项目" if not self._project_data else "保存")
         self.btn_create.setObjectName("primary")
         self.btn_create.setFixedHeight(34)
         self.btn_create.setFixedWidth(100)
         self.btn_create.clicked.connect(self._on_create)
         btn_row.addWidget(self.btn_create)
-        layout.addLayout(btn_row)
+        main_layout.addLayout(btn_row)
 
     def _ai_generate(self, field: str):
         """AI 生成立意或方向。"""
@@ -277,10 +285,8 @@ class NewProjectDialog(QDialog):
 
     def _on_ai_done(self, field: str, text: str):
         self._set_generating(False)
-        # 截断过长内容
         text = text.strip()
         if len(text) > 300:
-            # 在最后一个句号/换行处截断
             for sep in ["\n\n", "\n", "。", "；"]:
                 idx = text.rfind(sep, 0, 300)
                 if idx > 100:
