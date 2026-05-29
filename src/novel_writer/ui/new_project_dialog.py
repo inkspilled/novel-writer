@@ -95,7 +95,7 @@ class NewProjectDialog(QDialog):
 
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("请输入小说名称")
-        if project_data:
+        if self._project_data:
             self.title_edit.setEnabled(False)  # 编辑模式不允许修改书名
         basic_form.addRow("书名 *:", self.title_edit)
 
