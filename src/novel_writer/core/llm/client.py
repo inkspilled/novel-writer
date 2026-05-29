@@ -27,8 +27,12 @@ class LLMClient(BaseLLM):
             max_tokens=max_tokens,
         )
         choice = resp.choices[0]
+        content = choice.message.content or ""
+        # 处理 qwen3.5 等带思考过程的模型（content 为空时使用 reasoning）
+        if not content and hasattr(choice.message, 'reasoning') and choice.message.reasoning:
+            content = choice.message.reasoning
         return LLMResponse(
-            content=choice.message.content or "",
+            content=content,
             model=resp.model,
             usage={
                 "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
