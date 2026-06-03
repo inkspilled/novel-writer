@@ -10,6 +10,9 @@ from typing import AsyncIterator
 from openai import AsyncOpenAI
 
 from .base import BaseLLM, LLMMessage, LLMResponse
+from ..logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class LLMClient(BaseLLM):
@@ -18,6 +21,7 @@ class LLMClient(BaseLLM):
     def __init__(self, model: str, api_key: str = "", base_url: str = "https://api.openai.com/v1", **kwargs):
         super().__init__(model, api_key, base_url, **kwargs)
         self.client = AsyncOpenAI(api_key=api_key or "ollama", base_url=base_url)
+        logger.info("LLM 客户端初始化: model=%s, base_url=%s", model, base_url)
 
     async def chat(self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096) -> LLMResponse:
         resp = await self.client.chat.completions.create(

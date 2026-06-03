@@ -163,6 +163,23 @@ data/projects/{project_name}/
 | `config/agents.json` | 智能体配置 |
 | `config/default_agents.json` | 智能体默认配置（重置用） |
 
+## 日志系统
+
+日志按级别分文件存储，按天滚动，单文件上限 100MB，保留 30 天：
+
+| 文件 | 级别 | 说明 |
+|------|------|------|
+| `logs/info.log` | INFO / DEBUG | 常规运行日志 |
+| `logs/error.log` | WARNING+ | 警告和错误 |
+| 控制台 | INFO+ | 带彩色高亮 |
+
+用法：
+```python
+from novel_writer.core.logger import get_logger
+logger = get_logger(__name__)
+logger.info("操作完成")
+```
+
 ## 更多
 
 - [开发指南 (DEV_GUIDE.md)](DEV_GUIDE.md) — 技术架构、项目结构

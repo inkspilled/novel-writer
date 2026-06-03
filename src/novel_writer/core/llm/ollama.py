@@ -6,6 +6,9 @@ from typing import AsyncIterator
 import httpx
 
 from .base import BaseLLM, LLMMessage, LLMResponse
+from ..logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def _extract_content(data: dict) -> str:
@@ -28,6 +31,7 @@ class OllamaLLM(BaseLLM):
     def __init__(self, model: str = "qwen2.5", base_url: str = "http://localhost:11434", **kwargs):
         super().__init__(model, api_key="", base_url=base_url, **kwargs)
         self.base = base_url.rstrip("/")
+        logger.info("Ollama LLM 初始化: model=%s, base_url=%s", model, base_url)
 
     async def chat(self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096) -> LLMResponse:
         # 大模型首次加载可能很慢，设 10 分钟超时

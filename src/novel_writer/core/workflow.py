@@ -20,6 +20,12 @@ from typing import Callable
 from . import project_io
 from .agents.base import BaseAgent
 from .llm.base import BaseLLM, LLMMessage
+from .logger import get_logger
+
+logger = get_logger(__name__)
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ── 工作流模式 ──
@@ -129,6 +135,7 @@ class WorkflowRunner:
         return candidates[0] if candidates else None
 
     def stop(self):
+        logger.info("工作流收到停止信号")
         self._stop = True
 
     def _find_chapter_file(self, n: int) -> str | None:
@@ -146,6 +153,7 @@ class WorkflowRunner:
 
     async def run(self, workflow: WorkflowDef, progress: dict | None = None) -> dict:
         """执行完整工作流，返回进度状态。"""
+        logger.info("工作流开始执行: %s (%d 步骤)", workflow.name, len(workflow.steps))
         self._stop = False
         if progress is None:
             progress = {}
@@ -204,6 +212,7 @@ class WorkflowRunner:
                 progress[step.id] = "done"
                 self._save_progress(progress)
 
+        logger.info("工作流执行完成: %s", workflow.name)
         return progress
 
     async def run_single_step(self, step_id: str, workflow: WorkflowDef, n: int = 1) -> str:
@@ -254,6 +263,7 @@ class WorkflowRunner:
         agent = self.find_agent(step.needs)
         if not agent:
             if step.optional:
+                logger.debug("步骤 %s 未找到匹配智能体，已跳过（optional=True）", step.id)
                 return
             raise WorkflowError(f"没有智能体能做「{step.needs}」")
 
@@ -263,12 +273,14 @@ class WorkflowRunner:
             if existing:
                 existing_path = self.project_dir / "chapters" / existing
                 if existing_path.exists() and existing_path.stat().st_size > 0:
+                    logger.info("[跳过] 第%d章已有内容，不覆写", n)
                     if self.on_step_start:
                         self.on_step_start(step.id, n, agent.title)
                     if self.on_step_end:
                         self.on_step_end(step.id, n, agent.title, f"[跳过] 第{n}章已有内容，不覆写")
                     return
 
+        logger.info("执行步骤: %s (第%d章) -> %s", step.id, n, agent.title)
         if self.on_step_start:
             self.on_step_start(step.id, n, agent.title)
 
@@ -277,7 +289,9 @@ class WorkflowRunner:
 
         try:
             response = await agent.run(prompt, context=context)
+            logger.info("步骤完成: %s (第%d章)", step.id, n)
         except Exception as e:
+            logger.error("步骤执行失败: %s (第%d章) - %s", step.id, n, e, exc_info=True)
             if self.on_error:
                 self.on_error(step.id, str(e))
             raise
@@ -727,4 +741,5 @@ def build_workflow(
     # 续写模式：跳过已完成的章节
     if mode == WorkflowMode.CONTINUE:
         wf.project["_start_chapter"] = start_chapter
+    logger.info("构建工作流: mode=%s, steps=%d, chapters=%d-%d", mode.value, len(wf.steps), start_chapter, end_chapter)
     return wf

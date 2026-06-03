@@ -25,7 +25,9 @@ from ..core.agents import load_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 from ..core import project_io
 from ..core.workflow import WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, WorkflowMode, build_workflow
+from ..core.logger import get_logger
 
+logger = get_logger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
@@ -56,8 +58,7 @@ class AgentWorker(QThread):
             self._loop.call_soon_threadsafe(self._task.cancel)
 
     def run(self):
-        import sys
-        print(f"[DEBUG] AgentWorker.run: agent={self.agent.name!r}, input={repr(self.user_input[:80])}", file=sys.stderr)
+        logger.debug("AgentWorker.run: agent=%r, input=%r", self.agent.name, self.user_input[:80])
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
@@ -103,6 +104,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        logger.info("MainWindow 初始化")
         self.resize(1400, 900)
 
         # 窗口居中
@@ -356,6 +358,7 @@ class MainWindow(QMainWindow):
         self.sidebar.update_stats(0, self.project.target_words, len(self.project.chapters))
         self.editor.clear()
         self.statusBar().showMessage(t("status_created", title))
+        logger.info("新项目已创建: %s (%s)", title, project_dir)
 
     def _open_project(self):
         """打开已有项目。"""
@@ -436,7 +439,9 @@ class MainWindow(QMainWindow):
             )
             self.editor.clear()
             self.statusBar().showMessage(t("status_opened", self.project.title))
+            logger.info("项目已加载: %s (%s)", self.project.title, path)
         except Exception as e:
+            logger.error("加载项目失败: %s - %s", path, e, exc_info=True)
             QMessageBox.critical(self, t("dialog_error"), t("msg_open_fail", e))
 
     def _add_chapter(self):
@@ -469,17 +474,16 @@ class MainWindow(QMainWindow):
             )
 
     def _on_agent_run(self, agent_name: str, user_input: str):
-        import sys
         if not self.project.title:
             return
         agent = self.agents.get(agent_name)
-        print(f"[DEBUG] _on_agent_run: agent={agent_name!r}, has_agent={agent is not None}, input={repr(user_input[:80])}", file=sys.stderr)
+        logger.debug("_on_agent_run: agent=%r, has_agent=%s, input=%r", agent_name, agent is not None, user_input[:80])
         if not agent:
             QMessageBox.warning(self, t("dialog_error"), t("msg_agent_not_init", agent_name))
             return
         self._stop_worker()
         context = self._build_context(agent_name)
-        print(f"[DEBUG] context_len={len(context)}, context_preview={repr(context[:200])}", file=sys.stderr)
+        logger.debug("context_len=%d, context_preview=%r", len(context), context[:200])
         self.agent_panel.set_working(True, agent_name)
         self._worker = AgentWorker(agent, user_input, context)
         self._worker.chunk_received.connect(lambda chunk: self._on_agent_stream(agent_name, chunk))
@@ -559,8 +563,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"{t('dialog_error')}: {e}")
 
     def _on_agent_error(self, error: str):
-        import sys
-        print(f"[DEBUG] _on_agent_error: {error}", file=sys.stderr)
+        logger.error("Agent 调用出错: %s", error)
         self.agent_panel.set_working(False)
         self.statusBar().showMessage(f"{t('dialog_error')}: {error}")
         try:

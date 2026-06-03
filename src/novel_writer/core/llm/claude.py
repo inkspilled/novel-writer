@@ -5,6 +5,9 @@ from typing import AsyncIterator
 import anthropic
 
 from .base import BaseLLM, LLMMessage, LLMResponse
+from ..logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ClaudeLLM(BaseLLM):
@@ -13,6 +16,7 @@ class ClaudeLLM(BaseLLM):
     def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str = "", **kwargs):
         super().__init__(model, api_key, **kwargs)
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
+        logger.info("Claude LLM 初始化: model=%s", model)
 
     async def chat(self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096) -> LLMResponse:
         system_msg = ""

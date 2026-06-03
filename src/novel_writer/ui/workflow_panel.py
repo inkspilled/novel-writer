@@ -11,6 +11,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QThread
 
 from ..locales import t
+from ..core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ── 步骤状态枚举 ──
@@ -122,6 +125,7 @@ class WorkflowThread(QThread):
         self._loop = None
 
     def run(self):
+        logger.info("WorkflowThread 开始执行")
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
@@ -136,11 +140,14 @@ class WorkflowThread(QThread):
             )
             self.progress = result
             if self.runner._stop:
+                logger.info("工作流已被用户停止")
                 self.workflow_stopped.emit()
             else:
+                logger.info("工作流执行完成")
                 self.workflow_done.emit()
         except Exception as e:
             import traceback
+            logger.error("工作流执行异常: %s", e, exc_info=True)
             self.log_message.emit(f"错误: {e}\n{traceback.format_exc()}")
             self.workflow_stopped.emit()
         finally:

@@ -17,6 +17,9 @@
 novel-writer/
 ├── pyproject.toml                  # 项目配置 & 依赖
 ├── logo.png                        # 应用图标
+├── logs/                           # 日志目录（gitignore）
+│   ├── info.log                    # INFO/DEBUG 日志（按天滚动，100MB 上限）
+│   └── error.log                   # WARNING+ 日志
 ├── config/
 │   ├── agents.json                 # 智能体配置（含 system_prompt）
 │   ├── default_agents.json         # 智能体默认配置（重置用，自动生成）
@@ -37,6 +40,7 @@ novel-writer/
 │   ├── app.py                      # QApplication 启动
 │   ├── locales.py                  # i18n（中/英）
 │   ├── core/
+│   │   ├── logger.py               # 日志配置（get_logger 入口）
 │   │   ├── llm/
 │   │   │   ├── base.py             # BaseLLM + LLMMessage/LLMResponse
 │   │   │   ├── client.py           # 统一 LLMClient（OpenAI 兼容）
@@ -68,6 +72,20 @@ novel-writer/
 ```
 
 ## 架构设计
+
+### 日志系统 (`core/logger.py`)
+
+参照 Java Logback 配置，提供统一的日志入口：
+
+```python
+from novel_writer.core.logger import get_logger
+logger = get_logger(__name__)
+```
+
+- **三路输出**：`info.log`（INFO/DEBUG）、`error.log`（WARNING+）、控制台（INFO+ 带彩色）
+- **滚动策略**：按天滚动 + 单文件 100MB 上限，保留 30 天
+- **线程安全**：`threading.Lock` 保护初始化，支持多线程场景
+- **PyInstaller 兼容**：自动检测 `sys.frozen`，日志输出到可执行文件旁
 
 ### 文件格式
 
