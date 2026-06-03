@@ -99,31 +99,73 @@ def fix_chapter_titles(project_dir: Path) -> list[str]:
                 break
 
         if heading_idx >= 0:
-            # 提取现有 heading 的标题文字
             import re
             m = re.match(r"^#{1,3}\s+(.+)$", lines[heading_idx].strip())
             if m:
                 content_title = m.group(1).strip()
                 if content_title != filename_title:
-                    # 不一致，用文件名标题替换
                     heading_level = len(lines[heading_idx].strip()) - len(lines[heading_idx].strip().lstrip("#"))
                     lines[heading_idx] = f"{'#' * heading_level} {filename_title}"
                     new_content = "\n".join(lines)
                     write_md(ch["content_path"], new_content)
                     logs.append(f"第{ch['number']}章: 「{content_title}」→「{filename_title}」")
             else:
-                # heading 行只有 # 没有标题文字
                 lines[heading_idx] = f"# {filename_title}"
                 new_content = "\n".join(lines)
                 write_md(ch["content_path"], new_content)
                 logs.append(f"第{ch['number']}章: 补充标题「{filename_title}」")
         else:
-            # 没有 heading，在开头插入
             new_content = f"# {filename_title}\n\n{content}"
             write_md(ch["content_path"], new_content)
             logs.append(f"第{ch['number']}章: 新增标题「{filename_title}」")
 
     return logs
+
+
+def rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> str:
+    """重命名单个章节：改文件名 + 改正文 heading。返回旧标题。"""
+    import re as _re
+    chapters = scan_chapters(project_dir)
+    for ch in chapters:
+        if ch["number"] == chapter_number:
+            old_title = ch["title"]
+            if old_title == new_title:
+                return old_title
+
+            # 1. 改文件名
+            old_path = ch["content_path"]
+            new_filename = chapter_filename(chapter_number, new_title)
+            new_path = old_path.parent / new_filename
+            if old_path != new_path:
+                old_path.rename(new_path)
+
+            # 2. 改正文 heading
+            content = read_md(new_path)
+            if content.strip():
+                lines = content.split("\n")
+                for i, line in enumerate(lines):
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        m = _re.match(r"^#{1,3}\s+(.+)$", stripped)
+                        if m:
+                            level = len(stripped) - len(stripped.lstrip("#"))
+                            lines[i] = f"{'#' * level} {new_title}"
+                        else:
+                            lines[i] = f"# {new_title}"
+                        break
+                write_md(new_path, "\n".join(lines))
+
+            # 3. 同步改细纲文件名（如果有）
+            if ch["outline_path"]:
+                old_outline = ch["outline_path"]
+                new_outline_name = chapter_outline_filename(chapter_number, new_title)
+                new_outline_path = old_outline.parent / new_outline_name
+                if old_outline != new_outline_path:
+                    old_outline.rename(new_outline_path)
+
+            logger.info("重命名第%d章: 「%s」→「%s」", chapter_number, old_title, new_title)
+            return old_title
+    return ""
 
 
 # ── meta.json 读写 ──

@@ -229,13 +229,46 @@ class WorkflowRunner:
             raise WorkflowError(f"步骤 '{step_id}' 不存在")
 
         # ── 纯工具步骤（不需要 LLM） ──
-        if step.id == "fix_titles":
-            logs = project_io.fix_chapter_titles(self.project_dir)
-            msg = f"标题校准完成，修正 {len(logs)} 处" if logs else "标题校准完成，无需修正"
-            return msg + ("\n" + "\n".join(logs) if logs else "")
         if step.id == "toc":
             project_io.generate_toc(self.project_dir)
             return "目录已更新"
+
+        # ── fix_titles: LLM 根据正文内容生成正确标题 ──
+        if step.id == "fix_titles":
+            agent = self.find_agent("剧情审查") or self.find_agent("错别字检查") or list(self.agents.values())[0] if self.agents else None
+            if not agent:
+                return "标题校准跳过：没有可用的智能体"
+            chapters = project_io.scan_chapters(self.project_dir)
+            if not chapters:
+                return "没有章节需要校准"
+            excerpts = []
+            for ch in chapters:
+                content = project_io.read_md(ch["content_path"])
+                excerpt = content[:500].replace("\n", " ")
+                excerpts.append(f"第{ch['number']}章（当前标题：「{ch['title']}」）：\n{excerpt}")
+            prompt = (
+                "你是小说编辑。以下是各章的开头内容和当前标题。\n"
+                "当前标题可能重复或不准确，请根据正文内容为每章重新拟定一个2-6字的精准标题。\n"
+                "严格输出 JSON 格式，不要输出其他内容：\n"
+                '{"1": "新标题", "2": "新标题", ...}\n\n'
+                + "\n\n".join(excerpts)
+            )
+            resp = await agent.run(prompt)
+            import json, re as _re
+            text = resp.content.strip()
+            m = _re.search(r'\{[^{}]+\}', text)
+            if m:
+                title_map = json.loads(m.group())
+                logs = []
+                for ch_num_str, new_title in title_map.items():
+                    ch_num = int(ch_num_str)
+                    old = project_io.rename_chapter(self.project_dir, ch_num, str(new_title).strip())
+                    if old:
+                        logs.append(f"第{ch_num}章: 「{old}」→「{new_title}」")
+                project_io.generate_toc(self.project_dir)
+                return f"标题校准完成，修正 {len(logs)} 处\n" + "\n".join(logs)
+            else:
+                return f"标题校准失败：LLM 返回格式异常\n{text[:200]}"
 
         agent = self.find_agent(step.needs)
         if not agent:
@@ -289,21 +322,66 @@ class WorkflowRunner:
 
     async def _run_single(self, step: WorkflowStep, project: dict, n: int, progress: dict):
         # ── 纯工具步骤（不需要 LLM） ──
-        if step.id == "fix_titles":
-            logger.info("执行标题校准...")
-            logs = project_io.fix_chapter_titles(self.project_dir)
-            msg = f"标题校准完成，修正 {len(logs)} 处" if logs else "标题校准完成，无需修正"
-            logger.info(msg)
-            if self.on_step_start:
-                self.on_step_start(step.id, n, "系统")
-            if self.on_step_end:
-                self.on_step_end(step.id, n, "系统", msg + ("\n" + "\n".join(logs) if logs else ""))
-            return
         if step.id == "toc":
             toc = project_io.generate_toc(self.project_dir)
             logger.info("目录已更新")
             if self.on_step_end:
                 self.on_step_end(step.id, n, "系统", "目录已更新")
+            return
+
+        # ── fix_titles: LLM 根据正文内容生成正确标题 ──
+        if step.id == "fix_titles":
+            agent = self.find_agent("剧情审查") or self.find_agent("错别字检查") or list(self.agents.values())[0] if self.agents else None
+            if not agent:
+                logger.warning("标题校准跳过：没有可用的智能体")
+                return
+            if self.on_step_start:
+                self.on_step_start(step.id, n, agent.title)
+            logger.info("执行标题校准（LLM）...")
+            chapters = project_io.scan_chapters(self.project_dir)
+            if not chapters:
+                return
+            # 构建上下文：每章前 500 字
+            excerpts = []
+            for ch in chapters:
+                content = project_io.read_md(ch["content_path"])
+                excerpt = content[:500].replace("\n", " ")
+                excerpts.append(f"第{ch['number']}章（当前标题：「{ch['title']}」）：\n{excerpt}")
+            prompt = (
+                "你是小说编辑。以下是各章的开头内容和当前标题。\n"
+                "当前标题可能重复或不准确，请根据正文内容为每章重新拟定一个2-6字的精准标题。\n"
+                "严格输出 JSON 格式，不要输出其他内容：\n"
+                '{"1": "新标题", "2": "新标题", ...}\n\n'
+                + "\n\n".join(excerpts)
+            )
+            try:
+                resp = await agent.run(prompt)
+                import json, re as _re
+                # 提取 JSON（兼容 ```json ``` 包裹）
+                text = resp.content.strip()
+                m = _re.search(r'\{[^{}]+\}', text)
+                if m:
+                    title_map = json.loads(m.group())
+                    logs = []
+                    for ch_num_str, new_title in title_map.items():
+                        ch_num = int(ch_num_str)
+                        old = project_io.rename_chapter(self.project_dir, ch_num, str(new_title).strip())
+                        if old:
+                            logs.append(f"第{ch_num}章: 「{old}」→「{new_title}」")
+                    # 刷新目录
+                    project_io.generate_toc(self.project_dir)
+                    msg = f"标题校准完成，修正 {len(logs)} 处"
+                    logger.info(msg)
+                    if self.on_step_end:
+                        self.on_step_end(step.id, n, agent.title, msg + ("\n" + "\n".join(logs)))
+                else:
+                    logger.warning("标题校准：LLM 返回格式异常: %s", text[:200])
+                    if self.on_step_end:
+                        self.on_step_end(step.id, n, agent.title, "标题校准失败：LLM 返回格式异常")
+            except Exception as e:
+                logger.error("标题校准失败: %s", e, exc_info=True)
+                if self.on_error:
+                    self.on_error(step.id, str(e))
             return
 
         agent = self.find_agent(step.needs)
