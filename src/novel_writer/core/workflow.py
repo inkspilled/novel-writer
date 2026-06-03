@@ -48,6 +48,7 @@ class WorkflowStep:
     repeat: int = 0  # 循环次数（0 = 不循环）
     every: int = 0  # 每隔 N 步执行一次
     optional: bool = False  # 找不到匹配 Agent 时跳过
+    update_planning: bool = False  # 强制覆盖 planning/ 文件（用于反哺步骤）
 
 
 @dataclass
@@ -72,6 +73,7 @@ class WorkflowDef:
                 repeat=s.get("repeat", 0),
                 every=s.get("every", 0),
                 optional=s.get("optional", False),
+                update_planning=s.get("update_planning", False),
             ))
         return cls(
             name=data.get("name", ""),
@@ -95,6 +97,7 @@ class WorkflowDef:
                     "repeat": s.repeat,
                     "every": s.every,
                     "optional": s.optional,
+                    "update_planning": s.update_planning,
                 }
                 for s in self.steps
             ],
@@ -196,11 +199,11 @@ class WorkflowRunner:
                     await self._run_single(step, workflow.project, n, progress)
                     progress[step.id] = {"current": n, "total": step.repeat}
                     self._save_progress(progress)
-                    # 章后定时步骤（润色、校验、摘要）
+                    # 章后定时步骤（润色、校验、摘要、规划反哺）
                     for ps in periodic_steps:
                         if self._stop:
                             break
-                        if ps.id in ("polish", "proofread", "summary") and n % ps.every == 0:
+                        if ps.id in ("polish", "proofread", "summary", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
                             ps_key = f"{ps.id}_{n}"
                             if progress.get(ps_key) != "done":
                                 await self._run_single(ps, workflow.project, n, progress)
@@ -229,18 +232,32 @@ class WorkflowRunner:
         if not agent:
             raise WorkflowError(f"没有智能体能做「{step.needs}」")
 
+        # 章节写作：已有内容直接跳过，不浪费 LLM 调用
+        if step.id == "chapter":
+            existing = self._find_chapter_file(n)
+            if existing:
+                existing_path = self.project_dir / "chapters" / existing
+                if existing_path.exists() and existing_path.stat().st_size > 0:
+                    return f"[跳过] 第{n}章已有内容，不覆写"
+
         context = self._build_context(step.input_files, n)
         prompt = self._format_prompt(step.prompt, workflow.project, n)
+
+        # 章节写作：注入已有标题约束
+        if step.id == "chapter":
+            existing = self._find_chapter_file(n)
+            if existing:
+                m = project_io._CHAPTER_RE.match(existing)
+                if m:
+                    old_title = m.group(2)
+                    prompt += f"\n\n【标题约束】本章标题必须是「{old_title}」，正文第一行用 # {old_title}，不得更改标题。"
+
         response = await agent.run(prompt, context=context)
 
         # 确定输出路径
         if step.id == "chapter":
             existing = self._find_chapter_file(n)
             if existing:
-                # 已有文件且非空 → 跳过，绝不覆写用户内容
-                existing_path = self.project_dir / "chapters" / existing
-                if existing_path.exists() and existing_path.stat().st_size > 0:
-                    return f"[跳过] 第{n}章已有内容，不覆写"
                 output = f"chapters/{existing}"
             else:
                 title = _extract_chapter_title(response.content, n)
@@ -251,10 +268,12 @@ class WorkflowRunner:
             output = step.output.format(n=n, **workflow.project)
 
         if output:
-            # 规划文档保护：已有内容的 planning/ 文件不覆盖
             out_path = self.project_dir / output
+            # 规划文档保护：已有内容的 planning/ 文件不覆盖（update_planning=True 时强制覆盖）
             if output.startswith("planning/") and out_path.exists() and out_path.stat().st_size > 0:
-                return f"[跳过] {output} 已有内容，不覆写"
+                if not step.update_planning:
+                    return f"[跳过] {output} 已有内容，不覆写"
+                logger.info("反哺更新规划文档: %s", output)
             project_io.write_md(out_path, response.content)
 
         return response.content
@@ -287,6 +306,16 @@ class WorkflowRunner:
         context = self._build_context(step.input_files, n)
         prompt = self._format_prompt(step.prompt, project, n)
 
+        # 章节写作：注入已有标题约束，防止 LLM 每次生成不同标题
+        if step.id == "chapter":
+            existing = self._find_chapter_file(n)
+            if existing:
+                # 从文件名提取已有标题: "3_黎明前夜.txt" -> "黎明前夜"
+                m = project_io._CHAPTER_RE.match(existing)
+                if m:
+                    old_title = m.group(2)
+                    prompt += f"\n\n【标题约束】本章标题必须是「{old_title}」，正文第一行用 # {old_title}，不得更改标题。"
+
         try:
             response = await agent.run(prompt, context=context)
             logger.info("步骤完成: %s (第%d章)", step.id, n)
@@ -312,12 +341,14 @@ class WorkflowRunner:
             output = step.output.format(n=n, **project)
 
         if output:
-            # 规划文档保护：已有内容的 planning/ 文件不覆盖
             out_path = self.project_dir / output
+            # 规划文档保护：已有内容的 planning/ 文件不覆盖（update_planning=True 时强制覆盖）
             if output.startswith("planning/") and out_path.exists() and out_path.stat().st_size > 0:
-                if self.on_step_end:
-                    self.on_step_end(step.id, n, agent.title, f"[跳过] {output} 已有内容，不覆写")
-                return
+                if not step.update_planning:
+                    if self.on_step_end:
+                        self.on_step_end(step.id, n, agent.title, f"[跳过] {output} 已有内容，不覆写")
+                    return
+                logger.info("反哺更新规划文档: %s", output)
             project_io.write_md(out_path, response.content)
 
         # 写后沉淀：章节写完后提取记忆项
@@ -632,6 +663,9 @@ DEFAULT_WORKFLOW = {
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
         {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
+        {"id": "update_outline", "needs": "故事结构", "prompt": "根据前{n}章的实际内容，更新故事大纲。保留原有结构，补充实际发生的剧情走向、新增的支线、调整后的节奏。输出完整的新大纲。", "input": ["planning/大纲.md", "prev_chapters"], "output": "planning/大纲.md", "every": 10, "optional": True, "update_planning": True},
+        {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 10, "optional": True, "update_planning": True},
+        {"id": "update_foreshadow", "needs": "伏笔设计", "prompt": "根据前{n}章的实际内容，更新伏笔清单。标注哪些伏笔已回收、哪些仍悬而未决、新增了哪些伏笔。保留原有清单，在末尾追加【进展更新】。", "input": ["planning/伏笔.md", "prev_chapters"], "output": "planning/伏笔.md", "every": 10, "optional": True, "update_planning": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
     ],
 }
@@ -649,6 +683,9 @@ CONTINUE_WORKFLOW = {
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
         {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
+        {"id": "update_outline", "needs": "故事结构", "prompt": "根据前{n}章的实际内容，更新故事大纲。保留原有结构，补充实际发生的剧情走向、新增的支线、调整后的节奏。输出完整的新大纲。", "input": ["planning/大纲.md", "prev_chapters"], "output": "planning/大纲.md", "every": 10, "optional": True, "update_planning": True},
+        {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 10, "optional": True, "update_planning": True},
+        {"id": "update_foreshadow", "needs": "伏笔设计", "prompt": "根据前{n}章的实际内容，更新伏笔清单。标注哪些伏笔已回收、哪些仍悬而未决、新增了哪些伏笔。保留原有清单，在末尾追加【进展更新】。", "input": ["planning/伏笔.md", "prev_chapters"], "output": "planning/伏笔.md", "every": 10, "optional": True, "update_planning": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
     ],
 }
