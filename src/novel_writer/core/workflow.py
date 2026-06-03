@@ -203,7 +203,7 @@ class WorkflowRunner:
                     for ps in periodic_steps:
                         if self._stop:
                             break
-                        if ps.id in ("polish", "proofread", "summary", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
+                        if ps.id in ("polish", "proofread", "summary", "toc", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
                             ps_key = f"{ps.id}_{n}"
                             if progress.get(ps_key) != "done":
                                 await self._run_single(ps, workflow.project, n, progress)
@@ -227,6 +227,15 @@ class WorkflowRunner:
                 break
         if not step:
             raise WorkflowError(f"步骤 '{step_id}' 不存在")
+
+        # ── 纯工具步骤（不需要 LLM） ──
+        if step.id == "fix_titles":
+            logs = project_io.fix_chapter_titles(self.project_dir)
+            msg = f"标题校准完成，修正 {len(logs)} 处" if logs else "标题校准完成，无需修正"
+            return msg + ("\n" + "\n".join(logs) if logs else "")
+        if step.id == "toc":
+            project_io.generate_toc(self.project_dir)
+            return "目录已更新"
 
         agent = self.find_agent(step.needs)
         if not agent:
@@ -279,6 +288,24 @@ class WorkflowRunner:
         return response.content
 
     async def _run_single(self, step: WorkflowStep, project: dict, n: int, progress: dict):
+        # ── 纯工具步骤（不需要 LLM） ──
+        if step.id == "fix_titles":
+            logger.info("执行标题校准...")
+            logs = project_io.fix_chapter_titles(self.project_dir)
+            msg = f"标题校准完成，修正 {len(logs)} 处" if logs else "标题校准完成，无需修正"
+            logger.info(msg)
+            if self.on_step_start:
+                self.on_step_start(step.id, n, "系统")
+            if self.on_step_end:
+                self.on_step_end(step.id, n, "系统", msg + ("\n" + "\n".join(logs) if logs else ""))
+            return
+        if step.id == "toc":
+            toc = project_io.generate_toc(self.project_dir)
+            logger.info("目录已更新")
+            if self.on_step_end:
+                self.on_step_end(step.id, n, "系统", "目录已更新")
+            return
+
         agent = self.find_agent(step.needs)
         if not agent:
             if step.optional:
@@ -657,9 +684,11 @@ DEFAULT_WORKFLOW = {
         {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点。", "input": ["planning/大纲.md"], "output": "planning/主线.md"},
         {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
         {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
+        {"id": "fix_titles", "needs": "", "prompt": "", "output": "", "optional": True},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
         {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
@@ -677,9 +706,11 @@ CONTINUE_WORKFLOW = {
     "name": "续写",
     "description": "从已有章节继续写作",
     "steps": [
+        {"id": "fix_titles", "needs": "", "prompt": "", "output": "", "optional": True},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
         {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
@@ -697,6 +728,8 @@ VALIDATE_WORKFLOW = {
     "name": "校验",
     "description": "审核+校对已有章节",
     "steps": [
+        {"id": "fix_titles", "needs": "", "prompt": "", "output": "", "optional": True},
+        {"id": "toc", "needs": "", "prompt": "", "output": "", "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对全部章节的错别字、语法、标点。", "input": ["chapters/*.txt"], "output": "review/校对报告.md"},
     ],

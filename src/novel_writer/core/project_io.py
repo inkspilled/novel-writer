@@ -52,6 +52,80 @@ def init_project_dir(project_dir: Path) -> None:
         (project_dir / sub).mkdir(parents=True, exist_ok=True)
 
 
+# ── 目录.md 生成 ──
+
+def generate_toc(project_dir: Path) -> str:
+    """根据 chapters/ 下的文件生成目录 markdown 并写入 planning/目录.md。"""
+    chapters = scan_chapters(project_dir)
+    if not chapters:
+        return ""
+
+    lines = [f"# 目录\n"]
+    for ch in chapters:
+        # 统计字数
+        content = read_md(ch["content_path"])
+        word_count = len(content.replace(" ", "").replace("\n", ""))
+        # 去掉内容中的标题行，避免重复
+        lines.append(f"- **第{ch['number']}章 {ch['title']}**（{word_count}字）")
+
+    toc_text = "\n".join(lines) + "\n"
+    write_md(project_dir / PLANNING_DIR / "目录.md", toc_text)
+    return toc_text
+
+
+def fix_chapter_titles(project_dir: Path) -> list[str]:
+    """校准章节标题：用文件名中的标题修正正文第一行的 heading。
+
+    Returns:
+        修复日志列表，每项描述一次修改
+    """
+    chapters = scan_chapters(project_dir)
+    logs = []
+
+    for ch in chapters:
+        content = read_md(ch["content_path"])
+        if not content.strip():
+            continue
+
+        filename_title = ch["title"]
+        lines = content.split("\n")
+
+        # 找到第一个 heading 行
+        heading_idx = -1
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                heading_idx = i
+                break
+
+        if heading_idx >= 0:
+            # 提取现有 heading 的标题文字
+            import re
+            m = re.match(r"^#{1,3}\s+(.+)$", lines[heading_idx].strip())
+            if m:
+                content_title = m.group(1).strip()
+                if content_title != filename_title:
+                    # 不一致，用文件名标题替换
+                    heading_level = len(lines[heading_idx].strip()) - len(lines[heading_idx].strip().lstrip("#"))
+                    lines[heading_idx] = f"{'#' * heading_level} {filename_title}"
+                    new_content = "\n".join(lines)
+                    write_md(ch["content_path"], new_content)
+                    logs.append(f"第{ch['number']}章: 「{content_title}」→「{filename_title}」")
+            else:
+                # heading 行只有 # 没有标题文字
+                lines[heading_idx] = f"# {filename_title}"
+                new_content = "\n".join(lines)
+                write_md(ch["content_path"], new_content)
+                logs.append(f"第{ch['number']}章: 补充标题「{filename_title}」")
+        else:
+            # 没有 heading，在开头插入
+            new_content = f"# {filename_title}\n\n{content}"
+            write_md(ch["content_path"], new_content)
+            logs.append(f"第{ch['number']}章: 新增标题「{filename_title}」")
+
+    return logs
+
+
 # ── meta.json 读写 ──
 
 def save_meta(project_dir: Path, meta: dict) -> None:
