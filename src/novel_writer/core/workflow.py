@@ -316,6 +316,18 @@ class WorkflowRunner:
                 if not step.update_planning:
                     return f"[跳过] {output} 已有内容，不覆写"
                 logger.info("反哺更新规划文档: %s", output)
+
+            # ── 关键保护：LLM 返回为空时绝不写入 ──
+            if not response.content or not response.content.strip():
+                logger.error("LLM 返回为空，跳过写入! step=%s n=%d output=%s", step.id, n, output)
+                return f"[错误] LLM 返回为空，跳过写入 {output}"
+
+            # 章节文件写入前备份
+            if step.id == "chapter" and out_path.exists() and out_path.stat().st_size > 0:
+                backup_path = out_path.with_suffix(".bak.txt")
+                import shutil
+                shutil.copy2(out_path, backup_path)
+
             project_io.write_md(out_path, response.content)
 
         return response.content
@@ -500,6 +512,21 @@ class WorkflowRunner:
                         self.on_step_end(step.id, n, agent.title, f"[跳过] {output} 已有内容，不覆写")
                     return
                 logger.info("反哺更新规划文档: %s", output)
+
+            # ── 关键保护：LLM 返回为空时绝不写入，防止清空已有文件 ──
+            if not response.content or not response.content.strip():
+                logger.error("LLM 返回为空，跳过写入! step=%s n=%d output=%s", step.id, n, output)
+                if self.on_error:
+                    self.on_error(step.id, f"LLM 返回为空，跳过写入 {output}")
+                return
+
+            # 章节文件写入前备份（防止意外丢失）
+            if step.id == "chapter" and out_path.exists() and out_path.stat().st_size > 0:
+                backup_path = out_path.with_suffix(".bak.txt")
+                import shutil
+                shutil.copy2(out_path, backup_path)
+                logger.debug("章节备份: %s", backup_path)
+
             project_io.write_md(out_path, response.content)
 
         # 写后沉淀：章节写完后提取记忆项
