@@ -8,7 +8,7 @@
             "module": "novel_writer",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "python": "${workspaceFolder}/.venv/bin/python"
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe"
         }
     ]
 }
