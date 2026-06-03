@@ -954,7 +954,7 @@ class MainWindow(QMainWindow):
         existing = {ch.number: ch for ch in self.project.chapters}
         for item in scanned:
             if item["number"] not in existing:
-                from .models.chapter import Chapter
+                from ..models.chapter import Chapter
                 ch = Chapter(
                     number=item["number"],
                     title=item["title"],
