@@ -203,7 +203,7 @@ class WorkflowRunner:
                     for ps in periodic_steps:
                         if self._stop:
                             break
-                        if ps.id in ("polish", "proofread", "summary", "toc", "chapter_summary", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
+                        if ps.id in ("polish", "proofread", "summary", "toc", "chapter_summary", "game_state_update", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
                             ps_key = f"{ps.id}_{n}"
                             if progress.get(ps_key) != "done":
                                 await self._run_single(ps, workflow.project, n, progress)
@@ -339,6 +339,59 @@ class WorkflowRunner:
             logger.info("目录已更新")
             if self.on_step_end:
                 self.on_step_end(step.id, n, "系统", "目录已更新")
+            return
+
+        # ── game_state_update: LLM 更新游戏状态 ──
+        if step.id == "game_state_update":
+            existing = self._find_chapter_file(n)
+            if not existing:
+                return
+            existing_path = self.project_dir / "chapters" / existing
+            if not existing_path.exists() or existing_path.stat().st_size == 0:
+                return
+            agent = self.find_agent("剧情审查") or self.find_agent("校对") or list(self.agents.values())[0] if self.agents else None
+            if not agent:
+                return
+            if self.on_step_start:
+                self.on_step_start(step.id, n, agent.title)
+            from .game_state import GameState
+            gs = GameState(self.project_dir)
+            gs.load()
+            content = project_io.read_md(existing_path)
+            gs_summary = gs.build_context_text()
+            prompt = (
+                f"你是游戏状态追踪器。根据第{n}章正文，输出人物状态变化的 JSON。\n\n"
+                f"当前状态：\n{gs_summary[:1500]}\n\n"
+                f"第{n}章正文：\n{content[:2000]}\n\n"
+                f"严格输出 JSON，不要输出其他内容：\n"
+                f'{{\n'
+                f'  "characters": {{"角色名": {{"gold": 数字, "cultivation": {{"level": "炼气", "sub_level": "三层"}}, "location": "地点", "hp": 数字, "sp": 数字, "inventory": [{{"name": "物品名", "type": "类型"}}]}}, ...}},\n'
+                f'  "items": {{"new": [{{"name": "物品名", "type": "类型", "effect": "效果"}}], "give": [{{"character": "角色名", "item": "物品名"}}], "remove": [{{"character": "角色名", "item": "物品名"}}]}},\n'
+                f'  "timeline": [{{"event": "事件描述", "location": "地点"}}],\n'
+                f'  "date": "时间"\n'
+                f'}}\n\n'
+                f"只输出本章发生变化的部分，没变化的字段不要输出。"
+            )
+            try:
+                resp = await agent.run(prompt)
+                import json, re as _re
+                text = resp.content.strip()
+                m = _re.search(r'\{[\s\S]+\}', text)
+                if m:
+                    update = json.loads(m.group())
+                    # 注入章节号到 timeline
+                    for ev in update.get("timeline", []):
+                        ev["chapter"] = n
+                    logs = gs.apply_llm_update(update)
+                    gs.save()
+                    msg = f"游戏状态已更新: {', '.join(logs)}"
+                    logger.info(msg)
+                    if self.on_step_end:
+                        self.on_step_end(step.id, n, agent.title, msg)
+                else:
+                    logger.warning("游戏状态更新：LLM 返回格式异常")
+            except Exception as e:
+                logger.error("游戏状态更新失败: %s", e)
             return
 
         # ── chapter_summary: LLM 生成每章概要 ──
@@ -559,9 +612,17 @@ class WorkflowRunner:
             self._save_progress(progress)
 
     def _build_context(self, input_files: list[str], n: int) -> str:
-        """三层记忆组装：工作记忆（近章）+ 语义记忆（暂存器）+ 文件上下文。"""
+        """多层上下文组装：游戏状态 + 记忆 + 章节概要 + 摘要 + RAG。"""
         parts = []
         char_file_content = ""
+
+        # ── 游戏状态（世界/人物/物品/等级） ──
+        from .game_state import GameState
+        gs = GameState(self.project_dir)
+        gs.load()
+        gs_text = gs.build_context_text()
+        if gs_text:
+            parts.append(gs_text)
 
         # ── 语义记忆：记忆暂存器 ──
         from .memory import MemoryScratchpad
@@ -845,6 +906,7 @@ DEFAULT_WORKFLOW = {
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
         {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
+        {"id": "game_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
@@ -868,6 +930,7 @@ CONTINUE_WORKFLOW = {
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
         {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
+        {"id": "game_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
