@@ -42,6 +42,9 @@
 | 目录更新 | ✅ 已实现 | 每章自动更新 planning/目录.md |
 | 规划反哺 | ✅ 已实现 | 每10章自动更新大纲/人物/伏笔 |
 | 标题约束 | ✅ 已实现 | 已有文件的章节，prompt 注入标题约束 |
+| 大世界状态系统 | ✅ 已实现 | 结构化追踪人物/物品/地点/时间线（world_state.json） |
+| 章节备份 | ✅ 已实现 | 写入前自动备份为 .bak.txt，防止内容丢失 |
+| 空返回保护 | ✅ 已实现 | LLM 返回为空时跳过写入，防止清空已有文件 |
 | UI 进度面板 | ✅ 已实现 | 办公室场景联动 + 迷你进度条 |
 | 空文件检测 | ✅ 已实现 | 0 字节章节视为缺失，查漏补缺自动补写 |
 | 对话记录联动 | ✅ 已实现 | 工作流调用 Agent 时对话自动写入 chat.db |
@@ -150,14 +153,15 @@ class WorkflowRunner:
 
 ```python
 def _build_context(self, input_files, n) -> str:
-    """7 层上下文组装。"""
-    # 1. 长期记忆（11桶）         → memory.py
-    # 2. 反模式约束               → anti_patterns.py
-    # 3. 追读力指导               → reading_power.py
-    # 4. 角色推演结果             → character_sim.py
-    # 5. 章节概要（最近10章）      → project_io.load_chapter_summaries
-    # 6. 最新摘要 + 最近3章全文   → project_io.latest_summary
-    # 7. RAG检索结果              → rag.py
+    """8 层上下文组装。"""
+    # 1. 大世界状态               → world_state.py（人物/物品/地点/时间线）
+    # 2. 长期记忆（11桶）         → memory.py
+    # 3. 反模式约束               → anti_patterns.py
+    # 4. 追读力指导               → reading_power.py
+    # 5. 角色推演结果             → character_sim.py
+    # 6. 章节概要（最近10章）      → project_io.load_chapter_summaries
+    # 7. 最新摘要 + 最近3章全文   → project_io.latest_summary
+    # 8. RAG检索结果              → rag.py
 ```
 
 ### 纯工具步骤
@@ -199,9 +203,11 @@ data/projects/{project_name}/
 │   ├── 支线.md
 │   ├── 伏笔.md                  # 每10章自动反哺
 │   └── 目录.md                  # 每章自动更新
+├── world_state.json             # 大世界状态（人物/物品/地点/时间线）
 ├── chapters/
 │   ├── 1_章节名.txt             # 写手输出（.txt）
 │   ├── 1_章节名.summary.md      # 章节概要（自动生成）
+│   ├── 1_章节名.bak.txt         # 章节备份（写入前自动备份）
 │   ├── 1_章节名.outline.md      # 细纲（可选，.md）
 │   └── ...
 ├── inspiration/

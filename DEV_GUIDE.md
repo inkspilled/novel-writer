@@ -30,8 +30,10 @@ novel-writer/
 │       └── {project_name}/
 │           ├── meta.json           # 项目元信息
 │           ├── chat.db             # 聊天记录（项目级 SQLite）
+│           ├── world_state.json    # 大世界状态（人物/物品/地点/时间线）
+│           ├── memory.json         # 长期记忆（11桶）
 │           ├── planning/           # 规划文档（.md）
-│           ├── chapters/           # 章节正文（.txt）+ 细纲（.md）
+│           ├── chapters/           # 章节正文（.txt）+ 细纲（.md）+ 概要（.summary.md）
 │           ├── inspiration/        # 灵感记录（.md）
 │           ├── review/             # 审校报告（.md）
 │           └── workflow.json       # 工作流进度
@@ -51,6 +53,7 @@ novel-writer/
 │   │   │   ├── __init__.py         # load_agents() / save_agents()
 │   │   │   └── base.py             # BaseAgent + AgentConfig
 │   │   ├── project_io.py           # 项目目录 IO
+│   │   ├── world_state.py          # 大世界状态管理
 │   │   └── workflow.py             # 工作流引擎
 │   ├── models/
 │   │   ├── project.py              # Project（基于目录的存储）
@@ -109,6 +112,48 @@ fix_chapter_titles(project_dir)         # 用文件名标题修正正文 heading
 load_chapter_summaries(project_dir)     # 加载章节概要（用于上下文组装）
 ```
 
+### 大世界状态系统 (`core/world_state.py`)
+
+像游戏存档一样追踪小说世界的结构化数据：
+
+```python
+from novel_writer.core.world_state import WorldState
+ws = WorldState(project_dir)
+ws.load()
+
+# 角色操作
+ws.get_character("凌尘")                    # 获取角色属性
+ws.update_character("凌尘", {"gold": 10})   # 更新属性（深度合并）
+ws.add_character("新角色", {...})            # 添加新角色
+
+# 物品操作
+ws.give_item("凌尘", "灵石矿", {...})       # 给予物品
+ws.remove_item("凌尘", "枯叶")              # 移除物品
+ws.add_item("青霜剑", {...})                # 添加到物品图鉴
+
+# 世界操作
+ws.add_location("禁地", {...})              # 添加地点
+ws.set_date("宗历1247年 秋")                # 设置时间
+ws.add_timeline_event(1, "事件", "地点")    # 记录时间线
+
+# LLM 结构化更新
+ws.apply_llm_update(update_json)            # 应用 LLM 返回的状态变化
+ws.save()
+
+# 上下文输出
+ws.build_context_text()                     # 生成文本摘要，注入 LLM 上下文
+```
+
+`world_state.json` 结构：
+```json
+{
+  "world": {"name": "青云修仙界", "locations": {...}, "power_system": {"levels": ["炼气", "筑基", ...]}},
+  "characters": {"凌尘": {"cultivation": {"level": "炼气", "sub_level": "二层"}, "hp": 100, "sp": 30, "gold": 5, "inventory": [...], "equipment": {...}, "skills": [...], "location": "杂院"}},
+  "items_catalog": {"青霜剑": {"type": "武器", "effect": "冰系攻击", "durability": "...", "uses": -1, "life_save": false}},
+  "timeline": [{"chapter": 1, "event": "...", "location": "..."}]
+}
+```
+
 ### LLM 层 (`core/llm/`)
 
 多驱动架构，支持三种后端：
@@ -146,21 +191,22 @@ def build_workflow(mode, project_info, start, end) -> WorkflowDef:
 - 支持循环步骤（repeat）、定时触发（every）、断点恢复
 - **智能跳过**：已有内容的章节在 LLM 调用前跳过，提升效率
 - **标题约束**：已有文件名的章节，prompt 中注入标题约束防止 LLM 改标题
-- **定时步骤**：灵感（每3章）、推演（每章）、概要（每章）、目录（每章）、润色（每2章）、校验（每章）、摘要（每5章）、规划反哺（每10章）
-- **纯工具步骤**：`fix_titles`、`toc`、`chapter_summary` 不走标准 agent 流程
+- **定时步骤**：灵感（每3章）、推演（每章）、概要（每章）、大世界状态（每章）、目录（每章）、润色（每2章）、校验（每章）、摘要（每5章）、规划反哺（每10章）
+- **纯工具步骤**：`fix_titles`、`toc`、`chapter_summary`、`world_state_update` 不走标准 agent 流程
 
 ### 智能上下文组装 (`_build_context`)
 
-写作时自动组装 7 层上下文：
+写作时自动组装 8 层上下文：
 
 ```python
-1. 长期记忆（11桶）         # memory.py: MemoryScratchpad
-2. 反模式约束               # anti_patterns.py: AntiPatternTracker
-3. 追读力指导               # reading_power.py: ReadingPowerTracker
-4. 角色推演结果             # character_sim.py: load_sim_cache
-5. 章节概要（最近10章）      # project_io.load_chapter_summaries
-6. 最新摘要 + 最近3章全文   # project_io.latest_summary
-7. RAG检索结果              # rag.py: RAGRetriever
+1. 大世界状态               # world_state.py: WorldState（人物/物品/地点/时间线）
+2. 长期记忆（11桶）         # memory.py: MemoryScratchpad
+3. 反模式约束               # anti_patterns.py: AntiPatternTracker
+4. 追读力指导               # reading_power.py: ReadingPowerTracker
+5. 角色推演结果             # character_sim.py: load_sim_cache
+6. 章节概要（最近10章）      # project_io.load_chapter_summaries
+7. 最新摘要 + 最近3章全文   # project_io.latest_summary
+8. RAG检索结果              # rag.py: RAGRetriever
 ```
 
 ### UI 架构
