@@ -1,8 +1,8 @@
-"""游戏状态管理 — 结构化的世界/人物/物品追踪。
+"""大世界状态管理 — 结构化的世界/人物/物品追踪。
 
 用法：
-    from novel_writer.core.game_state import GameState
-    gs = GameState(project_dir)
+    from novel_writer.core.world_state import WorldState
+    gs = WorldState(project_dir)
     gs.load()
     char = gs.get_character("凌尘")
     gs.update_character("凌尘", {"gold": 10, "cultivation": {"level": "炼气", "sub_level": "三层"}})
@@ -19,38 +19,38 @@ from .logger import get_logger
 
 logger = get_logger(__name__)
 
-GAME_STATE_FILE = "game_state.json"
+WORLD_STATE_FILE = "world_state.json"
 
 
-class GameState:
-    """项目级游戏状态管理器。"""
+class WorldState:
+    """项目级大世界状态管理器。"""
 
     def __init__(self, project_dir: Path):
         self.project_dir = project_dir
-        self._path = project_dir / GAME_STATE_FILE
+        self._path = project_dir / WORLD_STATE_FILE
         self._data: dict = {}
 
     def load(self) -> dict:
-        """加载游戏状态，不存在则返回空结构。"""
+        """加载大世界状态，不存在则返回空结构。"""
         if self._path.exists():
             try:
                 self._data = json.loads(self._path.read_text(encoding="utf-8"))
-                logger.debug("游戏状态已加载: %s", self._path)
+                logger.debug("大世界状态已加载: %s", self._path)
             except (json.JSONDecodeError, IOError) as e:
-                logger.error("游戏状态加载失败: %s", e)
+                logger.error("大世界状态加载失败: %s", e)
                 self._data = self._default_state()
         else:
             self._data = self._default_state()
         return self._data
 
     def save(self) -> None:
-        """保存游戏状态到文件。"""
+        """保存大世界状态到文件。"""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(
             json.dumps(self._data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        logger.debug("游戏状态已保存: %s", self._path)
+        logger.debug("大世界状态已保存: %s", self._path)
 
     def _default_state(self) -> dict:
         return {
@@ -155,7 +155,7 @@ class GameState:
     # ── 上下文输出 ──
 
     def build_context_text(self) -> str:
-        """生成游戏状态的文本摘要，用于注入 LLM 上下文。"""
+        """生成大世界状态的文本摘要，用于注入 LLM 上下文。"""
         parts = []
 
         # 世界信息

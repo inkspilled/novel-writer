@@ -203,7 +203,7 @@ class WorkflowRunner:
                     for ps in periodic_steps:
                         if self._stop:
                             break
-                        if ps.id in ("polish", "proofread", "summary", "toc", "chapter_summary", "game_state_update", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
+                        if ps.id in ("polish", "proofread", "summary", "toc", "chapter_summary", "world_state_update", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
                             ps_key = f"{ps.id}_{n}"
                             if progress.get(ps_key) != "done":
                                 await self._run_single(ps, workflow.project, n, progress)
@@ -341,8 +341,8 @@ class WorkflowRunner:
                 self.on_step_end(step.id, n, "系统", "目录已更新")
             return
 
-        # ── game_state_update: LLM 更新游戏状态 ──
-        if step.id == "game_state_update":
+        # ── world_state_update: LLM 更新大世界状态 ──
+        if step.id == "world_state_update":
             existing = self._find_chapter_file(n)
             if not existing:
                 return
@@ -354,13 +354,13 @@ class WorkflowRunner:
                 return
             if self.on_step_start:
                 self.on_step_start(step.id, n, agent.title)
-            from .game_state import GameState
-            gs = GameState(self.project_dir)
+            from .world_state import WorldState
+            gs = WorldState(self.project_dir)
             gs.load()
             content = project_io.read_md(existing_path)
             gs_summary = gs.build_context_text()
             prompt = (
-                f"你是游戏状态追踪器。根据第{n}章正文，输出人物状态变化的 JSON。\n\n"
+                f"你是大世界状态追踪器。根据第{n}章正文，输出人物状态变化的 JSON。\n\n"
                 f"当前状态：\n{gs_summary[:1500]}\n\n"
                 f"第{n}章正文：\n{content[:2000]}\n\n"
                 f"严格输出 JSON，不要输出其他内容：\n"
@@ -384,14 +384,14 @@ class WorkflowRunner:
                         ev["chapter"] = n
                     logs = gs.apply_llm_update(update)
                     gs.save()
-                    msg = f"游戏状态已更新: {', '.join(logs)}"
+                    msg = f"大世界状态已更新: {', '.join(logs)}"
                     logger.info(msg)
                     if self.on_step_end:
                         self.on_step_end(step.id, n, agent.title, msg)
                 else:
-                    logger.warning("游戏状态更新：LLM 返回格式异常")
+                    logger.warning("大世界状态更新：LLM 返回格式异常")
             except Exception as e:
-                logger.error("游戏状态更新失败: %s", e)
+                logger.error("大世界状态更新失败: %s", e)
             return
 
         # ── chapter_summary: LLM 生成每章概要 ──
@@ -612,13 +612,13 @@ class WorkflowRunner:
             self._save_progress(progress)
 
     def _build_context(self, input_files: list[str], n: int) -> str:
-        """多层上下文组装：游戏状态 + 记忆 + 章节概要 + 摘要 + RAG。"""
+        """多层上下文组装：大世界状态 + 记忆 + 章节概要 + 摘要 + RAG。"""
         parts = []
         char_file_content = ""
 
-        # ── 游戏状态（世界/人物/物品/等级） ──
-        from .game_state import GameState
-        gs = GameState(self.project_dir)
+        # ── 大世界状态（世界/人物/物品/等级） ──
+        from .world_state import WorldState
+        gs = WorldState(self.project_dir)
         gs.load()
         gs_text = gs.build_context_text()
         if gs_text:
@@ -906,7 +906,7 @@ DEFAULT_WORKFLOW = {
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
         {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
-        {"id": "game_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
+        {"id": "world_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
@@ -930,7 +930,7 @@ CONTINUE_WORKFLOW = {
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
         {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
-        {"id": "game_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
+        {"id": "world_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
