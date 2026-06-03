@@ -203,7 +203,7 @@ class WorkflowRunner:
                     for ps in periodic_steps:
                         if self._stop:
                             break
-                        if ps.id in ("polish", "proofread", "summary", "toc", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
+                        if ps.id in ("polish", "proofread", "summary", "toc", "chapter_summary", "update_outline", "update_characters", "update_foreshadow") and n % ps.every == 0:
                             ps_key = f"{ps.id}_{n}"
                             if progress.get(ps_key) != "done":
                                 await self._run_single(ps, workflow.project, n, progress)
@@ -327,6 +327,52 @@ class WorkflowRunner:
             logger.info("目录已更新")
             if self.on_step_end:
                 self.on_step_end(step.id, n, "系统", "目录已更新")
+            return
+
+        # ── chapter_summary: LLM 生成每章概要 ──
+        if step.id == "chapter_summary":
+            # 找到第 n 章文件
+            existing = self._find_chapter_file(n)
+            if not existing:
+                return
+            existing_path = self.project_dir / "chapters" / existing
+            if not existing_path.exists() or existing_path.stat().st_size == 0:
+                return
+            # 检查概要是否已存在
+            m = project_io._CHAPTER_RE.match(existing)
+            if not m:
+                return
+            ch_title = m.group(2)
+            summary_path = project_io.chapter_summary_path(self.project_dir, n, ch_title)
+            if summary_path.exists() and summary_path.stat().st_size > 0:
+                logger.debug("第%d章概要已存在，跳过", n)
+                return
+            # 用审核 agent 生成概要
+            agent = self.find_agent("剧情审查") or self.find_agent("校对") or list(self.agents.values())[0] if self.agents else None
+            if not agent:
+                return
+            if self.on_step_start:
+                self.on_step_start(step.id, n, agent.title)
+            content = project_io.read_md(existing_path)
+            prompt = (
+                f"请为以下章节生成结构化概要，严格按此格式输出：\n\n"
+                f"## 第{n}章 {ch_title} 概要\n"
+                f"- **地点**：主要场景\n"
+                f"- **出场人物**：人物列表\n"
+                f"- **核心事件**：本章发生的关键事情（2-3句）\n"
+                f"- **伏笔/悬念**：埋设或回收的伏笔\n"
+                f"- **情绪走向**：如 惊疑→震怒→决心\n"
+                f"- **承接点**：本章结尾留给下一章的悬念（1句）\n\n"
+                f"正文：\n{content[:3000]}"
+            )
+            try:
+                resp = await agent.run(prompt)
+                project_io.write_md(summary_path, resp.content)
+                logger.info("第%d章概要已生成", n)
+                if self.on_step_end:
+                    self.on_step_end(step.id, n, agent.title, f"第{n}章概要已生成")
+            except Exception as e:
+                logger.error("第%d章概要生成失败: %s", n, e)
             return
 
         # ── fix_titles: LLM 根据正文内容生成正确标题 ──
@@ -517,6 +563,11 @@ class WorkflowRunner:
         if sim_text:
             parts.append(sim_text)
 
+        # ── 章节概要（每章结构化小卡片） ──
+        chapter_summaries = project_io.load_chapter_summaries(self.project_dir, up_to_chapter=n, window=10)
+        if chapter_summaries:
+            parts.append(chapter_summaries)
+
         for f in input_files:
             if f == "prev_chapters":
                 # 工作记忆：最新摘要 + 最近 3 章全文
@@ -529,7 +580,7 @@ class WorkflowRunner:
                     start = max(1, n - 3)
                     for i in range(start, n):
                         for ch_file in sorted(chapters_dir.glob(f"{i}_*.txt")):
-                            if ch_file.name.endswith(".outline.md"):
+                            if ch_file.name.endswith(".outline.md") or ch_file.name.endswith(".summary.md"):
                                 continue
                             content = project_io.read_md(ch_file)
                             if content:
@@ -766,6 +817,7 @@ DEFAULT_WORKFLOW = {
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},
@@ -788,6 +840,7 @@ CONTINUE_WORKFLOW = {
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
         {"id": "chapter", "needs": "正文写作", "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
+        {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
         {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
         {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告.md", "every": 1, "optional": True},

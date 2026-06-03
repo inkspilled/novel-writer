@@ -168,6 +168,53 @@ def rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> st
     return ""
 
 
+# ── 章节概要 ──
+
+def chapter_summary_filename(number: int, title: str) -> str:
+    safe_title = title or "未命名"
+    return f"{number}_{safe_title}.summary.md"
+
+
+def chapter_summary_path(project_dir: Path, number: int, title: str) -> Path:
+    return project_dir / CHAPTERS_DIR / chapter_summary_filename(number, title)
+
+
+def load_chapter_summaries(project_dir: Path, up_to_chapter: int = 9999, window: int = 0) -> str:
+    """加载章节概要文本，用于上下文组装。
+
+    Args:
+        project_dir: 项目目录
+        up_to_chapter: 最大章节号（不含）
+        window: 只加载最近 N 章的概要（0 = 全部）
+    """
+    chapters_dir = project_dir / CHAPTERS_DIR
+    if not chapters_dir.exists():
+        return ""
+
+    summaries = []
+    for f in sorted(chapters_dir.glob("*.summary.md")):
+        m = _CHAPTER_RE.match(f.name.replace(".summary.md", ".txt"))
+        if not m:
+            continue
+        num = int(m.group(1))
+        if num >= up_to_chapter:
+            continue
+        content = read_md(f)
+        if content:
+            summaries.append((num, content))
+
+    if window and len(summaries) > window:
+        summaries = summaries[-window:]
+
+    if not summaries:
+        return ""
+
+    parts = ["=== 章节概要 ==="]
+    for num, text in summaries:
+        parts.append(text)
+    return "\n\n".join(parts)
+
+
 # ── meta.json 读写 ──
 
 def save_meta(project_dir: Path, meta: dict) -> None:

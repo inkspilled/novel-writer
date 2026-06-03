@@ -90,6 +90,7 @@ logger = get_logger(__name__)
 ### 文件格式
 
 - 章节正文：`.txt`（纯文本，不需要 Markdown 语法）
+- 章节概要：`{n}_标题.summary.md`（自动生成，结构化卡片）
 - 规划文档：`.md`（大纲、人物设定等有结构层级）
 - 细纲：`{n}_标题.outline.md`
 - 灵感：`.md`
@@ -98,10 +99,14 @@ logger = get_logger(__name__)
 ### 项目存储 (`core/project_io.py`)
 
 ```python
-chapter_filename(number, title)    # "1_第一章.txt"
-scan_chapters(project_dir)         # 按数字排序扫描
-read_md / write_md                 # 文件读写（通用，不区分扩展名）
-load_workflow / save_workflow       # 工作流进度
+chapter_filename(number, title)         # "1_第一章.txt"
+scan_chapters(project_dir)              # 按数字排序扫描
+read_md / write_md                      # 文件读写（通用，不区分扩展名）
+load_workflow / save_workflow            # 工作流进度
+rename_chapter(project_dir, n, title)   # 重命名章节（文件名+heading+细纲）
+generate_toc(project_dir)               # 生成 planning/目录.md
+fix_chapter_titles(project_dir)         # 用文件名标题修正正文 heading
+load_chapter_summaries(project_dir)     # 加载章节概要（用于上下文组装）
 ```
 
 ### LLM 层 (`core/llm/`)
@@ -140,17 +145,22 @@ def build_workflow(mode, project_info, start, end) -> WorkflowDef:
 - 已有章节文件会被复用（覆盖写入），不重复创建
 - 支持循环步骤（repeat）、定时触发（every）、断点恢复
 - **智能跳过**：已有内容的章节在 LLM 调用前跳过，提升效率
-- **定时步骤**：灵感（每3章）、推演（每章）、润色（每2章）、校验（每章）、摘要（每5章）
+- **标题约束**：已有文件名的章节，prompt 中注入标题约束防止 LLM 改标题
+- **定时步骤**：灵感（每3章）、推演（每章）、概要（每章）、目录（每章）、润色（每2章）、校验（每章）、摘要（每5章）、规划反哺（每10章）
+- **纯工具步骤**：`fix_titles`、`toc`、`chapter_summary` 不走标准 agent 流程
 
 ### 智能上下文组装 (`_build_context`)
 
+写作时自动组装 7 层上下文：
+
 ```python
-1. 长期记忆（11桶）      # memory.py: MemoryScratchpad
-2. 反模式约束             # anti_patterns.py: AntiPatternTracker
-3. 追读力指导             # reading_power.py: ReadingPowerTracker
-4. 角色推演结果           # character_sim.py: load_sim_cache
-5. 最新摘要 + 最近3章全文 # project_io.latest_summary
-6. RAG检索结果            # rag.py: RAGRetriever
+1. 长期记忆（11桶）         # memory.py: MemoryScratchpad
+2. 反模式约束               # anti_patterns.py: AntiPatternTracker
+3. 追读力指导               # reading_power.py: ReadingPowerTracker
+4. 角色推演结果             # character_sim.py: load_sim_cache
+5. 章节概要（最近10章）      # project_io.load_chapter_summaries
+6. 最新摘要 + 最近3章全文   # project_io.latest_summary
+7. RAG检索结果              # rag.py: RAGRetriever
 ```
 
 ### UI 架构
