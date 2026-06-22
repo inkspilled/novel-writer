@@ -289,14 +289,18 @@ class ModelDialog(QDialog):
         self.setMinimumSize(720, 600)
         self.config = dict(config)
         self._providers = load_default_providers()
+        # 加载自定义供应商
+        custom = self.config.get("custom_providers", [])
+        if custom:
+            self._providers.extend(custom)
         self._saved_models: dict = dict(self.config.get("saved_models", {}))
         self._setup_ui()
         self._load_config()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 16)
+        layout.setSpacing(14)
 
         # ── 顶部：默认模型选择 ──
         default_group = QGroupBox(t("model_default_group"))
@@ -317,7 +321,7 @@ class ModelDialog(QDialog):
 
         # ── 中部：左侧列表 + 右侧编辑 ──
         body = QHBoxLayout()
-        body.setSpacing(14)
+        body.setSpacing(16)
 
         # 左侧：已保存模型列表
         left = QWidget()
@@ -349,17 +353,26 @@ class ModelDialog(QDialog):
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
-        scroll_layout.setSpacing(10)
+        scroll_layout.setSpacing(12)
 
         provider_group = QGroupBox(t("settings_provider_group"))
         pg = QFormLayout(provider_group)
         pg.setSpacing(10)
 
+        # 供应商选择 + 新增按钮
+        provider_row = QHBoxLayout()
+        provider_row.setSpacing(8)
         self.provider_combo = QComboBox()
         for p in self._providers:
             self.provider_combo.addItem(p["name"])
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
-        pg.addRow(t("settings_provider"), self.provider_combo)
+        provider_row.addWidget(self.provider_combo, 1)
+        self._btn_add_provider = QPushButton("➕ 新增")
+        self._btn_add_provider.setFixedHeight(32)
+        self._btn_add_provider.setFixedWidth(70)
+        self._btn_add_provider.clicked.connect(self._add_custom_provider)
+        provider_row.addWidget(self._btn_add_provider)
+        pg.addRow(t("settings_provider"), provider_row)
 
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -398,14 +411,17 @@ class ModelDialog(QDialog):
         scroll.setWidget(scroll_content)
         right_layout.addWidget(scroll, 1)
 
-        # 底部按钮
+        # 右侧底部按钮
         btn_row2 = QHBoxLayout()
+        btn_row2.setSpacing(10)
         btn_row2.addStretch()
         self._btn_save_as = QPushButton(t("model_save_as"))
+        self._btn_save_as.setFixedHeight(34)
         self._btn_save_as.clicked.connect(self._save_as_model_config)
         btn_row2.addWidget(self._btn_save_as)
         self._btn_set_default = QPushButton(t("model_set_default"))
         self._btn_set_default.setObjectName("primary")
+        self._btn_set_default.setFixedHeight(34)
         self._btn_set_default.clicked.connect(self._set_as_default)
         btn_row2.addWidget(self._btn_set_default)
         right_layout.addLayout(btn_row2)
@@ -413,18 +429,15 @@ class ModelDialog(QDialog):
         body.addWidget(right, 2)
         layout.addLayout(body, 1)
 
-        # ── 底部：确认按钮 ──
+        # ── 底部：关闭按钮 ──
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
-        self._btn_save = QPushButton(t("settings_save_all"))
-        self._btn_save.setObjectName("primary")
-        self._btn_save.setFixedHeight(36)
-        self._btn_save.clicked.connect(self._save)
-        self._btn_cancel = QPushButton(t("settings_cancel"))
-        self._btn_cancel.setFixedHeight(36)
-        self._btn_cancel.clicked.connect(self.reject)
-        bottom_row.addWidget(self._btn_save)
-        bottom_row.addWidget(self._btn_cancel)
+        self._btn_close = QPushButton("关闭")
+        self._btn_close.setFixedHeight(36)
+        self._btn_close.setFixedWidth(90)
+        self._btn_close.clicked.connect(self._close_dialog)
+        bottom_row.addWidget(self._btn_close)
+        layout.addLayout(bottom_row)
         layout.addLayout(bottom_row)
 
         self._refresh_model_list()
@@ -545,7 +558,13 @@ class ModelDialog(QDialog):
             self._refresh_model_list()
 
     def _on_provider_changed(self, index: int):
-        if index < 0 or index >= len(self._providers):
+        if index < 0:
+            return
+        # "自定义供应商" 选项
+        if index == len(self._providers):
+            self._add_custom_provider()
+            return
+        if index >= len(self._providers):
             return
         provider = self._providers[index]
         self.base_url_input.setText(provider["base_url"])
@@ -554,6 +573,75 @@ class ModelDialog(QDialog):
         self.ollama_group.setVisible(is_ollama)
         if is_ollama:
             self._refresh_ollama_models()
+
+    def _close_dialog(self):
+        """关闭对话框，自动保存当前配置。"""
+        self._save()
+
+    def _add_custom_provider(self):
+        """弹出对话框添加自定义供应商。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("新增自定义供应商")
+        dialog.setMinimumWidth(420)
+        form = QFormLayout(dialog)
+        form.setSpacing(12)
+        form.setContentsMargins(20, 20, 20, 20)
+
+        name_input = QLineEdit()
+        name_input.setPlaceholderText("如：我的 API 服务")
+        form.addRow("供应商名称", name_input)
+
+        type_combo = QComboBox()
+        type_combo.addItem("OpenAI 兼容", "openai_compat")
+        type_combo.addItem("Ollama 本地", "ollama")
+        form.addRow("接口类型", type_combo)
+
+        url_input = QLineEdit()
+        url_input.setPlaceholderText("https://api.example.com/v1")
+        form.addRow("Base URL", url_input)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(dialog.reject)
+        btn_ok = QPushButton("添加")
+        btn_ok.setObjectName("primary")
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_cancel)
+        form.addRow("", btn_row)
+
+        def do_add():
+            name = name_input.text().strip()
+            url = url_input.text().strip()
+            if not name:
+                QMessageBox.warning(dialog, "提示", "请输入供应商名称")
+                return
+            if not url:
+                QMessageBox.warning(dialog, "提示", "请输入 Base URL")
+                return
+            # 检查重名
+            for p in self._providers:
+                if p["name"] == name:
+                    QMessageBox.warning(dialog, "提示", f"供应商「{name}」已存在")
+                    return
+            new_provider = {
+                "name": name,
+                "type": type_combo.currentData(),
+                "base_url": url,
+            }
+            self._providers.append(new_provider)
+            # 插入到"自定义供应商"之前
+            self.provider_combo.blockSignals(True)
+            insert_pos = self.provider_combo.count() - 1
+            self.provider_combo.insertItem(insert_pos, name)
+            self.provider_combo.setCurrentIndex(insert_pos)
+            self.provider_combo.blockSignals(False)
+            self.base_url_input.setText(url)
+            self.model_input.clear()
+            dialog.accept()
+
+        btn_ok.clicked.connect(do_add)
+        dialog.exec()
 
     def _on_ollama_model_selected(self, item: QListWidgetItem):
         name = item.text().split("  (")[0].strip()
@@ -607,8 +695,8 @@ class ModelDialog(QDialog):
 
         # 统一用 OpenAI 兼容接口测试
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key or "ollama", base_url=base_url)
+            from openai import OpenAI as _OpenAI
+            client = _OpenAI(api_key=api_key or "ollama", base_url=base_url)
             resp = client.chat.completions.create(
                 model=model, messages=[{"role": "user", "content": "hi"}], max_tokens=5)
             QMessageBox.information(self, t("dialog_success"), t("test_success_conn", resp.model))
@@ -639,6 +727,11 @@ class ModelDialog(QDialog):
                 "model": self.model_input.text().strip(),
             }
         self.config["saved_models"] = self._saved_models
+        # 保存自定义供应商（非默认列表的）
+        default_names = {p["name"] for p in load_default_providers()}
+        custom_providers = [p for p in self._providers if p["name"] not in default_names]
+        if custom_providers:
+            self.config["custom_providers"] = custom_providers
         self.accept()
 
     def get_config(self) -> dict:

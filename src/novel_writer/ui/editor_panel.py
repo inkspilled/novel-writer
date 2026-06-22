@@ -55,7 +55,9 @@ class EditorPanel(QWidget):
         self.content_edit.setPlaceholderText(t("editor_ph_content"))
         self.content_edit.setAcceptRichText(False)
         self.content_edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        font = QFont("PingFang SC", 16)
+        import sys
+        _font = "Microsoft YaHei" if sys.platform == "win32" else "PingFang SC"
+        font = QFont(_font, 16)
         font.setStyleHint(QFont.StyleHint.SansSerif)
         self.content_edit.setFont(font)
         self.content_edit.textChanged.connect(self._on_text_changed)

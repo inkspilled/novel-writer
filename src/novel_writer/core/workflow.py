@@ -23,9 +23,17 @@ from .llm.base import BaseLLM, LLMMessage
 from .logger import get_logger
 
 logger = get_logger(__name__)
-from .logger import get_logger
 
-logger = get_logger(__name__)
+
+def _estimate_tokens(text: str) -> int:
+    """粗略估算 token 数：中文字符≈1.5，英文单词≈1.3。"""
+    if not text:
+        return 0
+    import re
+    cn_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    # 英文单词：连续的 ASCII 字符序列
+    en_words = len(re.findall(r'[a-zA-Z]+', text))
+    return int(cn_chars * 1.5 + en_words * 1.3)
 
 
 # ── 工作流模式 ──
@@ -35,6 +43,54 @@ class WorkflowMode(Enum):
     CONTINUE = "continue"           # 续写：从已有章节继续
     FILL_GAPS = "fill_gaps"         # 查漏补缺：检查缺失章节并补写
     VALIDATE = "validate"           # 校验：审核+校对已有章节
+
+
+# ── 上下文分层 ──
+
+class ContextTier(Enum):
+    """上下文层级 — 控制注入 LLM 的信息量。"""
+    GLOBAL = 0      # 仅全局前缀（Agent system_prompt + 项目元信息）
+    WORLD = 1       # + 世界观层（世界设定/角色状态/角色约束）
+    NARRATIVE = 2   # + 叙事记忆层（剧情摘要/伏笔/反模式/追读力）
+    WORKING = 3     # + 工作记忆层（章节概要/全文/推演/RAG）
+
+
+# 步骤 → 上下文层级映射
+STEP_CONTEXT_TIERS: dict[str, ContextTier] = {
+    # 纯工具步骤（不需要 LLM 或只需极简上下文）
+    "toc": ContextTier.GLOBAL,
+    "fix_titles": ContextTier.GLOBAL,
+    "chapter_summary": ContextTier.GLOBAL,
+    # 规划步骤（需要世界观，不需要叙事记忆）
+    "ideation": ContextTier.GLOBAL,
+    "outline": ContextTier.GLOBAL,
+    "characters": ContextTier.WORLD,
+    "world": ContextTier.WORLD,
+    "timeline": ContextTier.WORLD,
+    "main_plot": ContextTier.WORLD,
+    "sub_plot": ContextTier.WORLD,
+    "foreshadow": ContextTier.WORLD,
+    # 推演（需要角色设定，不需要叙事细节）
+    "sim": ContextTier.WORLD,
+    # 大世界状态更新（需要当前状态）
+    "world_state_update": ContextTier.WORLD,
+    # 灵感（需要剧情进展，不需要工作记忆）
+    "inspiration": ContextTier.NARRATIVE,
+    # 润色（需要风格指导，不需要完整世界观）
+    "polish": ContextTier.NARRATIVE,
+    # 审核（需要世界观+叙事，不需要工作记忆）
+    "review": ContextTier.NARRATIVE,
+    # 校对（只需要当前章节，由 _build_context 特殊处理）
+    "proofread": ContextTier.GLOBAL,
+    # 摘要（需要叙事记忆）
+    "summary": ContextTier.NARRATIVE,
+    # 规划反哺（需要叙事记忆）
+    "update_outline": ContextTier.NARRATIVE,
+    "update_characters": ContextTier.NARRATIVE,
+    "update_foreshadow": ContextTier.NARRATIVE,
+    # 章节写作（完整上下文）
+    "chapter": ContextTier.WORKING,
+}
 
 
 @dataclass
@@ -262,9 +318,15 @@ class WorkflowRunner:
                 logs = []
                 for ch_num_str, new_title in title_map.items():
                     ch_num = int(ch_num_str)
-                    old = project_io.rename_chapter(self.project_dir, ch_num, str(new_title).strip())
-                    if old:
-                        logs.append(f"第{ch_num}章: 「{old}」→「{new_title}」")
+                    new_title_str = str(new_title).strip()
+                    if not new_title_str:
+                        logs.append(f"第{ch_num}章: 标题为空，跳过")
+                        continue
+                    old, err = project_io.safe_rename_chapter(self.project_dir, ch_num, new_title_str)
+                    if err:
+                        logs.append(f"第{ch_num}章: {err}")
+                    elif old:
+                        logs.append(f"第{ch_num}章: 「{old}」→「{new_title_str}」")
                 project_io.generate_toc(self.project_dir)
                 return f"标题校准完成，修正 {len(logs)} 处\n" + "\n".join(logs)
             else:
@@ -282,7 +344,7 @@ class WorkflowRunner:
                 if existing_path.exists() and existing_path.stat().st_size > 0:
                     return f"[跳过] 第{n}章已有内容，不覆写"
 
-        context = self._build_context(step.input_files, n)
+        context = self._build_context(step.input_files, n, step_id=step.id)
         prompt = self._format_prompt(step.prompt, workflow.project, n)
 
         # 章节写作：注入已有标题约束
@@ -317,18 +379,36 @@ class WorkflowRunner:
                     return f"[跳过] {output} 已有内容，不覆写"
                 logger.info("反哺更新规划文档: %s", output)
 
-            # ── 关键保护：LLM 返回为空时绝不写入 ──
-            if not response.content or not response.content.strip():
+            # ── 关键保护：LLM 返回为空或过短时绝不写入 ──
+            if step.id == "chapter":
+                is_valid, reason = project_io.validate_chapter_content(response.content)
+                if not is_valid:
+                    logger.error("章节内容校验失败，跳过写入! step=%s n=%d output=%s reason=%s",
+                                 step.id, n, output, reason)
+                    return f"[错误] 第{n}章内容校验失败: {reason}，跳过写入"
+            elif not response.content or not response.content.strip():
                 logger.error("LLM 返回为空，跳过写入! step=%s n=%d output=%s", step.id, n, output)
                 return f"[错误] LLM 返回为空，跳过写入 {output}"
 
-            # 章节文件写入前备份
+            # 章节文件写入前备份（保留原始备份，不覆盖已有 .bak）
             if step.id == "chapter" and out_path.exists() and out_path.stat().st_size > 0:
                 backup_path = out_path.with_suffix(".bak.txt")
-                import shutil
-                shutil.copy2(out_path, backup_path)
+                if not backup_path.exists():
+                    import shutil
+                    shutil.copy2(out_path, backup_path)
 
             project_io.write_md(out_path, response.content)
+
+            # 写后验证：确认文件存在且内容不为空
+            if step.id == "chapter":
+                if not out_path.exists() or out_path.stat().st_size == 0:
+                    logger.error("写后验证失败! 文件为空或不存在: %s", out_path)
+                    backup_path = out_path.with_suffix(".bak.txt")
+                    if backup_path.exists() and backup_path.stat().st_size > 0:
+                        import shutil
+                        shutil.copy2(backup_path, out_path)
+                        logger.info("已从备份恢复: %s", backup_path)
+                    return f"[错误] 第{n}章写入失败且无法恢复"
 
         return response.content
 
@@ -476,9 +556,15 @@ class WorkflowRunner:
                     logs = []
                     for ch_num_str, new_title in title_map.items():
                         ch_num = int(ch_num_str)
-                        old = project_io.rename_chapter(self.project_dir, ch_num, str(new_title).strip())
-                        if old:
-                            logs.append(f"第{ch_num}章: 「{old}」→「{new_title}」")
+                        new_title_str = str(new_title).strip()
+                        if not new_title_str:
+                            logs.append(f"第{ch_num}章: 标题为空，跳过")
+                            continue
+                        old, err = project_io.safe_rename_chapter(self.project_dir, ch_num, new_title_str)
+                        if err:
+                            logs.append(f"第{ch_num}章: {err}")
+                        elif old:
+                            logs.append(f"第{ch_num}章: 「{old}」→「{new_title_str}」")
                     # 刷新目录
                     project_io.generate_toc(self.project_dir)
                     msg = f"标题校准完成，修正 {len(logs)} 处"
@@ -519,7 +605,7 @@ class WorkflowRunner:
         if self.on_step_start:
             self.on_step_start(step.id, n, agent.title)
 
-        context = self._build_context(step.input_files, n)
+        context = self._build_context(step.input_files, n, step_id=step.id)
         prompt = self._format_prompt(step.prompt, project, n)
 
         # 章节写作：注入已有标题约束，防止 LLM 每次生成不同标题
@@ -566,21 +652,38 @@ class WorkflowRunner:
                     return
                 logger.info("反哺更新规划文档: %s", output)
 
-            # ── 关键保护：LLM 返回为空时绝不写入，防止清空已有文件 ──
-            if not response.content or not response.content.strip():
-                logger.error("LLM 返回为空，跳过写入! step=%s n=%d output=%s", step.id, n, output)
-                if self.on_error:
-                    self.on_error(step.id, f"LLM 返回为空，跳过写入 {output}")
-                return
+            # ── 关键保护：LLM 返回为空或过短时绝不写入，防止清空已有文件 ──
+            if step.id == "chapter":
+                is_valid, reason = project_io.validate_chapter_content(response.content)
+                if not is_valid:
+                    logger.error("章节内容校验失败，跳过写入! step=%s n=%d output=%s reason=%s",
+                                 step.id, n, output, reason)
+                    if self.on_error:
+                        self.on_error(step.id, f"第{n}章内容校验失败: {reason}，跳过写入")
+                    return
 
-            # 章节文件写入前备份（防止意外丢失）
+            # 章节文件写入前备份（保留原始备份，不覆盖已有 .bak）
             if step.id == "chapter" and out_path.exists() and out_path.stat().st_size > 0:
                 backup_path = out_path.with_suffix(".bak.txt")
-                import shutil
-                shutil.copy2(out_path, backup_path)
-                logger.debug("章节备份: %s", backup_path)
+                if not backup_path.exists():
+                    import shutil
+                    shutil.copy2(out_path, backup_path)
+                    logger.debug("章节备份: %s", backup_path)
 
             project_io.write_md(out_path, response.content)
+
+            # 写后验证：确认文件存在且内容不为空
+            if step.id == "chapter":
+                if not out_path.exists() or out_path.stat().st_size == 0:
+                    logger.error("写后验证失败! 文件为空或不存在: %s", out_path)
+                    # 尝试从备份恢复
+                    backup_path = out_path.with_suffix(".bak.txt")
+                    if backup_path.exists() and backup_path.stat().st_size > 0:
+                        import shutil
+                        shutil.copy2(backup_path, out_path)
+                        logger.info("已从备份恢复: %s", backup_path)
+                    elif self.on_error:
+                        self.on_error(step.id, f"第{n}章写入失败且无法恢复")
 
         # 写后沉淀：章节写完后提取记忆项
         if step.id == "chapter" and response:
@@ -611,86 +714,69 @@ class WorkflowRunner:
             progress[step_key] = "done"
             self._save_progress(progress)
 
-    def _build_context(self, input_files: list[str], n: int) -> str:
-        """多层上下文组装：大世界状态 + 记忆 + 章节概要 + 摘要 + RAG。"""
+    def _build_context(self, input_files: list[str], n: int, step_id: str = "") -> str:
+        """分层上下文组装 — 根据步骤类型裁剪注入量。
+
+        Tier 0 (GLOBAL):   项目元信息
+        Tier 1 (WORLD):    + 世界设定/角色状态/角色约束
+        Tier 2 (NARRATIVE):+ 剧情摘要/伏笔/反模式/追读力
+        Tier 3 (WORKING):  + 章节概要/全文/推演/RAG
+        """
+        tier = STEP_CONTEXT_TIERS.get(step_id, ContextTier.WORKING)
         parts = []
         char_file_content = ""
 
-        # ── 大世界状态（世界/人物/物品/等级） ──
+        # ── Tier 0: 项目元信息（所有任务共享，缓存友好前缀） ──
+        if self.project_info.get("title"):
+            meta = f"项目: {self.project_info['title']}"
+            if self.project_info.get("genre"):
+                meta += f" | 题材: {self.project_info['genre']}"
+            if self.project_info.get("style"):
+                meta += f" | 风格: {self.project_info['style']}"
+            if self.project_info.get("theme"):
+                meta += f" | 主题: {self.project_info['theme']}"
+            parts.append(meta)
+
+        # ── 校对步骤特殊处理：只注入当前章节 ──
+        if step_id == "proofread":
+            for f in input_files:
+                p = self.project_dir / f.format(n=n, **self.project_info)
+                if p.exists():
+                    content = project_io.read_md(p)
+                    if content:
+                        parts.append(content)
+            return "\n\n".join(parts)
+
+        if tier.value < ContextTier.WORLD.value:
+            return self._assemble_input_files(parts, input_files, n, char_file_content)
+
+        # ── Tier 1: 世界观层 ──
         from .world_state import WorldState
         gs = WorldState(self.project_dir)
         gs.load()
-        gs_text = gs.build_context_text()
-        if gs_text:
-            parts.append(gs_text)
 
-        # ── 语义记忆：记忆暂存器 ──
+        # 世界设定（精简版：只输出世界名/时间/等级体系，不含角色详情）
+        w = gs.world
+        if w.get("name"):
+            world_brief = f"世界: {w['name']}"
+            if w.get("current_date"):
+                world_brief += f" | 时间: {w['current_date']}"
+            if w.get("power_system", {}).get("levels"):
+                world_brief += f" | 等级: {' → '.join(w['power_system']['levels'])}"
+            parts.append(f"=== 世界设定 ===\n{world_brief}")
+
+        # 角色状态（合并 world_state + memory.character_state，去重）
         from .memory import MemoryScratchpad
         mem = MemoryScratchpad(self.project_dir)
-        memory_text = mem.build_memory_text(limit_per_bucket=5)
-        if memory_text:
-            parts.append(f"=== 长期记忆 ===\n{memory_text}")
+        char_states = self._build_merged_character_states(gs, mem)
+        if char_states:
+            parts.append(char_states)
 
-        # ── 反模式约束 ──
-        from .anti_patterns import AntiPatternTracker
-        tracker = AntiPatternTracker(self.project_dir)
-        constraint_text = tracker.get_constraint_text()
-        if constraint_text:
-            parts.append(constraint_text)
-
-        # ── 追读力指导 ──
-        from .reading_power import ReadingPowerTracker
-        rp_tracker = ReadingPowerTracker(self.project_dir)
-        rp_guidance = rp_tracker.build_guidance(n)
-        if rp_guidance:
-            parts.append(rp_guidance)
-
-        # ── 角色推演结果 ──
-        from .character_sim import load_sim_cache
-        sim_text = load_sim_cache(self.project_dir, n)
-        if sim_text:
-            parts.append(sim_text)
-
-        # ── 章节概要（每章结构化小卡片） ──
-        chapter_summaries = project_io.load_chapter_summaries(self.project_dir, up_to_chapter=n, window=10)
-        if chapter_summaries:
-            parts.append(chapter_summaries)
-
+        # 读取 planning/ 下的文件（只在需要时注入）
+        planning_files_to_inject = []
         for f in input_files:
             if f == "prev_chapters":
-                # 工作记忆：最新摘要 + 最近 3 章全文
-                summary = project_io.latest_summary(self.project_dir)
-                if summary:
-                    parts.append(f"=== 剧情摘要 ===\n{summary}")
-                chapters_dir = self.project_dir / project_io.CHAPTERS_DIR
-                if chapters_dir.exists():
-                    # 只读最近 3 章全文（工作记忆窗口）
-                    start = max(1, n - 3)
-                    for i in range(start, n):
-                        for ch_file in sorted(chapters_dir.glob(f"{i}_*.txt")):
-                            if ch_file.name.endswith(".outline.md") or ch_file.name.endswith(".summary.md"):
-                                continue
-                            content = project_io.read_md(ch_file)
-                            if content:
-                                parts.append(f"=== 第{i}章 ===\n{content}")
-
-                # RAG 检索：从更早章节中检索与当前大纲相关的段落
-                try:
-                    from .rag import RAGRetriever
-                    rag = RAGRetriever(self.project_dir)
-                    rag.load_chapters(up_to_chapter=start)
-                    # 用大纲摘要作为查询
-                    outline_path = self.project_dir / "planning" / "大纲.md"
-                    if outline_path.exists():
-                        outline = project_io.read_md(outline_path)
-                        # 取大纲中关于第 n 章的描述作为查询
-                        query = _extract_chapter_query(outline, n)
-                        if query:
-                            rag_text = rag.retrieve(query, top_k=3)
-                            if rag_text:
-                                parts.append(rag_text)
-                except Exception:
-                    pass  # RAG 失败不影响写作
+                continue
             elif "*" in f:
                 target = self.project_dir / f
                 parent = target.parent
@@ -710,12 +796,163 @@ class WorkflowRunner:
                             char_file_content = content
                         parts.append(content)
 
-        # 角色约束
+        # 角色约束（从人物设定提取）
         if char_file_content:
             constraint = _build_character_constraint(char_file_content)
             if constraint:
                 parts.append(constraint)
 
+        if tier.value < ContextTier.NARRATIVE.value:
+            return "\n\n".join(parts)
+
+        # ── Tier 2: 叙事记忆层 ──
+
+        # 剧情摘要（最新，替代 memory.story_facts 减少重复）
+        summary = project_io.latest_summary(self.project_dir)
+        if summary:
+            parts.append(f"=== 剧情摘要 ===\n{summary}")
+
+        # 未解伏笔（从 memory 提取，替代全量 memory dump）
+        open_loops = mem.get_open_loops(limit=8)
+        if open_loops:
+            loop_lines = ["【未解伏笔】"]
+            for item in open_loops:
+                subj = item.get("subject", "")
+                val = item.get("value", "")
+                ch = item.get("source_chapter", 0)
+                loop_lines.append(f"- [{subj}] {val}（第{ch}章）")
+            parts.append("\n".join(loop_lines))
+
+        # 反模式约束
+        from .anti_patterns import AntiPatternTracker
+        tracker = AntiPatternTracker(self.project_dir)
+        constraint_text = tracker.get_constraint_text()
+        if constraint_text:
+            parts.append(constraint_text)
+
+        # 追读力指导
+        from .reading_power import ReadingPowerTracker
+        rp_tracker = ReadingPowerTracker(self.project_dir)
+        rp_guidance = rp_tracker.build_guidance(n)
+        if rp_guidance:
+            parts.append(rp_guidance)
+
+        if tier.value < ContextTier.WORKING.value:
+            return "\n\n".join(parts)
+
+        # ── Tier 3: 工作记忆层（仅写作用） ──
+
+        # 角色推演结果
+        from .character_sim import load_sim_cache
+        sim_text = load_sim_cache(self.project_dir, n)
+        if sim_text:
+            parts.append(sim_text)
+
+        # 章节概要（最近5章，从10缩减）
+        chapter_summaries = project_io.load_chapter_summaries(self.project_dir, up_to_chapter=n, window=5)
+        if chapter_summaries:
+            parts.append(chapter_summaries)
+
+        # 最近2章全文（从3缩减）+ RAG
+        for f in input_files:
+            if f == "prev_chapters":
+                chapters_dir = self.project_dir / project_io.CHAPTERS_DIR
+                if chapters_dir.exists():
+                    start = max(1, n - 2)
+                    for i in range(start, n):
+                        for ch_file in sorted(chapters_dir.glob(f"{i}_*.txt")):
+                            if ch_file.name.endswith(".outline.md") or ch_file.name.endswith(".summary.md"):
+                                continue
+                            content = project_io.read_md(ch_file)
+                            if content:
+                                parts.append(f"=== 第{i}章 ===\n{content}")
+
+                # RAG 检索
+                try:
+                    from .rag import RAGRetriever
+                    rag = RAGRetriever(self.project_dir)
+                    rag.load_chapters(up_to_chapter=start)
+                    outline_path = self.project_dir / "planning" / "大纲.md"
+                    if outline_path.exists():
+                        outline = project_io.read_md(outline_path)
+                        query = _extract_chapter_query(outline, n)
+                        if query:
+                            rag_text = rag.retrieve(query, top_k=3)
+                            if rag_text:
+                                parts.append(rag_text)
+                except Exception:
+                    pass
+
+        result = "\n\n".join(parts)
+        # 估算 token 数并记录日志
+        est_tokens = _estimate_tokens(result)
+        logger.debug("上下文组装完成: step=%s n=%d tier=%s tokens≈%d chars=%d",
+                     step_id, n, tier.name, est_tokens, len(result))
+        return result
+
+    def _build_merged_character_states(self, gs, mem) -> str:
+        """合并 world_state 角色 + memory.character_state，去重输出。"""
+        lines = []
+        seen_chars = set()
+
+        # 优先用 world_state 的角色数据（更结构化）
+        for name, char in gs.characters.items():
+            seen_chars.add(name)
+            char_lines = [f"【{name}】"]
+            cult = char.get("cultivation", {})
+            if cult:
+                char_lines.append(f"  境界: {cult.get('level', '?')}{cult.get('sub_level', '')}")
+            if char.get("hp") is not None:
+                char_lines.append(f"  生命: {char['hp']}  灵力: {char.get('sp', 0)}")
+            if char.get("gold") is not None:
+                char_lines.append(f"  灵石: {char['gold']}")
+            if char.get("location"):
+                char_lines.append(f"  位置: {char['location']}")
+            inv = char.get("inventory", [])
+            if inv:
+                items = ", ".join(i.get("name", "?") for i in inv[:5])
+                char_lines.append(f"  背包: {items}")
+            skills = char.get("skills", [])
+            if skills:
+                char_lines.append(f"  技能: {', '.join(skills[:5])}")
+            lines.append("\n".join(char_lines))
+
+        # 补充 memory 中有但 world_state 没有的角色状态
+        mem_chars = mem.get_active("character_state")
+        for item in mem_chars:
+            subj = item.get("subject", "")
+            if subj and subj not in seen_chars:
+                seen_chars.add(subj)
+                val = item.get("value", "")
+                asp = item.get("aspect", "")
+                ch = item.get("source_chapter", 0)
+                lines.append(f"【{subj}】{asp}: {val}（第{ch}章）")
+
+        if not lines:
+            return ""
+        return "=== 角色状态 ===\n" + "\n".join(lines)
+
+    def _assemble_input_files(self, parts: list, input_files: list[str], n: int, char_file_content: str) -> str:
+        """处理 input_files 中的非 prev_chapters 文件。"""
+        for f in input_files:
+            if f == "prev_chapters":
+                continue
+            if "*" in f:
+                target = self.project_dir / f
+                parent = target.parent
+                pattern = target.name
+                if parent.exists():
+                    for p in sorted(parent.glob(pattern)):
+                        if p.is_file():
+                            content = project_io.read_md(p)
+                            if content:
+                                parts.append(f"=== {p.name} ===\n{content}")
+            else:
+                p = self.project_dir / f.format(n=n, **self.project_info)
+                if p.exists():
+                    content = project_io.read_md(p)
+                    if content:
+                        parts.append(content)
         return "\n\n".join(parts)
 
     def _format_prompt(self, template: str, project: dict, n: int) -> str:

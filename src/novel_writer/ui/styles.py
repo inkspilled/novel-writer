@@ -340,13 +340,15 @@ QMenu {{
     background-color: {t['card']};
     color: {t['fg']};
     border: 1px solid {t['border']};
-    border-radius: 12px;
-    padding: 6px;
+    border-radius: 10px;
+    padding: 4px;
+    font-size: 13px;
 }}
 QMenu::item {{
-    padding: 8px 20px;
-    border-radius: 8px;
-    min-width: 120px;
+    padding: 6px 16px;
+    border-radius: 6px;
+    min-width: 100px;
+    font-size: 13px;
 }}
 QMenu::item:selected {{
     background-color: {t['accent_bg']};

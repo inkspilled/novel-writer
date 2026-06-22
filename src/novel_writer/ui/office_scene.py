@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from dataclasses import dataclass
 from enum import Enum
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QTimer, Signal, QPointF, QRectF
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRadialGradient
+
+# 跨平台字体
+_EMOJI_FONT = "Segoe UI Emoji" if sys.platform == "win32" else "Apple Color Emoji"
+_TEXT_FONT = "Microsoft YaHei" if sys.platform == "win32" else "PingFang SC"
 
 
 class AgentState(Enum):
@@ -206,7 +211,7 @@ class OfficeScene(QWidget):
         a = (self._frame_counter % 360) * 0.1
         painter.drawLine(cx2, cy2, cx2 + int(6 * math.sin(a)), cy2 - int(6 * math.cos(a)))
         # 茶水间 & 健身角
-        painter.setFont(QFont("Apple Color Emoji", 10))
+        painter.setFont(QFont(_EMOJI_FONT, 10))
         painter.setPen(QPen(QColor("#2a2a4a"), 1))
         painter.setBrush(QColor("#16161d"))
         painter.drawRoundedRect(int(w * 0.87), int(h * 0.72), 50, 30, 4, 4)
@@ -257,7 +262,7 @@ class OfficeScene(QWidget):
         y = int(slot.desk_y * h + slot.offset_y * h)
 
         if slot.escaped:
-            painter.setFont(QFont("Apple Color Emoji", 12))
+            painter.setFont(QFont(_EMOJI_FONT, 12))
             painter.drawText(x - 6, y + 28, "💨")
             return
 
@@ -271,7 +276,7 @@ class OfficeScene(QWidget):
 
         # emoji
         emoji_size = 24 if slot.state == AgentState.WORKING else 20
-        painter.setFont(QFont("Apple Color Emoji", emoji_size))
+        painter.setFont(QFont(_EMOJI_FONT, emoji_size))
         er = QRectF(x - 14, y + 8, 28, 28)
 
         if slot.state == AgentState.WORKING:
@@ -288,7 +293,7 @@ class OfficeScene(QWidget):
 
         # 标题
         painter.setPen(QPen(QColor("#8e8e9a"), 1))
-        painter.setFont(QFont("PingFang SC", 7))
+        painter.setFont(QFont(_TEXT_FONT, 7))
         painter.drawText(QRectF(x - 24, y + 38, 48, 12), Qt.AlignmentFlag.AlignCenter, slot.title)
 
     def _draw_working_highlight(self, painter: QPainter, slot: AgentSlot, w: int, h: int):
@@ -318,7 +323,7 @@ class OfficeScene(QWidget):
 
         # 任务标签（气泡）
         if slot.task_desc:
-            painter.setFont(QFont("PingFang SC", 8))
+            painter.setFont(QFont(_TEXT_FONT, 8))
             fm = painter.fontMetrics()
             text = slot.task_desc[:12] + "..." if len(slot.task_desc) > 12 else slot.task_desc
             tw = fm.horizontalAdvance(text) + 12
@@ -337,7 +342,7 @@ class OfficeScene(QWidget):
         if slot.escaped:
             return
 
-        painter.setFont(QFont("Apple Color Emoji", 10))
+        painter.setFont(QFont(_EMOJI_FONT, 10))
 
         if slot.state == AgentState.WORKING:
             # 敲键盘粒子

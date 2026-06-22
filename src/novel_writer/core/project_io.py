@@ -239,9 +239,100 @@ def read_md(path: Path) -> str:
 
 
 def write_md(path: Path, content: str) -> None:
-    """写入 MD 文件，自动创建父目录。"""
+    """原子写入 MD 文件：先写临时文件，再重命名，防止写入中途崩溃导致文件清空。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)  # 原子操作（同文件系统下）
+    except Exception:
+        # 清理临时文件
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def validate_chapter_content(content: str, min_length: int = 100) -> tuple[bool, str]:
+    """校验章节内容是否有效。
+
+    Returns:
+        (is_valid, reason): is_valid=False 时应拒绝写入
+    """
+    if not content:
+        return False, "内容为空"
+    stripped = content.strip()
+    if not stripped:
+        return False, "内容为空白"
+    # 去掉 Markdown 标题后检查正文长度
+    body = re.sub(r'^#{1,3}\s+.*$', '', stripped, flags=re.MULTILINE).strip()
+    if len(body) < min_length:
+        return False, f"正文过短（{len(body)}字 < {min_length}字），可能只有标题"
+    return True, "OK"
+
+
+def safe_rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> tuple[str, str]:
+    """安全重命名单个章节：改文件名 + 改正文 heading。
+
+    与 rename_chapter 的区别：
+    - 检测新文件名是否已存在（冲突），冲突时返回错误而非覆盖
+    - 写入前备份原文件
+    - 返回 (旧标题, 错误信息)，错误为空表示成功
+    """
+    chapters = scan_chapters(project_dir)
+    for ch in chapters:
+        if ch["number"] == chapter_number:
+            old_title = ch["title"]
+            if old_title == new_title:
+                return old_title, ""
+
+            new_filename = chapter_filename(chapter_number, new_title)
+            new_path = ch["content_path"].parent / new_filename
+
+            # 冲突检测：新文件已存在且不是当前文件
+            if new_path.exists() and new_path != ch["content_path"]:
+                return old_title, f"目标文件已存在: {new_filename}"
+
+            old_path = ch["content_path"]
+
+            # 备份原文件
+            backup_path = old_path.with_suffix(".bak.txt")
+            if old_path.exists() and old_path.stat().st_size > 0:
+                import shutil
+                shutil.copy2(old_path, backup_path)
+
+            # 改文件名
+            if old_path != new_path:
+                old_path.rename(new_path)
+
+            # 改正文 heading
+            content = read_md(new_path)
+            if content.strip():
+                lines = content.split("\n")
+                for i, line in enumerate(lines):
+                    stripped = line.strip()
+                    if stripped.startswith("#"):
+                        m = re.match(r"^#{1,3}\s+(.+)$", stripped)
+                        if m:
+                            level = len(stripped) - len(stripped.lstrip("#"))
+                            lines[i] = f"{'#' * level} {new_title}"
+                        else:
+                            lines[i] = f"# {new_title}"
+                        break
+                write_md(new_path, "\n".join(lines))
+
+            # 同步改细纲文件名（如果有）
+            if ch["outline_path"]:
+                old_outline = ch["outline_path"]
+                new_outline_name = chapter_outline_filename(chapter_number, new_title)
+                new_outline_path = old_outline.parent / new_outline_name
+                if old_outline != new_outline_path:
+                    old_outline.rename(new_outline_path)
+
+            return old_title, ""
+    return "", f"第{chapter_number}章不存在"
 
 
 # ── Planning 文件 ──

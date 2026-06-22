@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from openai import AsyncOpenAI
-
 from .base import BaseLLM, LLMMessage, LLMResponse
+
+
+def _get_async_openai():
+    """懒加载 AsyncOpenAI，避免与 PySide6 shiboken 导入冲突。"""
+    from openai import AsyncOpenAI
+    return AsyncOpenAI
 
 
 class OpenAICompatLLM(BaseLLM):
@@ -12,6 +16,7 @@ class OpenAICompatLLM(BaseLLM):
 
     def __init__(self, model: str, api_key: str, base_url: str = "https://api.openai.com/v1", **kwargs):
         super().__init__(model, api_key, base_url, **kwargs)
+        AsyncOpenAI = _get_async_openai()
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
     async def chat(self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096) -> LLMResponse:

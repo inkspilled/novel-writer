@@ -44,7 +44,8 @@ def main():
     else:
         logger.warning("应用图标未找到: %s", icon_path)
 
-    font = QFont("PingFang SC", 14)
+    _font_name = "Microsoft YaHei" if sys.platform == "win32" else "PingFang SC"
+    font = QFont(_font_name, 14)
     font.setStyleHint(QFont.StyleHint.SansSerif)
     app.setFont(font)
 

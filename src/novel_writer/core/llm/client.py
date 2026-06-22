@@ -7,12 +7,16 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from openai import AsyncOpenAI
-
 from .base import BaseLLM, LLMMessage, LLMResponse
 from ..logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _get_async_openai():
+    """懒加载 AsyncOpenAI，避免 PySide6 shiboken 与 openai 导入链冲突。"""
+    from openai import AsyncOpenAI
+    return AsyncOpenAI
 
 
 class LLMClient(BaseLLM):
@@ -20,6 +24,7 @@ class LLMClient(BaseLLM):
 
     def __init__(self, model: str, api_key: str = "", base_url: str = "https://api.openai.com/v1", **kwargs):
         super().__init__(model, api_key, base_url, **kwargs)
+        AsyncOpenAI = _get_async_openai()
         self.client = AsyncOpenAI(api_key=api_key or "ollama", base_url=base_url)
         logger.info("LLM 客户端初始化: model=%s, base_url=%s", model, base_url)
 
@@ -32,7 +37,6 @@ class LLMClient(BaseLLM):
         )
         choice = resp.choices[0]
         content = choice.message.content or ""
-        # 处理 qwen3.5 等带思考过程的模型（content 为空时使用 reasoning）
         if not content and hasattr(choice.message, 'reasoning') and choice.message.reasoning:
             content = choice.message.reasoning
         return LLMResponse(

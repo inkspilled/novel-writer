@@ -510,29 +510,29 @@ class MainWindow(QMainWindow):
     def _build_context(self, agent_name: str) -> str:
         parts = []
         if self.project.title:
-            parts.append(f"项目: {self.project.title}")
-            parts.append(f"题材: {self.project.genre}")
-            parts.append(f"风格: {self.project.style}")
-            parts.append(f"主题: {self.project.theme}")
-            if self.project.synopsis:
-                parts.append(f"简介: {self.project.synopsis}")
-        if self.project.characters:
-            chars = "\n".join(f"- {c.name}: {c.personality}" for c in self.project.characters)
-            parts.append(f"人物设定:\n{chars}")
-        if self.project.world_setting:
-            parts.append(f"世界观:\n{self.project.world_setting}")
+            meta = f"项目: {self.project.title}"
+            if self.project.genre:
+                meta += f" | 题材: {self.project.genre}"
+            if self.project.style:
+                meta += f" | 风格: {self.project.style}"
+            if self.project.theme:
+                meta += f" | 主题: {self.project.theme}"
+            parts.append(meta)
 
-        # 读取 planning 目录下的规划文档
+        # 读取核心规划文档（只读大纲/人物/立意，不读全部）
         if self.project.project_dir:
             planning_dir = self.project.project_dir / "planning"
             if planning_dir.exists():
+                core_files = ["大纲.md", "人物设定.md", "立意.md"]
                 char_content = ""
-                for f in sorted(planning_dir.glob("*.md")):
-                    content = project_io.read_md(f)
-                    if content:
-                        parts.append(f"=== {f.stem} ===\n{content}")
-                        if f.name == "人物设定.md":
-                            char_content = content
+                for fname in core_files:
+                    f = planning_dir / fname
+                    if f.exists():
+                        content = project_io.read_md(f)
+                        if content:
+                            parts.append(f"=== {f.stem} ===\n{content}")
+                            if fname == "人物设定.md":
+                                char_content = content
                 # 角色约束
                 if char_content:
                     from ..core.workflow import _build_character_constraint
@@ -540,11 +540,12 @@ class MainWindow(QMainWindow):
                     if constraint:
                         parts.append(constraint)
 
-        # 读取所有章节内容
+        # 只读最近3章内容（不读全部章节）
         if self.project.project_dir:
             chapters_dir = self.project.project_dir / "chapters"
             if chapters_dir.exists():
-                for ch in self.project.chapters:
+                recent_chapters = self.project.chapters[-3:] if len(self.project.chapters) > 3 else self.project.chapters
+                for ch in recent_chapters:
                     if ch.content:
                         parts.append(f"=== 第{ch.number}章 {ch.title} ===\n{ch.content}")
 

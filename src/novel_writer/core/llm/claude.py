@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-import anthropic
-
 from .base import BaseLLM, LLMMessage, LLMResponse
 from ..logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _get_anthropic():
+    """懒加载 anthropic，避免与 PySide6 shiboken 导入冲突。"""
+    import anthropic
+    return anthropic
 
 
 class ClaudeLLM(BaseLLM):
@@ -15,6 +19,7 @@ class ClaudeLLM(BaseLLM):
 
     def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str = "", **kwargs):
         super().__init__(model, api_key, **kwargs)
+        anthropic = _get_anthropic()
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
         logger.info("Claude LLM 初始化: model=%s", model)
 
