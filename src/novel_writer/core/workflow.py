@@ -770,10 +770,12 @@ class WorkflowRunner:
 
         # ── 校对步骤特殊处理：只注入当前章节 ──
         if step_id == "proofread":
-            for f in input_files:
-                p = self.project_dir / f.format(n=n, **self.project_info)
-                if p.exists():
-                    content = project_io.read_md(p)
+            # 查找实际的章节文件
+            chapter_file = self._find_chapter_file(n)
+            if chapter_file:
+                chapter_path = self.project_dir / project_io.CHAPTERS_DIR / chapter_file
+                if chapter_path.exists():
+                    content = project_io.read_md(chapter_path)
                     if content:
                         parts.append(content)
             return "\n\n".join(parts)
