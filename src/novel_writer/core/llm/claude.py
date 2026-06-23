@@ -26,7 +26,9 @@ class ClaudeLLM(BaseLLM):
     def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str = "", **kwargs):
         super().__init__(model, api_key, **kwargs)
         anthropic = _get_anthropic()
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
+        import httpx, certifi
+        http_client = httpx.AsyncClient(verify=certifi.where())
+        self.client = anthropic.AsyncAnthropic(api_key=api_key, http_client=http_client)
         logger.info("Claude LLM 初始化: model=%s", model)
 
     async def __aenter__(self):

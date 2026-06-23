@@ -159,6 +159,7 @@ class MainWindow(QMainWindow):
         self.agent_panel.agent_run_requested.connect(self._on_agent_run)
         self.editor.content_changed.connect(self._on_content_changed)
         self.editor.save_requested.connect(self._save_project)
+        self.editor.planning_save_requested.connect(self._on_planning_save)
 
     def _setup_menu(self):
         menubar = self.menuBar()
@@ -447,6 +448,7 @@ class MainWindow(QMainWindow):
                 len(self.project.chapters),
             )
             self.editor.clear()
+            self.editor.set_project_dir(self.project.project_dir)
             self.statusBar().showMessage(t("status_opened", self.project.title))
             logger.info("项目已加载: %s (%s)", self.project.title, path)
         except Exception as e:
@@ -714,6 +716,20 @@ class MainWindow(QMainWindow):
         self.project.save()
         self.statusBar().showMessage(t("status_saved", str(self.project.project_dir)))
 
+    def _on_planning_save(self, doc_name: str):
+        """保存规划文档。"""
+        if not self.project.project_dir:
+            return
+        from ..ui.editor_panel import PLANNING_DOCS
+        for label, rel_path in PLANNING_DOCS:
+            if label == doc_name:
+                content = self.editor.get_planning_content(doc_name)
+                fpath = self.project.project_dir / rel_path
+                project_io.write_md(fpath, content)
+                self.statusBar().showMessage(f"已保存: {doc_name}")
+                logger.info("规划文档已保存: %s", fpath)
+                return
+
     def _export_txt(self):
         """导出为 TXT 格式。"""
         if not self.project.project_dir:
@@ -809,7 +825,8 @@ class MainWindow(QMainWindow):
         mode_group = QGroupBox("工作流模式")
         mode_layout = QVBoxLayout(mode_group)
         mode_combo = QComboBox()
-        mode_combo.addItem("📖 新书 — 从立意到审校全流程", WorkflowMode.NEW_BOOK)
+        mode_combo.addItem("📝 新书立意 — 只生成规划文档", WorkflowMode.NEW_BOOK_PLANNING)
+        mode_combo.addItem("📖 新书全流程 — 从立意到审校", WorkflowMode.NEW_BOOK)
         mode_combo.addItem("✍️ 续写 — 从已有章节继续", WorkflowMode.CONTINUE)
         mode_combo.addItem("🔍 查漏补缺 — 检查并补写缺失章节", WorkflowMode.FILL_GAPS)
         mode_combo.addItem("✅ 校验 — 审核+校对已有章节", WorkflowMode.VALIDATE)
@@ -854,6 +871,10 @@ class MainWindow(QMainWindow):
                 start_spin.setEnabled(False)
                 end_spin.setEnabled(True)
                 chapter_group.setTitle("目标章节数")
+            elif mode == WorkflowMode.NEW_BOOK_PLANNING:
+                chapter_group.setTitle("无需设置章节范围")
+                start_spin.setEnabled(False)
+                end_spin.setEnabled(False)
             elif mode == WorkflowMode.FILL_GAPS:
                 start_spin.setEnabled(False)
                 end_spin.setEnabled(False)
@@ -900,7 +921,7 @@ class MainWindow(QMainWindow):
         mode, start_ch, end_ch = result
 
         # 新书模式：检查是否已有章节内容
-        if mode == WorkflowMode.NEW_BOOK and self.project.project_dir:
+        if mode in (WorkflowMode.NEW_BOOK, WorkflowMode.NEW_BOOK_PLANNING) and self.project.project_dir:
             chapters = project_io.scan_chapters(self.project.project_dir)
             has_content = any(c["content_path"].stat().st_size > 0 for c in chapters)
             if has_content:
@@ -967,6 +988,10 @@ class MainWindow(QMainWindow):
         # 章节步骤完成后刷新侧边栏
         if step_id == "chapter":
             self._refresh_chapters()
+        # 规划步骤完成后刷新规划文档编辑器
+        PLANNING_STEPS = {"ideation", "outline", "characters", "world", "timeline", "main_plot", "sub_plot", "foreshadow"}
+        if step_id in PLANNING_STEPS:
+            self.editor.refresh_planning()
 
     def _on_wf_step_error(self, step_id: str, error: str):
         self.agent_panel.on_workflow_step_error(step_id, error)
@@ -990,6 +1015,7 @@ class MainWindow(QMainWindow):
         self.agent_panel.on_workflow_finished()
         self.agent_panel.workflow_bar.set_progress(100)
         self._refresh_chapters()
+        self.editor.refresh_planning()
         self.statusBar().showMessage(t("workflow_finished"))
 
     def _on_wf_stopped(self):

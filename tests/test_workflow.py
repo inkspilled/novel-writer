@@ -203,7 +203,7 @@ class TestBuildWorkflow:
     def test_new_book(self, project_info):
         """测试新书模式。"""
         wf = build_workflow(WorkflowMode.NEW_BOOK, project_info, 1, 10)
-        assert wf.name == "自动写作"
+        assert wf.name == "新书全流程"
         assert len(wf.steps) > 0
         assert wf.project["title"] == "测试小说"
 

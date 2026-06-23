@@ -132,15 +132,16 @@ def rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> st
             if old_title == new_title:
                 return old_title
 
-            # 1. 改文件名
-            old_path = ch["content_path"]
+            # 1. 读取原始内容（在重命名之前）
+            content = read_md(old_path)
+
+            # 2. 改文件名
             new_filename = chapter_filename(chapter_number, new_title)
             new_path = old_path.parent / new_filename
             if old_path != new_path:
                 old_path.rename(new_path)
 
-            # 2. 改正文 heading
-            content = read_md(new_path)
+            # 3. 改正文 heading（仅在内容非空时写回）
             if content.strip():
                 lines = content.split("\n")
                 for i, line in enumerate(lines):
@@ -153,7 +154,11 @@ def rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> st
                         else:
                             lines[i] = f"# {new_title}"
                         break
-                write_md(new_path, "\n".join(lines))
+                new_content = "\n".join(lines)
+                if new_content.strip():
+                    write_md(new_path, new_content)
+                else:
+                    logger.error("rename_chapter: 修改后内容为空，跳过写入! chapter=%d", chapter_number)
 
             # 3. 同步改细纲文件名（如果有）
             if ch["outline_path"]:
@@ -162,6 +167,14 @@ def rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> st
                 new_outline_path = old_outline.parent / new_outline_name
                 if old_outline != new_outline_path:
                     old_outline.rename(new_outline_path)
+
+            # 4. 同步改概要文件名（如果有）
+            old_summary = old_path.parent / chapter_summary_filename(chapter_number, old_title)
+            if old_summary.exists():
+                new_summary_name = chapter_summary_filename(chapter_number, new_title)
+                new_summary_path = old_summary.parent / new_summary_name
+                if old_summary != new_summary_path:
+                    old_summary.rename(new_summary_path)
 
             logger.info("重命名第%d章: 「%s」→「%s」", chapter_number, old_title, new_title)
             return old_title
@@ -255,6 +268,11 @@ def write_md(path: Path, content: str) -> None:
         raise
 
 
+def normalize_chapter_content(content: str) -> str:
+    """规范化章节内容：将 3 个以上连续换行压缩为 2 个（即段落间只保留 1 个空行）。"""
+    return re.sub(r'\n{3,}', '\n\n', content)
+
+
 def validate_chapter_content(content: str, min_length: int = 100) -> tuple[bool, str]:
     """校验章节内容是否有效。
 
@@ -274,11 +292,10 @@ def validate_chapter_content(content: str, min_length: int = 100) -> tuple[bool,
 
 
 def safe_rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> tuple[str, str]:
-    """安全重命名单个章节：改文件名 + 改正文 heading。
+    """安全重命名单个章节：改文件名 + 改正文 heading + 同步细纲和概要。
 
     与 rename_chapter 的区别：
     - 检测新文件名是否已存在（冲突），冲突时返回错误而非覆盖
-    - 写入前备份原文件
     - 返回 (旧标题, 错误信息)，错误为空表示成功
     """
     # 格式化标题：确保包含「第X章：」前缀
@@ -303,18 +320,14 @@ def safe_rename_chapter(project_dir: Path, chapter_number: int, new_title: str) 
 
             old_path = ch["content_path"]
 
-            # 备份原文件
-            backup_path = old_path.with_suffix(".bak.txt")
-            if old_path.exists() and old_path.stat().st_size > 0:
-                import shutil
-                shutil.copy2(old_path, backup_path)
+            # 读取原始内容（在重命名之前，避免 rename 后读取异常）
+            content = read_md(old_path)
 
             # 改文件名
             if old_path != new_path:
                 old_path.rename(new_path)
 
-            # 改正文 heading
-            content = read_md(new_path)
+            # 改正文 heading（仅在内容非空时写回）
             if content.strip():
                 lines = content.split("\n")
                 for i, line in enumerate(lines):
@@ -327,7 +340,11 @@ def safe_rename_chapter(project_dir: Path, chapter_number: int, new_title: str) 
                         else:
                             lines[i] = f"# {formatted_title}"
                         break
-                write_md(new_path, "\n".join(lines))
+                new_content = "\n".join(lines)
+                if new_content.strip():
+                    write_md(new_path, new_content)
+                else:
+                    logger.error("safe_rename_chapter: 修改后内容为空，跳过写入! chapter=%d", chapter_number)
 
             # 同步改细纲文件名（如果有）
             if ch["outline_path"]:
@@ -336,6 +353,14 @@ def safe_rename_chapter(project_dir: Path, chapter_number: int, new_title: str) 
                 new_outline_path = old_outline.parent / new_outline_name
                 if old_outline != new_outline_path:
                     old_outline.rename(new_outline_path)
+
+            # 同步改概要文件名（如果有）
+            old_summary = old_path.parent / chapter_summary_filename(chapter_number, old_title)
+            if old_summary.exists():
+                new_summary_name = chapter_summary_filename(chapter_number, formatted_title)
+                new_summary_path = old_summary.parent / new_summary_name
+                if old_summary != new_summary_path:
+                    old_summary.rename(new_summary_path)
 
             return old_title, ""
     return "", f"第{chapter_number}章不存在"

@@ -39,7 +39,8 @@ def _estimate_tokens(text: str) -> int:
 # ── 工作流模式 ──
 
 class WorkflowMode(Enum):
-    NEW_BOOK = "new_book"           # 新书：从立意到审校全流程
+    NEW_BOOK = "new_book"           # 新书全流程：从立意到审校
+    NEW_BOOK_PLANNING = "new_book_planning"  # 新书立意：只生成规划文档
     CONTINUE = "continue"           # 续写：从已有章节继续
     FILL_GAPS = "fill_gaps"         # 查漏补缺：检查缺失章节并补写
     VALIDATE = "validate"           # 校验：审核+校对已有章节
@@ -424,7 +425,8 @@ class WorkflowRunner:
                     import shutil
                     shutil.copy2(out_path, backup_path)
 
-            project_io.write_md(out_path, response.content)
+            write_content = project_io.normalize_chapter_content(response.content) if step.id == "chapter" else response.content
+            project_io.write_md(out_path, write_content)
 
             # 写后验证：确认文件存在且内容不为空
             if step.id == "chapter":
@@ -731,7 +733,8 @@ class WorkflowRunner:
                     shutil.copy2(out_path, backup_path)
                     logger.debug("章节备份: %s", backup_path)
 
-            project_io.write_md(out_path, response.content)
+            write_content = project_io.normalize_chapter_content(response.content) if step.id == "chapter" else response.content
+            project_io.write_md(out_path, write_content)
 
             # 写后验证：确认文件存在且内容不为空
             if step.id == "chapter":
@@ -1204,7 +1207,7 @@ def _build_character_constraint(char_content: str) -> str:
 # ── 工作流模板 ──
 
 DEFAULT_WORKFLOW = {
-    "name": "自动写作",
+    "name": "新书全流程",
     "description": "从立意到审校的全流程",
     "steps": [
         {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md"},
@@ -1273,6 +1276,24 @@ VALIDATE_WORKFLOW = {
 }
 
 
+# ── 新书立意工作流：只生成规划文档 ──
+
+PLANNING_WORKFLOW = {
+    "name": "新书立意",
+    "description": "只生成规划文档，不写正文",
+    "steps": [
+        {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md"},
+        {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲，包括主要人物、世界观、主线冲突。", "input": ["planning/立意.md"], "output": "planning/大纲.md"},
+        {"id": "characters", "needs": "人物设定", "prompt": "根据大纲设计主要人物档案（性格、背景、成长弧线、关系）。", "input": ["planning/大纲.md"], "output": "planning/人物设定.md"},
+        {"id": "world", "needs": "世界观构建", "prompt": "根据大纲构建详细的世界观设定。", "input": ["planning/大纲.md"], "output": "planning/世界观.md"},
+        {"id": "timeline", "needs": "故事结构", "prompt": "根据大纲设计故事时间线。", "input": ["planning/大纲.md"], "output": "planning/时间线.md"},
+        {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点。", "input": ["planning/大纲.md"], "output": "planning/主线.md"},
+        {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
+        {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
+    ],
+}
+
+
 def build_workflow(
     mode: WorkflowMode,
     project_info: dict,
@@ -1289,6 +1310,8 @@ def build_workflow(
     """
     if mode == WorkflowMode.NEW_BOOK:
         data = json.loads(json.dumps(DEFAULT_WORKFLOW))
+    elif mode == WorkflowMode.NEW_BOOK_PLANNING:
+        data = json.loads(json.dumps(PLANNING_WORKFLOW))
     elif mode == WorkflowMode.CONTINUE:
         data = json.loads(json.dumps(CONTINUE_WORKFLOW))
     elif mode == WorkflowMode.VALIDATE:

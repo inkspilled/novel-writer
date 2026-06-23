@@ -26,7 +26,9 @@ class OpenAICompatLLM(BaseLLM):
     def __init__(self, model: str, api_key: str, base_url: str = "https://api.openai.com/v1", **kwargs):
         super().__init__(model, api_key, base_url, **kwargs)
         AsyncOpenAI = _get_async_openai()
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        import httpx, certifi
+        http_client = httpx.AsyncClient(verify=certifi.where())
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
         logger.info("OpenAI 兼容客户端初始化: model=%s, base_url=%s", model, base_url)
 
     async def __aenter__(self):

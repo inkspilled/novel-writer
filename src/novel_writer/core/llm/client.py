@@ -67,7 +67,10 @@ class LLMClient(BaseLLM):
     def __init__(self, model: str, api_key: str = "", base_url: str = "https://api.openai.com/v1", **kwargs):
         super().__init__(model, api_key, base_url, **kwargs)
         AsyncOpenAI = _get_async_openai()
-        self.client = AsyncOpenAI(api_key=api_key or "ollama", base_url=base_url, max_retries=0)
+        # 用 certifi 证书路径创建 httpx 客户端，避免 Windows 系统证书库卡顿
+        import httpx, certifi
+        http_client = httpx.AsyncClient(verify=certifi.where())
+        self.client = AsyncOpenAI(api_key=api_key or "ollama", base_url=base_url, max_retries=0, http_client=http_client)
         logger.info("LLM 客户端初始化: model=%s, base_url=%s", model, base_url)
 
     async def __aenter__(self):
