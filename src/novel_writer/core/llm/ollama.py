@@ -31,13 +31,29 @@ class OllamaLLM(BaseLLM):
     def __init__(self, model: str = "qwen2.5", base_url: str = "http://localhost:11434", **kwargs):
         super().__init__(model, api_key="", base_url=base_url, **kwargs)
         self.base = base_url.rstrip("/")
+        # 创建共享的 HTTP 客户端，避免每次调用都创建新连接
+        timeout = httpx.Timeout(600.0, connect=10.0)
+        self._client = httpx.AsyncClient(timeout=timeout)
         logger.info("Ollama LLM 初始化: model=%s, base_url=%s", model, base_url)
 
+    async def __aenter__(self):
+        """支持 async with 语法。"""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """退出时关闭客户端。"""
+        await self.close()
+
+    async def close(self):
+        """关闭 HTTP 客户端连接。"""
+        if self._client:
+            await self._client.aclose()
+            logger.debug("Ollama HTTP 客户端已关闭")
+
     async def chat(self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096) -> LLMResponse:
-        # 大模型首次加载可能很慢，设 10 分钟超时
-        timeout = httpx.Timeout(600.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
+        """使用共享客户端进行 HTTP 调用，避免频繁创建连接。"""
+        try:
+            resp = await self._client.post(
                 f"{self.base}/api/chat",
                 json={
                     "model": self.model,
@@ -56,13 +72,19 @@ class OllamaLLM(BaseLLM):
                     "completion_tokens": data.get("eval_count", 0),
                 },
             )
+        except httpx.HTTPStatusError as e:
+            logger.error("Ollama API 调用失败: %s, model=%s", e, self.model)
+            raise
+        except json.JSONDecodeError as e:
+            logger.error("Ollama 响应 JSON 解析失败: %s", e)
+            raise
 
     async def stream_chat(
         self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096
     ) -> AsyncIterator[str]:
-        timeout = httpx.Timeout(600.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            async with client.stream(
+        """流式输出，使用共享客户端。"""
+        try:
+            async with self._client.stream(
                 "POST",
                 f"{self.base}/api/chat",
                 json={
@@ -75,9 +97,15 @@ class OllamaLLM(BaseLLM):
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if line:
-                        data = json.loads(line)
-                        msg = data.get("message", {})
-                        # 优先取 content，没有则取 thinking
-                        text = msg.get("content", "") or msg.get("thinking", "")
-                        if text:
-                            yield text
+                        try:
+                            data = json.loads(line)
+                            # M-02 修复：使用统一的 _extract_content 处理思考内容
+                            text = _extract_content(data)
+                            if text:
+                                yield text
+                        except json.JSONDecodeError as e:
+                            logger.warning("流式响应 JSON 解析失败，跳过此行: %s", e)
+                            continue
+        except httpx.HTTPStatusError as e:
+            logger.error("Ollama 流式 API 调用失败: %s, model=%s", e, self.model)
+            raise

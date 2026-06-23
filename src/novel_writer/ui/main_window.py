@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from functools import partial
 
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter, QInputDialog,
     QMessageBox, QDialog, QVBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QHBoxLayout, QLabel, QComboBox, QSpinBox, QGroupBox,
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QObject
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 
 from .sidebar import Sidebar
@@ -69,10 +70,13 @@ class AgentWorker(QThread):
                     if self._cancelled:
                         break
                     full_response += chunk
+                    # C-09 修复：信号发射异常记录日志，不静默吞掉
                     try:
                         self.chunk_received.emit(chunk)
-                    except Exception:
-                        pass
+                    except RuntimeError as e:
+                        # Widget 可能已销毁，记录并退出
+                        logger.debug("Signal emit failed (widget destroyed): %s", e)
+                        break
                 return full_response
 
             self._task = self._loop.create_task(collect_stream())
@@ -83,18 +87,13 @@ class AgentWorker(QThread):
             pass
         except Exception as e:
             if not self._cancelled:
+                logger.error("AgentWorker error: %s", e)
                 try:
                     self.error.emit(str(e)[:500])
-                except Exception:
+                except RuntimeError:
                     pass
         finally:
-            # 关闭 LLM 客户端的 HTTP 连接
-            try:
-                llm = self.agent.llm
-                if hasattr(llm, 'client') and hasattr(llm.client, 'close'):
-                    self._loop.run_until_complete(llm.client.close())
-            except Exception:
-                pass
+            # 不关闭 LLM 客户端 — 它是共享的，由 MainWindow 管理生命周期
             self._loop.close()
             self._loop = None
             self._task = None
@@ -178,6 +177,16 @@ class MainWindow(QMainWindow):
         self._save_action.setShortcut(QKeySequence.StandardKey.Save)
         self._save_action.triggered.connect(self._save_project)
         self._file_menu.addAction(self._save_action)
+        self._export_menu = self._file_menu.addMenu(t("menu_export"))
+        self._export_txt_action = QAction(t("menu_export_txt"), self)
+        self._export_txt_action.triggered.connect(self._export_txt)
+        self._export_menu.addAction(self._export_txt_action)
+        self._export_epub_action = QAction(t("menu_export_epub"), self)
+        self._export_epub_action.triggered.connect(self._export_epub)
+        self._export_menu.addAction(self._export_epub_action)
+        self._export_pdf_action = QAction(t("menu_export_pdf"), self)
+        self._export_pdf_action.triggered.connect(self._export_pdf)
+        self._export_menu.addAction(self._export_pdf_action)
         self._settings_action = QAction("项目设置", self)
         self._settings_action.setShortcut(QKeySequence("Ctrl+Shift+,"))
         self._settings_action.triggered.connect(self._open_project_settings)
@@ -474,9 +483,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_agent_run(self, agent_name: str, user_input: str):
-        if not self.project.title:
-            return
-        agent = self.agents.get(agent_name)
+        agent = self._agents.get(agent_name)
         logger.debug("_on_agent_run: agent=%r, has_agent=%s, input=%r", agent_name, agent is not None, user_input[:80])
         if not agent:
             QMessageBox.warning(self, t("dialog_error"), t("msg_agent_not_init", agent_name))
@@ -486,8 +493,9 @@ class MainWindow(QMainWindow):
         logger.debug("context_len=%d, context_preview=%r", len(context), context[:200])
         self.agent_panel.set_working(True, agent_name)
         self._worker = AgentWorker(agent, user_input, context)
-        self._worker.chunk_received.connect(lambda chunk: self._on_agent_stream(agent_name, chunk))
-        self._worker.finished.connect(lambda resp: self._on_agent_finished(agent_name, resp))
+        # C-07 修复：使用 partial 替代 lambda，避免内存泄漏
+        self._worker.chunk_received.connect(partial(self._on_agent_stream, agent_name))
+        self._worker.finished.connect(partial(self._on_agent_finished, agent_name))
         self._worker.error.connect(self._on_agent_error)
         self._worker.start()
 
@@ -496,9 +504,8 @@ class MainWindow(QMainWindow):
         if self._worker is not None:
             if self._worker.isRunning():
                 self._worker.cancel()
-                if not self._worker.wait(5000):
-                    self._worker.terminate()
-                    self._worker.wait(1000)
+                # C-08 修复：移除 terminate()，只用 wait() 等待安全退出
+                self._worker.wait(5000)
             self._old_workers.append(self._worker)
             self._worker = None
         self._cleanup_workers()
@@ -706,6 +713,52 @@ class MainWindow(QMainWindow):
             self.project.set_project_dir(project_dir)
         self.project.save()
         self.statusBar().showMessage(t("status_saved", str(self.project.project_dir)))
+
+    def _export_txt(self):
+        """导出为 TXT 格式。"""
+        if not self.project.project_dir:
+            QMessageBox.warning(self, t("menu_export"), t("export_no_project"))
+            return
+        try:
+            from ..core.exporter import Exporter
+            exporter = Exporter(self.project.project_dir)
+            output_path = exporter.export_txt()
+            QMessageBox.information(self, t("export_success"), f"{output_path}")
+        except Exception as e:
+            QMessageBox.critical(self, t("export_failed"), str(e))
+            logger.error("TXT 导出失败: %s", e)
+
+    def _export_epub(self):
+        """导出为 EPUB 格式。"""
+        if not self.project.project_dir:
+            QMessageBox.warning(self, t("menu_export"), t("export_no_project"))
+            return
+        try:
+            from ..core.exporter import Exporter
+            exporter = Exporter(self.project.project_dir)
+            output_path = exporter.export_epub()
+            QMessageBox.information(self, t("export_success"), f"{output_path}")
+        except ImportError as e:
+            QMessageBox.warning(self, t("export_missing_dep"), "pip install ebooklib")
+        except Exception as e:
+            QMessageBox.critical(self, t("export_failed"), str(e))
+            logger.error("EPUB 导出失败: %s", e)
+
+    def _export_pdf(self):
+        """导出为 PDF 格式。"""
+        if not self.project.project_dir:
+            QMessageBox.warning(self, t("menu_export"), t("export_no_project"))
+            return
+        try:
+            from ..core.exporter import Exporter
+            exporter = Exporter(self.project.project_dir)
+            output_path = exporter.export_pdf()
+            QMessageBox.information(self, t("export_success"), f"{output_path}")
+        except ImportError as e:
+            QMessageBox.warning(self, t("export_missing_dep"), "pip install reportlab")
+        except Exception as e:
+            QMessageBox.critical(self, t("export_failed"), str(e))
+            logger.error("PDF 导出失败: %s", e)
 
     # ── 工作流 ──
 
@@ -1000,18 +1053,26 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._stop_worker()
-        # 关闭所有 LLM 客户端连接
+        # M-10 修复：使用单个事件循环关闭所有连接，避免阻塞
         all_llms = [agent.llm for agent in self.agents.values()]
         if self.llm:
             all_llms.append(self.llm)
-        for llm in all_llms:
-            try:
-                if hasattr(llm, 'client') and hasattr(llm.client, 'close'):
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(llm.client.close())
-                    loop.close()
-            except Exception:
-                pass
+
+        async def close_all_llms():
+            for llm in all_llms:
+                try:
+                    if hasattr(llm, 'client') and hasattr(llm.client, 'close'):
+                        await llm.client.close()
+                except Exception:
+                    pass
+
+        try:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(close_all_llms())
+            loop.close()
+        except Exception:
+            pass
+
         # 保存聊天记录和项目
         self.agent_panel.save_history()
         if self.project.title:

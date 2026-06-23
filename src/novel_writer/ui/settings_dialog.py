@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QInputDialog, QTextEdit, QColorDialog,
     QScrollArea,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer, QThread
 from PySide6.QtGui import QColor
 
 from .styles import THEMES, get_theme_colors
@@ -25,6 +25,56 @@ def load_default_providers() -> list[dict]:
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
     return []
+
+
+class TestConnectionWorker(QThread):
+    """后台测试连接的 Worker 线程。"""
+    success = Signal(str)  # model_name
+    error = Signal(str)    # error_message
+
+    def __init__(self, provider: dict, api_key: str, base_url: str, model: str):
+        super().__init__()
+        self.provider = provider
+        self.api_key = api_key
+        self.base_url = base_url
+        self.model = model
+
+    def run(self):
+        try:
+            base_url = self.base_url
+            # Ollama 先检查模型是否存在
+            if self.provider.get("type") == "ollama":
+                import httpx
+                try:
+                    tags = httpx.get(base_url + "/api/tags", timeout=3)
+                    tags.raise_for_status()
+                    available = [m["name"] for m in tags.json().get("models", [])]
+                    if self.model not in available:
+                        self.error.emit(f"模型不存在。可用: {', '.join(available[:3])}")
+                        return
+                except Exception as e:
+                    self.error.emit(f"无法连接 Ollama: {str(e)}")
+                    return
+                base_url = base_url.rstrip("/") + "/v1"
+
+            from openai import OpenAI as _OpenAI
+            client = _OpenAI(api_key=self.api_key or "test", base_url=base_url, timeout=10.0)
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=5,
+                temperature=0.1
+            )
+            self.success.emit(resp.model)
+        except Exception as e:
+            error_msg = str(e)
+            if "APIConnectionError" in error_msg:
+                error_msg = "无法连接到服务器，请检查 URL"
+            elif "AuthenticationError" in error_msg:
+                error_msg = "API Key 无效"
+            elif "timeout" in error_msg.lower():
+                error_msg = "连接超时，请检查网络"
+            self.error.emit(error_msg)
 
 
 class ColorPicker(QWidget):
@@ -334,6 +384,10 @@ class ModelDialog(QDialog):
         left_layout.addWidget(self.model_list)
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._btn_new_model = QPushButton("➕ 新增模型")
+        self._btn_new_model.clicked.connect(self._new_model_config)
+        btn_row.addWidget(self._btn_new_model)
         self._btn_del_model = QPushButton(t("model_delete_config"))
         self._btn_del_model.setObjectName("danger")
         self._btn_del_model.clicked.connect(self._delete_model_config)
@@ -359,7 +413,7 @@ class ModelDialog(QDialog):
         pg = QFormLayout(provider_group)
         pg.setSpacing(10)
 
-        # 供应商选择 + 新增按钮
+        # 供应商选择
         provider_row = QHBoxLayout()
         provider_row.setSpacing(8)
         self.provider_combo = QComboBox()
@@ -367,11 +421,6 @@ class ModelDialog(QDialog):
             self.provider_combo.addItem(p["name"])
         self.provider_combo.currentIndexChanged.connect(self._on_provider_changed)
         provider_row.addWidget(self.provider_combo, 1)
-        self._btn_add_provider = QPushButton("➕ 新增")
-        self._btn_add_provider.setFixedHeight(32)
-        self._btn_add_provider.setFixedWidth(70)
-        self._btn_add_provider.clicked.connect(self._add_custom_provider)
-        provider_row.addWidget(self._btn_add_provider)
         pg.addRow(t("settings_provider"), provider_row)
 
         self.api_key_input = QLineEdit()
@@ -387,9 +436,9 @@ class ModelDialog(QDialog):
         self.model_input.setPlaceholderText(t("settings_ph_model"))
         pg.addRow(t("settings_model_name"), self.model_input)
 
-        test_btn = QPushButton(t("settings_test_conn"))
-        test_btn.clicked.connect(self._test_connection)
-        pg.addRow("", test_btn)
+        self._btn_test = QPushButton(t("settings_test_conn"))
+        self._btn_test.clicked.connect(self._test_connection)
+        pg.addRow("", self._btn_test)
         scroll_layout.addWidget(provider_group)
 
         # Ollama
@@ -429,15 +478,19 @@ class ModelDialog(QDialog):
         body.addWidget(right, 2)
         layout.addLayout(body, 1)
 
-        # ── 底部：关闭按钮 ──
+        # ── 底部：保存 + 关闭按钮 ──
         bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(10)
         bottom_row.addStretch()
-        self._btn_close = QPushButton("关闭")
-        self._btn_close.setFixedHeight(36)
-        self._btn_close.setFixedWidth(90)
-        self._btn_close.clicked.connect(self._close_dialog)
+        self._btn_save = QPushButton(t("settings_save"))
+        self._btn_save.setObjectName("primary")
+        self._btn_save.setFixedHeight(34)
+        self._btn_save.clicked.connect(self._save)
+        bottom_row.addWidget(self._btn_save)
+        self._btn_close = QPushButton(t("settings_close"))
+        self._btn_close.setFixedHeight(34)
+        self._btn_close.clicked.connect(self.reject)
         bottom_row.addWidget(self._btn_close)
-        layout.addLayout(bottom_row)
         layout.addLayout(bottom_row)
 
         self._refresh_model_list()
@@ -558,15 +611,10 @@ class ModelDialog(QDialog):
             self._refresh_model_list()
 
     def _on_provider_changed(self, index: int):
-        if index < 0:
-            return
-        # "自定义供应商" 选项
-        if index == len(self._providers):
-            self._add_custom_provider()
-            return
-        if index >= len(self._providers):
+        if index < 0 or index >= len(self._providers):
             return
         provider = self._providers[index]
+        self.api_key_input.clear()
         self.base_url_input.setText(provider["base_url"])
         self.model_input.clear()
         is_ollama = provider["type"] == "ollama"
@@ -574,74 +622,13 @@ class ModelDialog(QDialog):
         if is_ollama:
             self._refresh_ollama_models()
 
-    def _close_dialog(self):
-        """关闭对话框，自动保存当前配置。"""
-        self._save()
-
-    def _add_custom_provider(self):
-        """弹出对话框添加自定义供应商。"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("新增自定义供应商")
-        dialog.setMinimumWidth(420)
-        form = QFormLayout(dialog)
-        form.setSpacing(12)
-        form.setContentsMargins(20, 20, 20, 20)
-
-        name_input = QLineEdit()
-        name_input.setPlaceholderText("如：我的 API 服务")
-        form.addRow("供应商名称", name_input)
-
-        type_combo = QComboBox()
-        type_combo.addItem("OpenAI 兼容", "openai_compat")
-        type_combo.addItem("Ollama 本地", "ollama")
-        form.addRow("接口类型", type_combo)
-
-        url_input = QLineEdit()
-        url_input.setPlaceholderText("https://api.example.com/v1")
-        form.addRow("Base URL", url_input)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_cancel = QPushButton("取消")
-        btn_cancel.clicked.connect(dialog.reject)
-        btn_ok = QPushButton("添加")
-        btn_ok.setObjectName("primary")
-        btn_row.addWidget(btn_ok)
-        btn_row.addWidget(btn_cancel)
-        form.addRow("", btn_row)
-
-        def do_add():
-            name = name_input.text().strip()
-            url = url_input.text().strip()
-            if not name:
-                QMessageBox.warning(dialog, "提示", "请输入供应商名称")
-                return
-            if not url:
-                QMessageBox.warning(dialog, "提示", "请输入 Base URL")
-                return
-            # 检查重名
-            for p in self._providers:
-                if p["name"] == name:
-                    QMessageBox.warning(dialog, "提示", f"供应商「{name}」已存在")
-                    return
-            new_provider = {
-                "name": name,
-                "type": type_combo.currentData(),
-                "base_url": url,
-            }
-            self._providers.append(new_provider)
-            # 插入到"自定义供应商"之前
-            self.provider_combo.blockSignals(True)
-            insert_pos = self.provider_combo.count() - 1
-            self.provider_combo.insertItem(insert_pos, name)
-            self.provider_combo.setCurrentIndex(insert_pos)
-            self.provider_combo.blockSignals(False)
-            self.base_url_input.setText(url)
-            self.model_input.clear()
-            dialog.accept()
-
-        btn_ok.clicked.connect(do_add)
-        dialog.exec()
+    def _new_model_config(self):
+        """新增模型：清空表单，让用户填写新配置。"""
+        self.model_list.clearSelection()
+        self.provider_combo.setCurrentIndex(0)
+        self.api_key_input.clear()
+        self.base_url_input.setText(self._providers[0]["base_url"] if self._providers else "")
+        self.model_input.clear()
 
     def _on_ollama_model_selected(self, item: QListWidgetItem):
         name = item.text().split("  (")[0].strip()
@@ -665,6 +652,7 @@ class ModelDialog(QDialog):
             self.ollama_status.setText(t("test_not_connected", str(e)))
 
     def _test_connection(self):
+        """测试连接（异步，不阻塞UI）。"""
         provider_name = self.provider_combo.currentText()
         provider = next((p for p in self._providers if p["name"] == provider_name), None)
         if not provider:
@@ -677,31 +665,25 @@ class ModelDialog(QDialog):
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
             return
 
-        # Ollama 先检查模型是否存在
-        if provider.get("type") == "ollama":
-            import httpx
-            try:
-                tags = httpx.get(base_url + "/api/tags", timeout=5)
-                tags.raise_for_status()
-                available = [m["name"] for m in tags.json().get("models", [])]
-                if model not in available:
-                    QMessageBox.warning(self, t("dialog_fail"),
-                                        t("msg_model_not_found", model, ", ".join(available)))
-                    return
-            except Exception as e:
-                QMessageBox.warning(self, t("dialog_fail"), t("msg_conn_fail", str(e)))
-                return
-            base_url = base_url.rstrip("/") + "/v1"
+        # 禁用按钮，显示测试中
+        self._btn_test.setEnabled(False)
+        self._btn_test.setText("⏳ 测试中...")
 
-        # 统一用 OpenAI 兼容接口测试
-        try:
-            from openai import OpenAI as _OpenAI
-            client = _OpenAI(api_key=api_key or "ollama", base_url=base_url)
-            resp = client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": "hi"}], max_tokens=5)
-            QMessageBox.information(self, t("dialog_success"), t("test_success_conn", resp.model))
-        except Exception as e:
-            QMessageBox.warning(self, t("dialog_fail"), str(e))
+        # 启动后台线程
+        self._test_worker = TestConnectionWorker(provider, api_key, base_url, model)
+        self._test_worker.success.connect(self._on_test_success)
+        self._test_worker.error.connect(self._on_test_error)
+        self._test_worker.start()
+
+    def _on_test_success(self, model_name: str):
+        self._btn_test.setEnabled(True)
+        self._btn_test.setText("🔌 " + t("settings_test_conn"))
+        QMessageBox.information(self, t("dialog_success"), f"✅ 连接成功！\n模型: {model_name}")
+
+    def _on_test_error(self, error_msg: str):
+        self._btn_test.setEnabled(True)
+        self._btn_test.setText("🔌 " + t("settings_test_conn"))
+        QMessageBox.warning(self, t("dialog_fail"), f"❌ 连接失败\n{error_msg}")
 
     def _load_config(self):
         saved_provider = self.config.get("current_provider")
@@ -714,8 +696,8 @@ class ModelDialog(QDialog):
             self.base_url_input.setText(saved_provider.get("base_url", ""))
             self.model_input.setText(saved_provider.get("model", ""))
 
-    def _save(self):
-        # 保存当前编辑的配置为默认模型
+    def _save_config_only(self):
+        """仅保存配置到内存，不关闭对话框。"""
         provider_name = self.provider_combo.currentText()
         provider = next((p for p in self._providers if p["name"] == provider_name), None)
         if provider:
@@ -727,11 +709,13 @@ class ModelDialog(QDialog):
                 "model": self.model_input.text().strip(),
             }
         self.config["saved_models"] = self._saved_models
-        # 保存自定义供应商（非默认列表的）
         default_names = {p["name"] for p in load_default_providers()}
         custom_providers = [p for p in self._providers if p["name"] not in default_names]
         if custom_providers:
             self.config["custom_providers"] = custom_providers
+
+    def _save(self):
+        self._save_config_only()
         self.accept()
 
     def get_config(self) -> dict:

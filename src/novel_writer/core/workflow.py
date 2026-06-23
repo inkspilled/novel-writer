@@ -82,6 +82,8 @@ STEP_CONTEXT_TIERS: dict[str, ContextTier] = {
     "review": ContextTier.NARRATIVE,
     # 校对（只需要当前章节，由 _build_context 特殊处理）
     "proofread": ContextTier.GLOBAL,
+    # 质量检查（只需要当前章节）
+    "quality_check": ContextTier.GLOBAL,
     # 摘要（需要叙事记忆）
     "summary": ContextTier.NARRATIVE,
     # 规划反哺（需要叙事记忆）
@@ -581,6 +583,35 @@ class WorkflowRunner:
                     self.on_error(step.id, str(e))
             return
 
+        # ── quality_check: 自动质量检查 ──
+        if step.id == "quality_check":
+            existing = self._find_chapter_file(n)
+            if not existing:
+                return
+            existing_path = self.project_dir / "chapters" / existing
+            if not existing_path.exists() or existing_path.stat().st_size == 0:
+                return
+            if self.on_step_start:
+                self.on_step_start(step.id, n, "系统")
+            content = project_io.read_md(existing_path)
+            try:
+                from .quality_checker import QualityChecker
+                checker = QualityChecker(self.project_dir)
+                report = checker.check_chapter(content, n)
+                report_text = checker.generate_report_text(report)
+                # 保存报告
+                report_path = self.project_dir / "review" / f"质量检查_第{n}章.md"
+                project_io.write_md(report_path, report_text)
+                msg = f"质量检查完成: {report.total_score:.1f}分"
+                logger.info(msg)
+                if self.on_step_end:
+                    self.on_step_end(step.id, n, "系统", msg)
+            except Exception as e:
+                logger.error("质量检查失败: %s", e)
+                if self.on_error:
+                    self.on_error(step.id, str(e))
+            return
+
         agent = self.find_agent(step.needs)
         if not agent:
             if step.optional:
@@ -841,6 +872,20 @@ class WorkflowRunner:
             return "\n\n".join(parts)
 
         # ── Tier 3: 工作记忆层（仅写作用） ──
+
+        # 【新增】上章回顾机制 - 提升章节连贯性
+        if step_id == "chapter" and n > 1:
+            # 查找上一章的概要文件
+            prev_chapter_file = self._find_chapter_file(n - 1)
+            if prev_chapter_file:
+                m = project_io._CHAPTER_RE.match(prev_chapter_file)
+                if m:
+                    prev_title = m.group(2)
+                    prev_summary_path = project_io.chapter_summary_path(self.project_dir, n - 1, prev_title)
+                    if prev_summary_path.exists():
+                        prev_summary = project_io.read_md(prev_summary_path)
+                        if prev_summary:
+                            parts.append(f"=== 上一章要点回顾 ===\n【第{n-1}章《{prev_title}》】\n{prev_summary}\n\n注意：本章要承接上章剧情，保持连贯性。")
 
         # 角色推演结果
         from .character_sim import load_sim_cache
@@ -1151,6 +1196,7 @@ DEFAULT_WORKFLOW = {
         {"id": "update_outline", "needs": "故事结构", "prompt": "根据前{n}章的实际内容，更新故事大纲。保留原有结构，补充实际发生的剧情走向、新增的支线、调整后的节奏。输出完整的新大纲。", "input": ["planning/大纲.md", "prev_chapters"], "output": "planning/大纲.md", "every": 10, "optional": True, "update_planning": True},
         {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 10, "optional": True, "update_planning": True},
         {"id": "update_foreshadow", "needs": "伏笔设计", "prompt": "根据前{n}章的实际内容，更新伏笔清单。标注哪些伏笔已回收、哪些仍悬而未决、新增了哪些伏笔。保留原有清单，在末尾追加【进展更新】。", "input": ["planning/伏笔.md", "prev_chapters"], "output": "planning/伏笔.md", "every": 10, "optional": True, "update_planning": True},
+        {"id": "quality_check", "needs": "", "prompt": "", "output": "review/质量检查报告.md", "every": 1, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
     ],
 }
@@ -1175,6 +1221,7 @@ CONTINUE_WORKFLOW = {
         {"id": "update_outline", "needs": "故事结构", "prompt": "根据前{n}章的实际内容，更新故事大纲。保留原有结构，补充实际发生的剧情走向、新增的支线、调整后的节奏。输出完整的新大纲。", "input": ["planning/大纲.md", "prev_chapters"], "output": "planning/大纲.md", "every": 10, "optional": True, "update_planning": True},
         {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 10, "optional": True, "update_planning": True},
         {"id": "update_foreshadow", "needs": "伏笔设计", "prompt": "根据前{n}章的实际内容，更新伏笔清单。标注哪些伏笔已回收、哪些仍悬而未决、新增了哪些伏笔。保留原有清单，在末尾追加【进展更新】。", "input": ["planning/伏笔.md", "prev_chapters"], "output": "planning/伏笔.md", "every": 10, "optional": True, "update_planning": True},
+        {"id": "quality_check", "needs": "", "prompt": "", "output": "review/质量检查报告.md", "every": 1, "optional": True},
         {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
     ],
 }

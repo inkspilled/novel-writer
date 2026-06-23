@@ -169,12 +169,13 @@ data/projects/{project_name}/
 - **章节刷新**：新章节生成后侧边栏自动更新，无需重启
 - **断点恢复**：中断后自动从上次进度继续
 - **智能跳过**：已有内容的章节自动跳过，不调用 LLM
+- **质量检查**：每章自动检查质量（篇幅、结构、对话、场景、节奏、钩子、爽点、微兑现、一致性、句式多样性）
 
 ## 菜单
 
 | 菜单 | 功能 |
 |------|------|
-| 文件 | 新建 / 打开 / 保存项目 |
+| 文件 | 新建 / 打开 / 保存项目、导出（TXT/EPUB/PDF） |
 | 模型与智能体 | 模型设置、智能体管理 |
 | 工作流 | 开始工作流（弹出模式选择）、加载默认工作流 |
 | 关于 | 外观设置、关于 |
@@ -201,6 +202,18 @@ data/projects/{project_name}/
 | `config/agents.json` | 智能体配置 |
 | `config/default_agents.json` | 智能体默认配置（重置用） |
 
+## 导出功能
+
+支持将小说导出为多种格式：
+
+| 格式 | 说明 |
+|------|------|
+| TXT | 纯文本格式，包含目录和所有章节 |
+| EPUB | 电子书格式，支持目录导航 |
+| PDF | PDF 格式，支持排版和样式 |
+
+导出路径：`data/projects/{project_name}/export/`
+
 ## 日志系统
 
 日志按级别分文件存储，按天滚动，单文件上限 100MB，保留 30 天：
@@ -218,7 +231,27 @@ logger = get_logger(__name__)
 logger.info("操作完成")
 ```
 
+## 单元测试
+
+项目包含完整的单元测试，覆盖核心模块：
+
+```bash
+# 运行所有测试
+python -m pytest tests/ -v
+
+# 运行特定测试
+python -m pytest tests/test_quality_checker.py -v
+python -m pytest tests/test_reading_power.py -v
+python -m pytest tests/test_workflow.py -v
+python -m pytest tests/test_exporter.py -v
+```
+
+测试覆盖：
+- 质量检查模块（21 个测试）
+- 追读力模块（16 个测试）
+- 工作流模块（20 个测试）
+- 导出功能（11 个测试）
+
 ## 更多
 
 - [开发指南 (DEV_GUIDE.md)](DEV_GUIDE.md) — 技术架构、项目结构
-- [工作流设计 (docs/workflow_design.md)](docs/workflow_design.md) — 自动写作流程设计

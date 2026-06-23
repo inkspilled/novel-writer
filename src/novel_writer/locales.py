@@ -61,6 +61,8 @@ STRINGS = {
     # ── 设置对话框 ──
     "settings_title": {"zh": "设置", "en": "Settings"},
     "settings_save_all": {"zh": "保存全部", "en": "Save All"},
+    "settings_save": {"zh": "保存", "en": "Save"},
+    "settings_close": {"zh": "关闭", "en": "Close"},
     "settings_cancel": {"zh": "取消", "en": "Cancel"},
 
     # 外观
@@ -141,6 +143,16 @@ STRINGS = {
     "dialog_success": {"zh": "成功", "en": "Success"},
     "dialog_fail": {"zh": "失败", "en": "Failed"},
     "dialog_confirm": {"zh": "确认", "en": "Confirm"},
+
+    # ── 导出 ──
+    "menu_export": {"zh": "导出", "en": "Export"},
+    "menu_export_txt": {"zh": "导出为 TXT", "en": "Export as TXT"},
+    "menu_export_epub": {"zh": "导出为 EPUB", "en": "Export as EPUB"},
+    "menu_export_pdf": {"zh": "导出为 PDF", "en": "Export as PDF"},
+    "export_success": {"zh": "导出成功", "en": "Export Successful"},
+    "export_failed": {"zh": "导出失败", "en": "Export Failed"},
+    "export_no_project": {"zh": "请先打开或创建一个项目", "en": "Please open or create a project first"},
+    "export_missing_dep": {"zh": "缺少依赖", "en": "Missing Dependency"},
 
     # ── 状态消息 ──
     "status_created": {"zh": "已创建项目: {}", "en": "Project created: {}"},

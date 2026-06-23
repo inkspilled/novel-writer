@@ -37,6 +37,11 @@ novel-writer/
 │           ├── inspiration/        # 灵感记录（.md）
 │           ├── review/             # 审校报告（.md）
 │           └── workflow.json       # 工作流进度
+├── tests/                          # 单元测试
+│   ├── test_quality_checker.py     # 质量检查测试
+│   ├── test_reading_power.py       # 追读力测试
+│   ├── test_workflow.py            # 工作流测试
+│   └── test_exporter.py            # 导出功能测试
 ├── src/novel_writer/
 │   ├── __main__.py                 # python -m novel_writer 入口
 │   ├── app.py                      # QApplication 启动
@@ -54,7 +59,14 @@ novel-writer/
 │   │   │   └── base.py             # BaseAgent + AgentConfig
 │   │   ├── project_io.py           # 项目目录 IO
 │   │   ├── world_state.py          # 大世界状态管理
-│   │   └── workflow.py             # 工作流引擎
+│   │   ├── workflow.py             # 工作流引擎
+│   │   ├── quality_checker.py      # 质量检查模块
+│   │   ├── exporter.py             # 导出功能（TXT/EPUB/PDF）
+│   │   ├── reading_power.py        # 追读力系统
+│   │   ├── anti_patterns.py        # 反模式追踪
+│   │   ├── memory.py               # 长期记忆
+│   │   ├── rag.py                  # RAG 检索
+│   │   └── character_sim.py        # 角色推演
 │   ├── models/
 │   │   ├── project.py              # Project（基于目录的存储）
 │   │   ├── chapter.py              # Chapter（文件 IO）
@@ -195,8 +207,75 @@ def build_workflow(mode, project_info, start, end) -> WorkflowDef:
 - 支持循环步骤（repeat）、定时触发（every）、断点恢复
 - **智能跳过**：已有内容的章节在 LLM 调用前跳过，提升效率
 - **标题约束**：已有文件名的章节，prompt 中注入标题约束防止 LLM 改标题
-- **定时步骤**：灵感（每3章）、推演（每章）、概要（每章）、大世界状态（每章）、目录（每章）、润色（每2章）、校验（每章）、摘要（每5章）、规划反哺（每10章）
-- **纯工具步骤**：`fix_titles`、`toc`、`chapter_summary`、`world_state_update` 不走标准 agent 流程
+- **定时步骤**：灵感（每3章）、推演（每章）、概要（每章）、大世界状态（每章）、目录（每章）、润色（每2章）、校验（每章）、质量检查（每章）、摘要（每5章）、规划反哺（每10章）
+- **纯工具步骤**：`fix_titles`、`toc`、`chapter_summary`、`world_state_update`、`quality_check` 不走标准 agent 流程
+
+### 质量检查模块 (`core/quality_checker.py`)
+
+自动评估章节质量，10 个维度：
+
+```python
+from novel_writer.core.quality_checker import QualityChecker
+
+checker = QualityChecker(project_dir)
+report = checker.check_chapter(content, chapter_number)
+
+# 报告包含：
+# - total_score: 总分 0-100
+# - word_count_score: 篇幅得分
+# - structure_score: 结构得分
+# - dialogue_score: 对话得分
+# - scene_score: 场景得分
+# - rhythm_score: 节奏得分
+# - hook_score: 钩子得分
+# - cool_point_score: 爽点得分
+# - micro_payoff_score: 微兑现得分
+# - consistency_score: 一致性得分
+# - sentence_variety_score: 句式多样性得分
+# - issues: 问题列表
+# - suggestions: 建议列表
+```
+
+### 导出功能 (`core/exporter.py`)
+
+支持多种格式导出：
+
+```python
+from novel_writer.core.exporter import Exporter
+
+exporter = Exporter(project_dir)
+
+# TXT 导出
+txt_path = exporter.export_txt()
+
+# EPUB 导出（需要 ebooklib）
+epub_path = exporter.export_epub()
+
+# PDF 导出（需要 reportlab）
+pdf_path = exporter.export_pdf()
+```
+
+### 追读力系统 (`core/reading_power.py`)
+
+量化读者体验，追踪章节吸引力：
+
+```python
+from novel_writer.core.reading_power import ReadingPowerTracker
+
+tracker = ReadingPowerTracker(project_dir)
+
+# 分析章节
+rp = tracker.analyze_chapter(content, chapter_number)
+tracker.record(rp)
+
+# 生成指导
+guidance = tracker.build_guidance(next_chapter_number)
+
+# 统计
+hook_stats = tracker.get_hook_stats(window=10)
+cool_point_stats = tracker.get_cool_point_stats(window=10)
+debt_total = tracker.get_debt_total()
+```
 
 ### 智能上下文组装 (`_build_context`)
 
@@ -216,6 +295,7 @@ inspiration   → NARRATIVE # 灵感需要剧情进展
 review        → NARRATIVE # 审核需要世界观+叙事
 sim           → WORLD    # 推演需要角色设定
 proofread     → GLOBAL   # 校对只需当前章节
+quality_check → GLOBAL   # 质量检查只需当前章节
 toc/fix_titles→ GLOBAL   # 工具步骤
 ```
 
@@ -247,7 +327,7 @@ MainWindow (splitter: 220 / 560 / 620)
 ### 菜单结构
 
 ```
-├── 文件           # 新建/打开/保存、退出
+├── 文件           # 新建/打开/保存、导出（TXT/EPUB/PDF）
 ├── 模型与智能体     # 模型设置、智能体管理
 ├── 工作流          # 开始工作流（模式选择）、加载默认工作流
 └── 关于           # 外观设置、关于
@@ -292,4 +372,20 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 python -m novel_writer
+```
+
+## 运行测试
+
+```bash
+# 运行所有测试
+python -m pytest tests/ -v
+
+# 运行特定测试
+python -m pytest tests/test_quality_checker.py -v
+python -m pytest tests/test_reading_power.py -v
+python -m pytest tests/test_workflow.py -v
+python -m pytest tests/test_exporter.py -v
+
+# 查看测试覆盖率
+python -m pytest tests/ --cov=src/novel_writer --cov-report=html
 ```

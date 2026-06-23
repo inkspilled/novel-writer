@@ -1,10 +1,54 @@
 """Novel Writer 应用入口。"""
 
+import os
 import sys
 from pathlib import Path
 
+# 禁用 shiboken 特性检查
+os.environ['SHIBOKEN_DISABLE_FEATURE_IMPORT_CHECK'] = '1'
+
+# PySide6 导入前：预导入 openai，避免 shiboken 拦截
+try:
+    import anyio
+    import httpx
+    import openai
+except ImportError:
+    pass
+
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QFont, QIcon
+
+# PySide6 导入后：彻底禁用 shiboken 特性检查
+try:
+    import shibokensupport.feature as _feat
+    _feat._mod_uses_pyside = lambda module: False
+except (ImportError, AttributeError):
+    pass
+
+# 禁用 signature.loader 中的特性检查
+try:
+    import shibokensupport.signature.loader as _loader
+    _loader.feature_imported = lambda *args, **kwargs: None
+except (ImportError, AttributeError):
+    pass
+
+# monkey-patch inspect，防止任何残余的 getsource 调用卡死
+import inspect as _inspect
+_orig_gs = _inspect.getsource
+def _safe_gs(obj):
+    try:
+        return _orig_gs(obj)
+    except Exception:
+        return ""
+_inspect.getsource = _safe_gs
+
+_orig_gsl = _inspect.getsourcelines
+def _safe_gsl(obj):
+    try:
+        return _orig_gsl(obj)
+    except Exception:
+        return ([""], 0)
+_inspect.getsourcelines = _safe_gsl
 
 # 支持直接运行和模块导入两种方式
 if __name__ == "__main__" and __package__ is None:

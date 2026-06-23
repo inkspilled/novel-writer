@@ -572,10 +572,12 @@ class AgentPanel(QWidget):
             answer = parts[1] if len(parts) > 1 else ""
             display_text = f"💭 *思考过程:*\n{think_content}\n\n{answer}"
 
-        # 保护：widget 可能已被 deleteLater 销毁（切换 Agent 或清空聊天时）
+        # C-10 修复：widget 可能已被 deleteLater 销毁（切换 Agent 或清空聊天时）
+        # 记录日志而非静默吞掉，便于调试
         try:
             self._stream_widget._set_content(display_text)
-        except RuntimeError:
+        except RuntimeError as e:
+            logger.debug("Stream widget destroyed during update: %s", e)
             self._stream_widget = None
             self._stream_text = ""
             return
@@ -712,19 +714,33 @@ class AgentPanel(QWidget):
     # ── 聊天记录持久化 (SQLite) ──
 
     def _get_db(self) -> sqlite3.Connection:
+        # M-07 修复：缓存数据库连接，避免频繁打开关闭
+        if hasattr(self, '_db_conn') and self._db_conn is not None:
+            try:
+                # 测试连接是否有效
+                self._db_conn.execute("SELECT 1")
+                return self._db_conn
+            except sqlite3.Error:
+                # 连接已失效，重新创建
+                try:
+                    self._db_conn.close()
+                except Exception:
+                    pass
+                self._db_conn = None
+
         if not self._db_path:
             raise RuntimeError("未设置项目数据库路径")
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(str(self._db_path))
-        db.execute("""CREATE TABLE IF NOT EXISTS messages (
+        self._db_conn = sqlite3.connect(str(self._db_path))
+        self._db_conn.execute("""CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             agent TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""")
-        db.commit()
-        return db
+        self._db_conn.commit()
+        return self._db_conn
 
     def save_history(self):
         """将当前所有聊天记录写入 SQLite（全量覆盖当前项目）。"""
