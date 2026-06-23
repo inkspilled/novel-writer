@@ -16,6 +16,7 @@
 ```
 novel-writer/
 ├── pyproject.toml                  # 项目配置 & 依赖
+├── build.py                        # 打包脚本
 ├── logo.png                        # 应用图标
 ├── logs/                           # 日志目录（gitignore）
 │   ├── info.log                    # INFO/DEBUG 日志（按天滚动，100MB 上限）
@@ -389,3 +390,49 @@ python -m pytest tests/test_exporter.py -v
 # 查看测试覆盖率
 python -m pytest tests/ --cov=src/novel_writer --cov-report=html
 ```
+
+## 打包发布
+
+### 使用打包脚本
+
+```bash
+# 安装打包依赖
+pip install pyinstaller
+
+# 运行打包脚本
+python build.py
+```
+
+打包完成后，可执行文件在 `dist/NovelWriter/` 目录下。
+
+### 手动打包
+
+```bash
+# 基本打包命令
+pyinstaller --name="NovelWriter" --windowed --onedir src/novel_writer/app.py
+
+# 带图标的打包
+pyinstaller --name="NovelWriter" --windowed --onedir --icon=logo.png src/novel_writer/app.py
+```
+
+### 打包注意事项
+
+1. **数据目录**：打包后，`data/` 和 `config/` 目录会在可执行文件旁边创建
+2. **日志目录**：`logs/` 目录会在运行时自动创建
+3. **依赖项**：PyInstaller 会自动收集所有依赖，但某些动态导入的模块可能需要手动添加
+4. **PySide6 资源**：PyInstaller 会自动处理 PySide6 的资源文件
+
+### 分发
+
+打包后的目录结构：
+
+```
+dist/NovelWriter/
+├── NovelWriter.exe          # 主程序
+├── _internal/               # 依赖文件
+├── data/                    # 用户数据（运行时创建）
+├── config/                  # 配置文件
+└── logs/                    # 日志（运行时创建）
+```
+
+可以直接将 `dist/NovelWriter/` 目录打包为 zip 分发。

@@ -240,12 +240,12 @@ class MainWindow(QMainWindow):
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
-            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
         return {}
 
     def _save_config(self):
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8")
+        CONFIG_PATH.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8-sig")
 
     def _create_llm(self, provider: dict):
         """根据供应商配置创建 LLM 实例。统一走 OpenAI 兼容协议。"""

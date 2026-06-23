@@ -281,14 +281,20 @@ def safe_rename_chapter(project_dir: Path, chapter_number: int, new_title: str) 
     - 写入前备份原文件
     - 返回 (旧标题, 错误信息)，错误为空表示成功
     """
+    # 格式化标题：确保包含「第X章：」前缀
+    if not new_title.startswith(f"第{_cn_number(chapter_number)}章") and not new_title.startswith(f"第{chapter_number}章"):
+        formatted_title = f"第{_cn_number(chapter_number)}章：{new_title}"
+    else:
+        formatted_title = new_title
+
     chapters = scan_chapters(project_dir)
     for ch in chapters:
         if ch["number"] == chapter_number:
             old_title = ch["title"]
-            if old_title == new_title:
+            if old_title == formatted_title:
                 return old_title, ""
 
-            new_filename = chapter_filename(chapter_number, new_title)
+            new_filename = chapter_filename(chapter_number, formatted_title)
             new_path = ch["content_path"].parent / new_filename
 
             # 冲突检测：新文件已存在且不是当前文件
@@ -317,22 +323,35 @@ def safe_rename_chapter(project_dir: Path, chapter_number: int, new_title: str) 
                         m = re.match(r"^#{1,3}\s+(.+)$", stripped)
                         if m:
                             level = len(stripped) - len(stripped.lstrip("#"))
-                            lines[i] = f"{'#' * level} {new_title}"
+                            lines[i] = f"{'#' * level} {formatted_title}"
                         else:
-                            lines[i] = f"# {new_title}"
+                            lines[i] = f"# {formatted_title}"
                         break
                 write_md(new_path, "\n".join(lines))
 
             # 同步改细纲文件名（如果有）
             if ch["outline_path"]:
                 old_outline = ch["outline_path"]
-                new_outline_name = chapter_outline_filename(chapter_number, new_title)
+                new_outline_name = chapter_outline_filename(chapter_number, formatted_title)
                 new_outline_path = old_outline.parent / new_outline_name
                 if old_outline != new_outline_path:
                     old_outline.rename(new_outline_path)
 
             return old_title, ""
     return "", f"第{chapter_number}章不存在"
+
+
+def _cn_number(n: int) -> str:
+    """将数字转换为中文数字。"""
+    cn = "一二三四五六七八九十"
+    if n <= 10:
+        return cn[n-1]
+    elif n < 20:
+        return f"十{cn[n-11]}" if n > 10 else "十"
+    elif n < 100:
+        return f"{cn[n//10-1]}十{cn[n%10-1]}" if n % 10 != 0 else f"{cn[n//10-1]}十"
+    else:
+        return str(n)
 
 
 # ── Planning 文件 ──

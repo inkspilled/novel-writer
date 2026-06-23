@@ -212,6 +212,31 @@ class WorkflowRunner:
                 return f.name
         return None
 
+    def _update_meta_chapter_titles(self, title_map: dict):
+        """同步更新 meta.json 中的章节标题。"""
+        meta_path = self.project_dir / "meta.json"
+        if not meta_path.exists():
+            return
+        try:
+            import json
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            chapter_meta = meta.get("chapter_meta", [])
+            for ch_num_str, new_title in title_map.items():
+                ch_num = int(ch_num_str)
+                new_title_str = str(new_title).strip()
+                if not new_title_str:
+                    continue
+                # 查找对应章节并更新标题
+                for item in chapter_meta:
+                    if item.get("number") == ch_num:
+                        item["title"] = new_title_str
+                        break
+            meta["chapter_meta"] = chapter_meta
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info("meta.json 章节标题已同步更新")
+        except Exception as e:
+            logger.error("更新 meta.json 失败: %s", e)
+
     async def run(self, workflow: WorkflowDef, progress: dict | None = None) -> dict:
         """执行完整工作流，返回进度状态。"""
         logger.info("工作流开始执行: %s (%d 步骤)", workflow.name, len(workflow.steps))
@@ -543,6 +568,9 @@ class WorkflowRunner:
             prompt = (
                 "你是小说编辑。以下是各章的开头内容和当前标题。\n"
                 "当前标题可能重复或不准确，请根据正文内容为每章重新拟定一个2-6字的精准标题。\n"
+                "【重要】只输出标题的后半部分，不要包含「第X章」前缀。例如：\n"
+                "- 当前标题「第一章：寸铁」→ 输出「铁入学堂」\n"
+                "- 当前标题「第二章：月照铁光」→ 输出「夜试寸铁」\n\n"
                 "严格输出 JSON 格式，不要输出其他内容：\n"
                 '{"1": "新标题", "2": "新标题", ...}\n\n'
                 + "\n\n".join(excerpts)
@@ -569,6 +597,8 @@ class WorkflowRunner:
                             logs.append(f"第{ch_num}章: 「{old}」→「{new_title_str}」")
                     # 刷新目录
                     project_io.generate_toc(self.project_dir)
+                    # 同步更新 meta.json 中的章节标题
+                    self._update_meta_chapter_titles(title_map)
                     msg = f"标题校准完成，修正 {len(logs)} 处"
                     logger.info(msg)
                     if self.on_step_end:

@@ -10,6 +10,26 @@ pip install -e .
 python -m novel_writer
 ```
 
+## 打包
+
+### Windows 打包为 exe
+
+```bash
+# 安装打包依赖
+pip install pyinstaller
+
+# 运行打包脚本
+python build.py
+```
+
+打包完成后，可执行文件在 `dist/NovelWriter/` 目录下。
+
+### 手动打包
+
+```bash
+pyinstaller --name="NovelWriter" --windowed --onedir src/novel_writer/app.py
+```
+
 ## 写作流程
 
 | 阶段 | Agent | 职责 |

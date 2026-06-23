@@ -46,7 +46,7 @@ class _RateLimiter:
                 await asyncio.sleep(wait)
             self._last_request_time = time.monotonic()
 
-_global_limiter = _RateLimiter(min_interval=3.0)
+_global_limiter = _RateLimiter(min_interval=5.0)
 
 # N-01 修复：使用模块级缓存实现真正的单次懒加载
 _async_openai_cls = None
@@ -89,7 +89,7 @@ class LLMClient(BaseLLM):
         messages: list[LLMMessage],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        max_retries: int = 5,
+        max_retries: int = 8,
     ) -> LLMResponse:
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
@@ -122,7 +122,7 @@ class LLMClient(BaseLLM):
                 base_wait = 2 ** attempt
                 from openai import RateLimitError
                 if isinstance(e, RateLimitError):
-                    base_wait = max(base_wait + attempt * 2, 8)
+                    base_wait = max(base_wait + attempt * 3, 10)
                 wait = base_wait + random.uniform(0, 2)
                 logger.warning("LLM 调用遇到可重试错误 (%s)，第 %d 次重试，等待 %.1f 秒...", e, attempt + 1, wait)
                 await asyncio.sleep(wait)
