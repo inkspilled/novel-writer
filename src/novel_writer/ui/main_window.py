@@ -367,6 +367,7 @@ class MainWindow(QMainWindow):
         self.sidebar.load_chapters(self.project.chapters)
         self.sidebar.update_stats(0, self.project.target_words, len(self.project.chapters))
         self.editor.clear()
+        self.editor.set_project_dir(project_dir)
         self.statusBar().showMessage(t("status_created", title))
         logger.info("新项目已创建: %s (%s)", title, project_dir)
 
@@ -726,7 +727,7 @@ class MainWindow(QMainWindow):
                 content = self.editor.get_planning_content(doc_name)
                 fpath = self.project.project_dir / rel_path
                 project_io.write_md(fpath, content)
-                self.statusBar().showMessage(f"已保存: {doc_name}")
+                self.statusBar().showMessage(f"已保存: {doc_name}", 3000)
                 logger.info("规划文档已保存: %s", fpath)
                 return
 
