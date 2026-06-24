@@ -20,6 +20,7 @@ class Project:
     theme: str = ""  # 核心主题
     direction: str = ""  # 规划方向
     target_words: int = 200000  # 目标字数
+    target_chapters: int = 100  # 目标章节数
     synopsis: str = ""  # 简介/立意
     cover: str = ""  # 封面图片路径
     world_setting: str = ""  # 世界观设定
@@ -81,6 +82,7 @@ class Project:
             "theme": self.theme,
             "direction": self.direction,
             "target_words": self.target_words,
+            "target_chapters": self.target_chapters,
             "synopsis": self.synopsis,
             "cover": self.cover,
             "world_setting": self.world_setting,
@@ -120,6 +122,7 @@ class Project:
             theme=meta.get("theme", ""),
             direction=meta.get("direction", ""),
             target_words=meta.get("target_words", 200000),
+            target_chapters=meta.get("target_chapters", 100),
             synopsis=meta.get("synopsis", ""),
             cover=meta.get("cover", ""),
             world_setting=meta.get("world_setting", ""),

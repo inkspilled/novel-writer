@@ -342,6 +342,7 @@ class MainWindow(QMainWindow):
             theme=data["theme"],
             direction=data["direction"],
             target_words=data["target_words"],
+            target_chapters=data.get("target_chapters", 100),
             synopsis=data["synopsis"],
             cover=cover_rel,
         )
@@ -874,7 +875,7 @@ class MainWindow(QMainWindow):
         chapter_layout.addWidget(QLabel("到第"))
         end_spin = QSpinBox()
         end_spin.setRange(1, 99999)
-        end_spin.setValue(20)
+        end_spin.setValue(self.project.target_chapters or 100)
         chapter_layout.addWidget(end_spin)
         chapter_layout.addWidget(QLabel("章"))
 
@@ -946,6 +947,11 @@ class MainWindow(QMainWindow):
             return
 
         mode, start_ch, end_ch = result
+
+        # 保存目标章节数到项目配置
+        if end_ch > 0:
+            self.project.target_chapters = end_ch
+            self.project.save()
 
         # 新书模式：检查是否已有章节内容
         if mode in (WorkflowMode.NEW_BOOK, WorkflowMode.NEW_BOOK_PLANNING) and self.project.project_dir:

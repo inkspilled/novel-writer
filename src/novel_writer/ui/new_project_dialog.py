@@ -184,6 +184,15 @@ class NewProjectDialog(QDialog):
         self.words_spin.setSuffix(" 字")
         self.words_spin.setMinimumHeight(34)
         genre_form.addRow("目标字数", self.words_spin)
+
+        self.chapters_spin = QSpinBox()
+        self.chapters_spin.setRange(10, 99999)
+        self.chapters_spin.setSingleStep(50)
+        self.chapters_spin.setValue(100)
+        self.chapters_spin.setSuffix(" 章")
+        self.chapters_spin.setMinimumHeight(34)
+        genre_form.addRow("目标章节数", self.chapters_spin)
+
         layout.addWidget(genre_group)
 
         # ── 立意与方向（必填） ──
@@ -446,6 +455,7 @@ class NewProjectDialog(QDialog):
             "genre": self.genre_combo.currentText(),
             "style": self.style_combo.currentText(),
             "target_words": self.words_spin.value(),
+            "target_chapters": self.chapters_spin.value(),
             "theme": self.theme_edit.toPlainText().strip(),
             "direction": self.direction_edit.toPlainText().strip(),
             "synopsis": self.synopsis_edit.toPlainText().strip(),
