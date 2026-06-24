@@ -11,3 +11,5 @@ build/
 .eggs/
 data/
 logs/
+logo.ico
+output/

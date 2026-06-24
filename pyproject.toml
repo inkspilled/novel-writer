@@ -17,6 +17,12 @@ dependencies = [
     "reportlab>=4.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.0",
+    "pillow>=10.0",
+]
+
 [project.scripts]
 novel-writer = "novel_writer.app:main"
 

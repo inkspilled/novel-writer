@@ -12,22 +12,27 @@ python -m novel_writer
 
 ## 打包
 
-### Windows 打包为 exe
+### Windows 一键打包
 
 ```bash
-# 安装打包依赖
-pip install pyinstaller
-
-# 运行打包脚本
-python build.py
+# 双击运行
+build_installer.bat
 ```
 
-打包完成后，可执行文件在 `dist/NovelWriter/` 目录下。
+自动完成：创建 venv → 安装依赖 → 生成 ico → PyInstaller 打包 → Inno Setup 生成安装包
+
+输出：`output/NovelWriter-Setup.exe`
+
+### 前提条件
+
+- [Inno Setup 6](https://jrsoftware.org/isdl.php) — 生成安装包
+- Python >= 3.10
 
 ### 手动打包
 
 ```bash
-pyinstaller --name="NovelWriter" --windowed --onedir src/novel_writer/app.py
+pip install pyinstaller
+pyinstaller novel-writer.spec
 ```
 
 ## 写作流程

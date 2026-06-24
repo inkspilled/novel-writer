@@ -10,13 +10,17 @@
 | openai | >= 1.0 | OpenAI 兼容 LLM 接口 |
 | anthropic | >= 0.40 | Claude 原生接口 |
 | httpx | >= 0.27 | Ollama HTTP 接口 |
+| ebooklib | >= 0.18 | EPUB 导出 |
+| reportlab | >= 4.0 | PDF 导出 |
 
 ## 项目结构
 
 ```
 novel-writer/
 ├── pyproject.toml                  # 项目配置 & 依赖
-├── build.py                        # 打包脚本
+├── novel-writer.spec               # PyInstaller 配置
+├── build_installer.bat             # 一键打包脚本
+├── installer.iss                   # Inno Setup 安装包脚本
 ├── logo.png                        # 应用图标
 ├── logs/                           # 日志目录（gitignore）
 │   ├── info.log                    # INFO/DEBUG 日志（按天滚动，100MB 上限）
@@ -410,26 +414,39 @@ python -m pytest tests/ --cov=src/novel_writer --cov-report=html
 
 ## 打包发布
 
-### 使用打包脚本
+### 一键打包（推荐）
 
 ```bash
-# 安装打包依赖
-pip install pyinstaller
-
-# 运行打包脚本
-python build.py
+build_installer.bat
 ```
 
-打包完成后，可执行文件在 `dist/NovelWriter/` 目录下。
+自动流程：
+1. 创建/检查虚拟环境
+2. 安装依赖（含 PyInstaller）
+3. 从 `logo.png` 生成 `logo.ico`
+4. PyInstaller 打包为单文件 exe
+5. Inno Setup 生成安装包
+
+输出：`output/NovelWriter-Setup.exe`
+
+### 打包脚本文件
+
+| 文件 | 用途 |
+|------|------|
+| `novel-writer.spec` | PyInstaller 配置（入口、数据文件、隐藏导入） |
+| `build_installer.bat` | 一键打包脚本 |
+| `installer.iss` | Inno Setup 安装包脚本 |
+
+### 前提条件
+
+- [Inno Setup 6](https://jrsoftware.org/isdl.php) — 生成安装包
+- Python >= 3.10
 
 ### 手动打包
 
 ```bash
-# 基本打包命令
-pyinstaller --name="NovelWriter" --windowed --onedir src/novel_writer/app.py
-
-# 带图标的打包
-pyinstaller --name="NovelWriter" --windowed --onedir --icon=logo.png src/novel_writer/app.py
+pip install pyinstaller
+pyinstaller novel-writer.spec
 ```
 
 ### 打包注意事项
