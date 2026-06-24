@@ -305,3 +305,11 @@ python -m pytest tests/test_exporter.py -v
 ## 更多
 
 - [开发指南 (DEV_GUIDE.md)](DEV_GUIDE.md) — 技术架构、项目结构
+
+## 打赏支持
+
+如果这个项目对你有帮助，欢迎请作者喝杯咖啡 ☕
+
+| 微信 | 支付宝 |
+|:----:|:------:|
+| ![微信打赏](assets/wx.jpg) | ![支付宝打赏](assets/zfb.png) |
