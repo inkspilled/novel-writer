@@ -714,8 +714,12 @@ class MainWindow(QMainWindow):
             project_dir = PROJECTS_DIR / safe_name
             project_dir.mkdir(parents=True, exist_ok=True)
             self.project.set_project_dir(project_dir)
-        self.project.save()
-        self._show_toast(t("status_saved", self.project.title))
+        try:
+            self.project.save()
+            self._show_toast(t("status_saved", self.project.title))
+        except Exception as e:
+            self._show_toast(f"保存失败: {e}", error=True)
+            logger.error("项目保存失败: %s", e)
 
     def _on_planning_save(self, doc_name: str):
         """保存规划文档。"""
@@ -726,23 +730,27 @@ class MainWindow(QMainWindow):
             if label == doc_name:
                 content = self.editor.get_planning_content(doc_name)
                 fpath = self.project.project_dir / rel_path
-                project_io.write_md(fpath, content)
-                self._show_toast(f"已保存: {doc_name}")
-                logger.info("规划文档已保存: %s", fpath)
+                try:
+                    project_io.write_md(fpath, content)
+                    self._show_toast(f"已保存: {doc_name}")
+                    logger.info("规划文档已保存: %s", fpath)
+                except Exception as e:
+                    self._show_toast(f"保存失败: {e}", error=True)
+                    logger.error("规划文档保存失败: %s - %s", fpath, e)
                 return
 
-    def _show_toast(self, text: str, duration: int = 2000):
+    def _show_toast(self, text: str, duration: int = 2000, error: bool = False):
         """显示一个自动消失的提示框。"""
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QLabel as _QLabel
+        if error:
+            style = "QLabel { background: #c0392b; color: white; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; }"
+        else:
+            style = "QLabel { background: palette(highlight); color: palette(highlighted-text); padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; }"
         toast = _QLabel(text, self)
-        toast.setStyleSheet(
-            "QLabel { background: palette(highlight); color: palette(highlighted-text);"
-            "padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; }"
-        )
+        toast.setStyleSheet(style)
         toast.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.ToolTip)
         toast.adjustSize()
-        # 居中显示在主窗口内
         x = self.x() + (self.width() - toast.width()) // 2
         y = self.y() + self.height() - 100
         toast.move(x, y)
