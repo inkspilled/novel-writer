@@ -922,8 +922,7 @@ class WorkflowRunner:
         if char_states:
             parts.append(char_states)
 
-        # 读取 planning/ 下的文件（只在需要时注入，章节写作时精简）
-        planning_files_to_inject = []
+        # 读取 planning/ 下的文件（章节写作时用 RAG 检索，其他步骤直接注入）
         for f in input_files:
             if f == "prev_chapters":
                 continue
@@ -944,12 +943,9 @@ class WorkflowRunner:
                     if content:
                         if f.endswith("人物设定.md"):
                             char_file_content = content
-                        # 章节写作时：规划文档只注入摘要（前800字），避免 token 爆炸
+                        # 章节写作时：规划文档走 RAG 检索，不灌全文（人物设定除外）
                         if step_id == "chapter" and f.startswith("planning/") and not f.endswith("人物设定.md"):
-                            excerpt = content[:800]
-                            if len(content) > 800:
-                                excerpt += "\n...(后续内容已省略)"
-                            parts.append(f"=== {p.name}（摘要）===\n{excerpt}")
+                            pass  # 由 RAG 检索注入
                         else:
                             parts.append(content)
 
@@ -1038,17 +1034,19 @@ class WorkflowRunner:
                             if content:
                                 parts.append(f"=== 第{i}章 ===\n{content}")
 
-                # RAG 检索
+                # RAG 检索历史章节
                 try:
                     from .rag import RAGRetriever
                     rag = RAGRetriever(self.project_dir)
                     rag.load_chapters(up_to_chapter=start)
+                    # 同时加载规划文档到索引
+                    rag.load_planning()
                     outline_path = self.project_dir / "planning" / "大纲.md"
                     if outline_path.exists():
                         outline = project_io.read_md(outline_path)
                         query = _extract_chapter_query(outline, n)
                         if query:
-                            rag_text = rag.retrieve(query, top_k=3)
+                            rag_text = rag.retrieve(query, top_k=5)
                             if rag_text:
                                 parts.append(rag_text)
                 except Exception:

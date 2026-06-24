@@ -152,12 +152,36 @@ class RAGRetriever:
         self.index.build()
         self._loaded = True
 
+    def load_planning(self):
+        """加载规划文档到索引（按段落分块）。"""
+        planning_dir = self.project_dir / "planning"
+        if not planning_dir.exists():
+            return
+        for md_file in sorted(planning_dir.glob("*.md")):
+            content = md_file.read_text(encoding="utf-8")
+            if not content.strip():
+                continue
+            # 按段落或二级标题分块
+            sections = re.split(r"\n(?=#)|\n\n+", content)
+            for i, section in enumerate(sections):
+                section = section.strip()
+                if len(section) < 20:
+                    continue
+                self.index.add_chunk(Chunk(
+                    id=f"plan_{md_file.stem}_s{i}",
+                    chapter=0,
+                    text=section,
+                ))
+
     def retrieve(self, query: str, top_k: int = 5) -> str:
         """检索相关段落，返回格式化文本。"""
+        if not self.index._built:
+            self.index.build()
         results = self.index.search(query, top_k)
         if not results:
             return ""
         parts = ["=== RAG 检索相关段落 ==="]
         for chunk, score in results:
-            parts.append(f"[第{chunk.chapter}章 相关度:{score:.1f}]\n{chunk.text[:200]}")
+            label = f"第{chunk.chapter}章" if chunk.chapter > 0 else "规划文档"
+            parts.append(f"[{label} 相关度:{score:.1f}]\n{chunk.text[:300]}")
         return "\n\n".join(parts)
