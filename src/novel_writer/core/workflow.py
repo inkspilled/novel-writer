@@ -213,6 +213,76 @@ class WorkflowRunner:
                 return f.name
         return None
 
+    def _build_pacing_context(self, n: int, total: int, for_update: bool = False) -> str:
+        """生成节奏控制上下文，防止长篇小说节奏失控。
+
+        Args:
+            n: 当前章节号
+            total: 目标总章节数
+            for_update: True 时为反哺模式（强调收束），False 时为写作模式（强调节奏）
+        """
+        if total <= 0:
+            return ""
+
+        progress = n / total
+        remaining = total - n
+        pct = int(progress * 100)
+
+        if progress < 0.05:
+            phase = "开篇铺垫"
+            phase_desc = "世界观初次展开阶段"
+        elif progress < 0.15:
+            phase = "初期建立"
+            phase_desc = "核心角色登场、初始冲突建立"
+        elif progress < 0.35:
+            phase = "前期发展"
+            phase_desc = "主线冲突逐步升级、支线铺开"
+        elif progress < 0.55:
+            phase = "中期推进"
+            phase_desc = "核心矛盾深化、角色成长加速"
+        elif progress < 0.75:
+            phase = "后期高潮"
+            phase_desc = "主要冲突进入白热化、伏笔回收密集期"
+        elif progress < 0.90:
+            phase = "收束阶段"
+            phase_desc = "支线收拢、悬念解答、主线走向终局"
+        else:
+            phase = "终章阶段"
+            phase_desc = "最终决战/核心矛盾解决、全文收尾"
+
+        parts = [f"=== 【节奏控制 · {phase}】 ==="]
+        parts.append(f"当前：第{n}章 / 共{total}章（进度{pct}%，剩余{remaining}章）")
+        parts.append(f"阶段：{phase}（{phase_desc}）")
+        parts.append("")
+
+        if for_update:
+            # 反哺模式：根据阶段控制更新方向
+            if progress < 0.35:
+                parts.append("【反哺要求】当前处于前期，可以补充支线和新伏笔，但新支线必须与主线有交汇点。")
+            elif progress < 0.55:
+                parts.append("【反哺要求】当前处于中期，停止新增支线。聚焦已有支线的推进和伏笔的逐步回收。")
+            elif progress < 0.75:
+                parts.append("【反哺要求】当前处于后期高潮，必须加速回收伏笔，不允许新增支线或新伏笔。所有已有悬念必须在剩余章节内解决。")
+            else:
+                parts.append("【反哺要求】当前处于收束/终章阶段，严禁新增任何支线、伏笔、新角色。只允许：1) 回收伏笔 2) 解决悬念 3) 推进主线结局。所有剧情线必须朝完结方向收拢。")
+        else:
+            # 写作模式：根据阶段控制写作方向
+            if progress < 0.15:
+                parts.append("【节奏要求】当前处于开篇阶段，重点是世界观展示和角色塑造，不要急于推进主线冲突。每章应有新信息或新角色登场，保持读者好奇心。")
+            elif progress < 0.35:
+                parts.append("【节奏要求】当前处于前期发展，可以适当展开支线，但每章必须推进主线至少一步。注意埋设伏笔，为后续剧情做铺垫。")
+            elif progress < 0.55:
+                parts.append("【节奏要求】当前处于中期推进，主线冲突必须持续升级，不要出现剧情停滞。支线应与主线交汇，避免游离于主线之外的独立剧情。")
+            elif progress < 0.75:
+                parts.append("【节奏要求】当前处于后期高潮，剧情密度要高，每章应有实质性转折或冲突。开始回收伏笔，不要新开支线。注意控制信息量，避免赶进度式写作。")
+            elif progress < 0.90:
+                parts.append("【节奏要求】当前处于收束阶段，所有支线必须收拢，伏笔必须回收。不要引入新角色或新冲突。剧情应朝结局稳步推进，每章都有明确的收束目标。")
+            else:
+                parts.append("【节奏要求】当前处于终章阶段，本章必须推进到核心矛盾的解决。不要拖延节奏，不要插入回忆或支线，直接推进主线结局。")
+
+        parts.append(f"【重要】本小说目标{total}章，当前是第{n}章，还剩{remaining}章。请严格按照当前阶段的要求写作，不要提前进入下一阶段。")
+        return "\n".join(parts)
+
     def _update_meta_chapter_titles(self, title_map: dict):
         """同步更新 meta.json 中的章节标题。"""
         meta_path = self.project_dir / "meta.json"
@@ -374,6 +444,13 @@ class WorkflowRunner:
 
         context = self._build_context(step.input_files, n, step_id=step.id)
         prompt = self._format_prompt(step.prompt, workflow.project, n)
+
+        # 注入节奏控制
+        total = workflow.project.get("target_chapters", 0)
+        if total > 0 and step.id == "chapter":
+            prompt += "\n\n" + self._build_pacing_context(n, total, for_update=False)
+        if total > 0 and step.id.startswith("update_"):
+            prompt += "\n\n" + self._build_pacing_context(n, total, for_update=True)
 
         # 章节写作：注入已有标题约束
         if step.id == "chapter":
@@ -670,6 +747,13 @@ class WorkflowRunner:
 
         context = self._build_context(step.input_files, n, step_id=step.id)
         prompt = self._format_prompt(step.prompt, project, n)
+
+        # 注入节奏控制
+        total = project.get("target_chapters", 0)
+        if total > 0 and step.id == "chapter":
+            prompt += "\n\n" + self._build_pacing_context(n, total, for_update=False)
+        if total > 0 and step.id.startswith("update_"):
+            prompt += "\n\n" + self._build_pacing_context(n, total, for_update=True)
 
         # 章节写作：注入已有标题约束，防止 LLM 每次生成不同标题
         if step.id == "chapter":
@@ -1211,13 +1295,13 @@ DEFAULT_WORKFLOW = {
     "description": "从立意到审校的全流程",
     "steps": [
         {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md"},
-        {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲，包括主要人物、世界观、主线冲突。", "input": ["planning/立意.md"], "output": "planning/大纲.md"},
+        {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲。本书目标写{target_chapters}章，请将故事分为多个阶段（开篇铺垫、前期发展、中期推进、后期高潮、收束终章），每个阶段标注起止章节和核心剧情。大纲要足够详细，能支撑{target_chapters}章的篇幅，避免剧情在前100章就走完。", "input": ["planning/立意.md"], "output": "planning/大纲.md"},
         {"id": "characters", "needs": "人物设定", "prompt": "根据大纲设计主要人物档案（性格、背景、成长弧线、关系）。", "input": ["planning/大纲.md"], "output": "planning/人物设定.md"},
         {"id": "world", "needs": "世界观构建", "prompt": "根据大纲构建详细的世界观设定。", "input": ["planning/大纲.md"], "output": "planning/世界观.md"},
         {"id": "timeline", "needs": "故事结构", "prompt": "根据大纲设计故事时间线。", "input": ["planning/大纲.md"], "output": "planning/时间线.md"},
-        {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点。", "input": ["planning/大纲.md"], "output": "planning/主线.md"},
-        {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
-        {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
+        {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点和对应章节范围。本书共{target_chapters}章，主线冲突的升级节奏必须匹配这个篇幅。", "input": ["planning/大纲.md"], "output": "planning/主线.md"},
+        {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。支线数量和深度必须匹配{target_chapters}章的篇幅，不能在前100章就把所有支线写完。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
+        {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。本书共{target_chapters}章，伏笔的埋设和回收要分布在整本书中，不要全部集中在前几十章。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
         {"id": "fix_titles", "needs": "", "prompt": "", "output": "", "optional": True},
         {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
         {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
@@ -1283,13 +1367,13 @@ PLANNING_WORKFLOW = {
     "description": "只生成规划文档，不写正文",
     "steps": [
         {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md"},
-        {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲，包括主要人物、世界观、主线冲突。", "input": ["planning/立意.md"], "output": "planning/大纲.md"},
+        {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲。本书目标写{target_chapters}章，请将故事分为多个阶段（开篇铺垫、前期发展、中期推进、后期高潮、收束终章），每个阶段标注起止章节和核心剧情。大纲要足够详细，能支撑{target_chapters}章的篇幅，避免剧情在前100章就走完。", "input": ["planning/立意.md"], "output": "planning/大纲.md"},
         {"id": "characters", "needs": "人物设定", "prompt": "根据大纲设计主要人物档案（性格、背景、成长弧线、关系）。", "input": ["planning/大纲.md"], "output": "planning/人物设定.md"},
         {"id": "world", "needs": "世界观构建", "prompt": "根据大纲构建详细的世界观设定。", "input": ["planning/大纲.md"], "output": "planning/世界观.md"},
         {"id": "timeline", "needs": "故事结构", "prompt": "根据大纲设计故事时间线。", "input": ["planning/大纲.md"], "output": "planning/时间线.md"},
-        {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点。", "input": ["planning/大纲.md"], "output": "planning/主线.md"},
-        {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
-        {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
+        {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点和对应章节范围。本书共{target_chapters}章，主线冲突的升级节奏必须匹配这个篇幅。", "input": ["planning/大纲.md"], "output": "planning/主线.md"},
+        {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。支线数量和深度必须匹配{target_chapters}章的篇幅，不能在前100章就把所有支线写完。", "input": ["planning/大纲.md"], "output": "planning/支线.md"},
+        {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。本书共{target_chapters}章，伏笔的埋设和回收要分布在整本书中，不要全部集中在前几十章。", "input": ["planning/大纲.md"], "output": "planning/伏笔.md"},
     ],
 }
 
