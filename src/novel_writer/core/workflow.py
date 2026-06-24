@@ -922,7 +922,7 @@ class WorkflowRunner:
         if char_states:
             parts.append(char_states)
 
-        # 读取 planning/ 下的文件（只在需要时注入）
+        # 读取 planning/ 下的文件（只在需要时注入，章节写作时精简）
         planning_files_to_inject = []
         for f in input_files:
             if f == "prev_chapters":
@@ -944,7 +944,14 @@ class WorkflowRunner:
                     if content:
                         if f.endswith("人物设定.md"):
                             char_file_content = content
-                        parts.append(content)
+                        # 章节写作时：规划文档只注入摘要（前800字），避免 token 爆炸
+                        if step_id == "chapter" and f.startswith("planning/") and not f.endswith("人物设定.md"):
+                            excerpt = content[:800]
+                            if len(content) > 800:
+                                excerpt += "\n...(后续内容已省略)"
+                            parts.append(f"=== {p.name}（摘要）===\n{excerpt}")
+                        else:
+                            parts.append(content)
 
         # 角色约束（从人物设定提取）
         if char_file_content:
