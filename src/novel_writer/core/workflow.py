@@ -922,7 +922,9 @@ class WorkflowRunner:
         if char_states:
             parts.append(char_states)
 
-        # 读取 planning/ 下的文件（章节写作时用 RAG 检索，其他步骤直接注入）
+        # 读取 planning/ 下的文件（统一走 RAG 检索，只注入相关片段）
+        # 先收集需要检索的规划文档内容，不直接注入
+        planning_docs_for_rag = []
         for f in input_files:
             if f == "prev_chapters":
                 continue
@@ -935,7 +937,11 @@ class WorkflowRunner:
                         if p.is_file():
                             content = project_io.read_md(p)
                             if content:
-                                parts.append(f"=== {p.name} ===\n{content}")
+                                if p.name.endswith("人物设定.md"):
+                                    char_file_content = content
+                                    parts.append(content)
+                                else:
+                                    planning_docs_for_rag.append((p.name, content))
             else:
                 p = self.project_dir / f.format(n=n, **self.project_info)
                 if p.exists():
@@ -943,11 +949,44 @@ class WorkflowRunner:
                     if content:
                         if f.endswith("人物设定.md"):
                             char_file_content = content
-                        # 章节写作时：规划文档走 RAG 检索，不灌全文（人物设定除外）
-                        if step_id == "chapter" and f.startswith("planning/") and not f.endswith("人物设定.md"):
-                            pass  # 由 RAG 检索注入
-                        else:
                             parts.append(content)
+                        else:
+                            planning_docs_for_rag.append((p.name, content))
+
+        # 规划文档：用 RAG 检索相关片段，不灌全文
+        if planning_docs_for_rag:
+            try:
+                from .rag import BM25Index, Chunk
+                plan_index = BM25Index()
+                for fname, content in planning_docs_for_rag:
+                    sections = re.split(r"\n(?=#)|\n\n+", content)
+                    for i, section in enumerate(sections):
+                        section = section.strip()
+                        if len(section) < 20:
+                            continue
+                        plan_index.add_chunk(Chunk(
+                            id=f"plan_{fname}_s{i}",
+                            chapter=0,
+                            text=section,
+                        ))
+                plan_index.build()
+                # 构建查询：用当前步骤类型 + 章节号
+                query_parts = [step_id]
+                if n > 1:
+                    query_parts.append(f"第{n}章")
+                if self.project_info.get("title"):
+                    query_parts.append(self.project_info["title"])
+                query = " ".join(query_parts)
+                results = plan_index.search(query, top_k=5)
+                if results:
+                    rag_parts = ["=== 规划文档相关片段 ==="]
+                    for chunk, score in results:
+                        rag_parts.append(f"[相关度:{score:.1f}]\n{chunk.text[:300]}")
+                    parts.append("\n\n".join(rag_parts))
+            except Exception:
+                # RAG 失败时回退：每个文档取前 500 字
+                for fname, content in planning_docs_for_rag:
+                    parts.append(f"=== {fname}（摘要）===\n{content[:500]}")
 
         # 角色约束（从人物设定提取）
         if char_file_content:
@@ -1039,8 +1078,6 @@ class WorkflowRunner:
                     from .rag import RAGRetriever
                     rag = RAGRetriever(self.project_dir)
                     rag.load_chapters(up_to_chapter=start)
-                    # 同时加载规划文档到索引
-                    rag.load_planning()
                     outline_path = self.project_dir / "planning" / "大纲.md"
                     if outline_path.exists():
                         outline = project_io.read_md(outline_path)
