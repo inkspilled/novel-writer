@@ -485,7 +485,7 @@ class WorkflowRunner:
                 logger.info("反哺更新规划文档: %s", output)
 
             # ── 关键保护：LLM 返回为空或过短时绝不写入 ──
-            if step.id == "chapter":
+            if step.id in ("chapter", "polish"):
                 is_valid, reason = project_io.validate_chapter_content(response.content)
                 if not is_valid:
                     logger.error("章节内容校验失败，跳过写入! step=%s n=%d output=%s reason=%s",
@@ -496,17 +496,17 @@ class WorkflowRunner:
                 return f"[错误] LLM 返回为空，跳过写入 {output}"
 
             # 章节文件写入前备份（保留原始备份，不覆盖已有 .bak）
-            if step.id == "chapter" and out_path.exists() and out_path.stat().st_size > 0:
+            if step.id in ("chapter", "polish") and out_path.exists() and out_path.stat().st_size > 0:
                 backup_path = out_path.with_suffix(".bak.txt")
                 if not backup_path.exists():
                     import shutil
                     shutil.copy2(out_path, backup_path)
 
-            write_content = project_io.normalize_chapter_content(response.content) if step.id == "chapter" else response.content
+            write_content = project_io.normalize_chapter_content(response.content) if step.id in ("chapter", "polish") else response.content
             project_io.write_md(out_path, write_content)
 
             # 写后验证：确认文件存在且内容不为空
-            if step.id == "chapter":
+            if step.id in ("chapter", "polish"):
                 if not out_path.exists() or out_path.stat().st_size == 0:
                     logger.error("写后验证失败! 文件为空或不存在: %s", out_path)
                     backup_path = out_path.with_suffix(".bak.txt")
@@ -800,7 +800,7 @@ class WorkflowRunner:
                 logger.info("反哺更新规划文档: %s", output)
 
             # ── 关键保护：LLM 返回为空或过短时绝不写入，防止清空已有文件 ──
-            if step.id == "chapter":
+            if step.id in ("chapter", "polish"):
                 is_valid, reason = project_io.validate_chapter_content(response.content)
                 if not is_valid:
                     logger.error("章节内容校验失败，跳过写入! step=%s n=%d output=%s reason=%s",
@@ -810,18 +810,18 @@ class WorkflowRunner:
                     return
 
             # 章节文件写入前备份（保留原始备份，不覆盖已有 .bak）
-            if step.id == "chapter" and out_path.exists() and out_path.stat().st_size > 0:
+            if step.id in ("chapter", "polish") and out_path.exists() and out_path.stat().st_size > 0:
                 backup_path = out_path.with_suffix(".bak.txt")
                 if not backup_path.exists():
                     import shutil
                     shutil.copy2(out_path, backup_path)
                     logger.debug("章节备份: %s", backup_path)
 
-            write_content = project_io.normalize_chapter_content(response.content) if step.id == "chapter" else response.content
+            write_content = project_io.normalize_chapter_content(response.content) if step.id in ("chapter", "polish") else response.content
             project_io.write_md(out_path, write_content)
 
             # 写后验证：确认文件存在且内容不为空
-            if step.id == "chapter":
+            if step.id in ("chapter", "polish"):
                 if not out_path.exists() or out_path.stat().st_size == 0:
                     logger.error("写后验证失败! 文件为空或不存在: %s", out_path)
                     # 尝试从备份恢复
