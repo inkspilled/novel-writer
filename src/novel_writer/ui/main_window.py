@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
             self._save_project()
 
         from .new_project_dialog import NewProjectDialog
-        dialog = NewProjectDialog(llm=self.llm, parent=self)
+        dialog = NewProjectDialog(llm=self.llm, parent=self, agents=self.agents)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -626,7 +626,7 @@ class MainWindow(QMainWindow):
             "cover": self.project.cover,
             "_project_dir": str(self.project.project_dir) if self.project.project_dir else "",
         }
-        dialog = NewProjectDialog(llm=self.llm, parent=self, project_data=project_data)
+        dialog = NewProjectDialog(llm=self.llm, parent=self, project_data=project_data, agents=self.agents)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
             # 更新项目信息

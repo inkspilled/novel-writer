@@ -12,17 +12,24 @@ logger = get_logger(__name__)
 
 
 def _extract_content(data: dict) -> str:
-    """从 Ollama 响应中提取内容，兼容思考模型（如 qwen3.5）。"""
+    """从 Ollama 响应中提取内容，兼容思考模型（如 qwen3.5）。
+
+    优先返回 content（正式回答）；content 为空时回退到 thinking。
+    如果两者都有，拼接后由 UI 层清理思考前缀。
+    """
     msg = data.get("message", {})
     content = msg.get("content", "").strip()
     thinking = msg.get("thinking", "").strip()
-    # 如果 content 为空但有 thinking，返回 thinking
-    if not content and thinking:
+    if content:
+        # 有正式回答时，附带 thinking 以便 UI 清理
+        if thinking:
+            return f"[思考过程]\n{thinking}\n\n[回答]\n{content}"
+        return content
+    # content 为空，回退到 thinking
+    if thinking:
+        logger.warning("模型未返回正式回答，回退使用思考过程内容")
         return thinking
-    # 如果都有，拼接
-    if content and thinking:
-        return f"[思考过程]\n{thinking}\n\n[回答]\n{content}"
-    return content
+    return ""
 
 
 class OllamaLLM(BaseLLM):

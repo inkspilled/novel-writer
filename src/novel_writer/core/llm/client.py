@@ -106,6 +106,7 @@ class LLMClient(BaseLLM):
                 )
                 choice = resp.choices[0]
                 content = choice.message.content or ""
+                # content 为空时回退到 reasoning（部分模型将回答放在 reasoning 字段）
                 if not content and hasattr(choice.message, 'reasoning') and choice.message.reasoning:
                     content = choice.message.reasoning
                 return LLMResponse(

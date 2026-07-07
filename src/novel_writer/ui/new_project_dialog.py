@@ -30,17 +30,23 @@ STYLES = [
 
 
 class _AIWorker(QThread):
-    """后台线程调用 LLM，带超时保护。"""
+    """后台线程调用 Agent，带超时保护。"""
     finished = Signal(str)
     error = Signal(str)
 
-    TIMEOUT_SEC = 60  # 60秒超时
+    # API 模型 2 分钟，本地模型 10 分钟
+    TIMEOUT_API = 120
+    TIMEOUT_LOCAL = 600
 
-    def __init__(self, llm, prompt: str, parent=None):
+    def __init__(self, agent, prompt: str, parent=None):
         super().__init__(parent)
-        self.llm = llm
+        self.agent = agent
         self.prompt = prompt
         self._cancelled = False
+        # 本地模型（base_url 含 127.0.0.1/localhost 或 OllamaLLM）给更长超时
+        base_url = getattr(agent.llm, 'base_url', '') or ''
+        is_local = any(h in base_url for h in ('127.0.0.1', 'localhost', '0.0.0.0'))
+        self._timeout = self.TIMEOUT_LOCAL if is_local else self.TIMEOUT_API
 
     def cancel(self):
         self._cancelled = True
@@ -50,14 +56,11 @@ class _AIWorker(QThread):
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            from ..core.llm.base import LLMMessage
-            messages = [LLMMessage(role="user", content=self.prompt)]
 
-            # 带超时的 LLM 调用
             async def _call():
                 return await asyncio.wait_for(
-                    self.llm.chat(messages, temperature=0.7, max_tokens=300),
-                    timeout=self.TIMEOUT_SEC,
+                    self.agent.run(self.prompt),
+                    timeout=self._timeout,
                 )
 
             resp = loop.run_until_complete(_call())
@@ -65,38 +68,27 @@ class _AIWorker(QThread):
                 self.finished.emit(resp.content)
         except asyncio.TimeoutError:
             if not self._cancelled:
-                self.error.emit(f"AI 生成超时（{self.TIMEOUT_SEC}秒），请检查网络或模型配置")
+                self.error.emit(f"AI 生成超时（{self._timeout}秒），本地模型较慢请耐心等待或换用更快的模型")
         except Exception as e:
             if not self._cancelled:
                 self.error.emit(str(e)[:300])
         finally:
             if loop:
-                try:
-                    # 关闭 LLM 客户端连接
-                    loop.run_until_complete(self._cleanup_llm())
-                except Exception:
-                    pass
                 loop.close()
-
-    async def _cleanup_llm(self):
-        try:
-            if hasattr(self.llm, 'client') and hasattr(self.llm.client, 'close'):
-                await self.llm.client.close()
-        except Exception:
-            pass
 
 
 class NewProjectDialog(QDialog):
     """新建/编辑项目对话框。"""
 
-    def __init__(self, llm=None, parent=None, project_data=None):
+    def __init__(self, llm=None, parent=None, project_data=None, agents=None):
         super().__init__(parent)
         self.setWindowTitle("编辑项目" if project_data else t("dialog_new_project"))
         self.setMinimumSize(640, 720)
         self.resize(660, 760)
         self._cover_path = ""
         self._llm = llm
-        self._worker = None
+        self._agents = agents or {}  # Agent 实例字典
+        self._workers: dict[str, _AIWorker] = {}  # field → worker，支持并发生成
         self._project_data = project_data
         self._setup_ui()
         if project_data:
@@ -289,15 +281,19 @@ class NewProjectDialog(QDialog):
 
     def _ai_generate(self, field: str):
         """AI 生成立意或方向。"""
-        if not self._llm:
-            QMessageBox.warning(self, "提示", "请先在设置中配置模型")
+        # 根据字段选择对应 Agent：立意→主编(editor)，方向→策划(planner)
+        agent_name = "editor" if field == "theme" else "planner"
+        agent = self._agents.get(agent_name)
+        if not agent:
+            QMessageBox.warning(self, "提示", "请先在设置中配置模型和智能体")
             return
 
-        # 如果有正在运行的 worker，先取消
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(2000)
-            self._worker = None
+        # 如果该字段已有正在运行的 worker，先取消
+        old = self._workers.get(field)
+        if old and old.isRunning():
+            old.cancel()
+            old.wait(2000)
+            del self._workers[field]
 
         label = "核心立意" if field == "theme" else "规划方向"
         hint = "一个少年穿越到异世界" if field == "theme" else "分3卷，前期升级，中期争霸，后期收尾"
@@ -342,14 +338,25 @@ class NewProjectDialog(QDialog):
 
 不要有任何多余解释。"""
 
-        self._set_generating(True)
-        self._worker = _AIWorker(self._llm, prompt, self)
-        self._worker.finished.connect(lambda text: self._on_ai_done(field, text))
-        self._worker.error.connect(self._on_ai_error)
-        self._worker.start()
+        self._set_generating(True, field)
+        worker = _AIWorker(agent, prompt, self)
+        worker.finished.connect(lambda text: self._on_ai_done(field, text))
+        worker.error.connect(lambda err: self._on_ai_error(err, field))
+        self._workers[field] = worker
+        worker.start()
 
     def _on_ai_done(self, field: str, text: str):
-        self._set_generating(False)
+        self._workers.pop(field, None)
+        self._set_generating(False, field)
+        text = text.strip()
+        # 清理思考模型可能残留的前缀标签
+        for prefix in ["[思考过程]", "[回答]"]:
+            if text.startswith(prefix):
+                # 跳过 [思考过程]\n...\n\n[回答]\n... 格式，提取 [回答] 后的内容
+                answer_idx = text.find("[回答]\n")
+                if answer_idx >= 0:
+                    text = text[answer_idx + len("[回答]\n"):]
+                break
         text = text.strip()
         if len(text) > 300:
             for sep in ["\n\n", "\n", "。", "；"]:
@@ -365,20 +372,29 @@ class NewProjectDialog(QDialog):
             self.direction_edit.setPlainText(text)
         self._status_label.setText("")
 
-    def _on_ai_error(self, error: str):
-        self._set_generating(False)
+    def _on_ai_error(self, error: str, field: str = ""):
+        self._workers.pop(field, None)
+        self._set_generating(False, field)
         self._status_label.setText("")
         QMessageBox.warning(self, "AI 生成失败", error)
 
-    def _set_generating(self, generating: bool):
-        self.btn_ai_theme.setEnabled(not generating)
-        self.btn_ai_dir.setEnabled(not generating)
-        self.btn_create.setEnabled(not generating)
+    def _set_generating(self, generating: bool, field: str = ""):
+        """设置生成状态，field 指定是哪个字段在生成（'theme'/'direction'）。"""
         if generating:
+            # 只禁用正在生成的按钮，另一个保持可用
+            if field == "theme":
+                self.btn_ai_theme.setEnabled(False)
+                self.btn_ai_theme.setText("生成中...")
+            elif field == "direction":
+                self.btn_ai_dir.setEnabled(False)
+                self.btn_ai_dir.setText("生成中...")
+            self.btn_create.setEnabled(False)
             self._status_label.setText("AI 正在生成...")
-            self.btn_ai_theme.setText("生成中...")
-            self.btn_ai_dir.setText("生成中...")
         else:
+            # 恢复所有按钮
+            self.btn_ai_theme.setEnabled(True)
+            self.btn_ai_dir.setEnabled(True)
+            self.btn_create.setEnabled(True)
             self.btn_ai_theme.setText("✨ AI 生成")
             self.btn_ai_dir.setText("✨ AI 生成")
 
@@ -463,8 +479,10 @@ class NewProjectDialog(QDialog):
         }
 
     def closeEvent(self, event):
-        """关闭对话框时清理 worker。"""
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(3000)
+        """关闭对话框时清理所有 worker。"""
+        for w in self._workers.values():
+            if w.isRunning():
+                w.cancel()
+                w.wait(3000)
+        self._workers.clear()
         super().closeEvent(event)
