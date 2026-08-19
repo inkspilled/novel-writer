@@ -37,14 +37,12 @@ class BaseAgent(ABC):
         return self.config.title
 
     def _build_messages(self, user_input: str, context: str = "") -> list[LLMMessage]:
-        messages = [LLMMessage(role="system", content=self.config.system_prompt)]
+        # 合并 system_prompt 和 context 为单条 system 消息，兼容 Qwen 等要求单一 system 的模板
+        system_parts = [self.config.system_prompt]
         if context:
-            # 拆分上下文为稳定前缀（可缓存）和变量后缀
-            stable, variable = self._split_context_for_cache(context)
-            if stable:
-                messages.append(LLMMessage(role="system", content=stable))
-            if variable:
-                messages.append(LLMMessage(role="system", content=variable))
+            system_parts.append(context)
+        system_content = "\n\n".join(system_parts)
+        messages = [LLMMessage(role="system", content=system_content)]
         messages.extend(self.history)
         messages.append(LLMMessage(role="user", content=user_input))
         return messages

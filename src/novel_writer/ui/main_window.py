@@ -982,10 +982,13 @@ class MainWindow(QMainWindow):
             "progress": {},
         })
 
+        # 从配置读取上下文大小，默认 120K
+        max_context_tokens = self.config.get("max_context_tokens", 120_000)
         self._wf_runner = WorkflowRunner(
             agents=self.agents,
             project_dir=self.project.project_dir,
             project_info=self._wf_def.project,
+            max_context_tokens=max_context_tokens,
         )
 
         # 创建后台线程执行

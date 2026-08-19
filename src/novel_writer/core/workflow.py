@@ -36,6 +36,68 @@ def _estimate_tokens(text: str) -> int:
     return int(cn_chars * 1.5 + en_words * 1.3)
 
 
+# 上下文 token 预算（留空间给 system prompt + 输出）
+MAX_CONTEXT_TOKENS = 120_000  # 120K，为 140K 模型预留 20K 给输出
+
+
+def _compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> list[str]:
+    """动态压缩上下文：按优先级裁剪，确保总 token 不超限。
+
+    裁剪优先级（从先到后）：
+    1. RAG 检索结果（可重新检索）
+    2. 旧章节全文（有摘要替代）
+    3. 规划文档（有摘要替代）
+    4. 角色推演（非必需）
+    5. 章节概要（最后裁剪）
+    """
+    total = sum(_estimate_tokens(p) for p in parts)
+    if total <= max_tokens:
+        return parts
+
+    logger.info("上下文压缩触发: 当前≈%d tokens，目标≤%d tokens", total, max_tokens)
+
+    # 按类型标记每个 part
+    tagged = []
+    for p in parts:
+        if "=== RAG" in p or "[相关度:" in p:
+            tagged.append(("rag", p))
+        elif p.startswith("=== 第") and "章 ===\n" in p:
+            tagged.append(("chapter_full", p))
+        elif "=== 规划文档" in p or "（摘要）===" in p:
+            tagged.append(("planning", p))
+        elif "=== 角色推演 ===" in p:
+            tagged.append(("sim", p))
+        elif "=== 章节概要 ===" in p or "概要" in p[:20]:
+            tagged.append(("summary", p))
+        else:
+            tagged.append(("other", p))
+
+    # 按优先级裁剪
+    priority_order = ["rag", "chapter_full", "planning", "sim", "summary"]
+    result = []
+    removed_tokens = 0
+
+    for pri in priority_order:
+        total_now = sum(_estimate_tokens(p) for _, p in tagged) - removed_tokens
+        if total_now <= max_tokens:
+            break
+        new_tagged = []
+        for tag, p in tagged:
+            if tag == pri and total_now - removed_tokens > max_tokens:
+                removed_tokens += _estimate_tokens(p)
+                logger.debug("裁剪 [%s]: %s... (节省≈%d tokens)",
+                           tag, p[:50].replace("\n", " "), _estimate_tokens(p))
+            else:
+                new_tagged.append((tag, p))
+        tagged = new_tagged
+
+    result = [p for _, p in tagged]
+    final_tokens = sum(_estimate_tokens(p) for p in result)
+    logger.info("上下文压缩完成: %d → %d tokens (裁剪 %.1f%%)",
+               total, final_tokens, (1 - final_tokens / total) * 100 if total else 0)
+    return result
+
+
 # ── 工作流模式 ──
 
 class WorkflowMode(Enum):
@@ -175,10 +237,12 @@ class WorkflowRunner:
         agents: dict[str, BaseAgent],
         project_dir: Path,
         project_info: dict,
+        max_context_tokens: int = MAX_CONTEXT_TOKENS,
     ):
         self.agents = agents
         self.project_dir = project_dir
         self.project_info = project_info
+        self.max_context_tokens = max_context_tokens
         self._agent_by_skill: dict[str, list[BaseAgent]] = {}
         self._build_skill_index()
         self._stop = False
@@ -1088,6 +1152,9 @@ class WorkflowRunner:
                                 parts.append(rag_text)
                 except Exception:
                     pass
+
+        # 动态压缩上下文，确保不超过模型限制
+        parts = _compress_context(parts, self.max_context_tokens)
 
         result = "\n\n".join(parts)
         # 估算 token 数并记录日志

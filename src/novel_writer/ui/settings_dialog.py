@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget,
     QLabel, QLineEdit, QComboBox, QPushButton, QFormLayout,
-    QGroupBox, QMessageBox, QDoubleSpinBox, QListWidget,
+    QGroupBox, QMessageBox, QDoubleSpinBox, QSpinBox, QListWidget,
     QListWidgetItem, QInputDialog, QTextEdit, QColorDialog,
     QScrollArea,
 )
@@ -369,6 +369,24 @@ class ModelDialog(QDialog):
 
         layout.addWidget(default_group)
 
+        # ── 上下文大小设置 ──
+        ctx_group = QGroupBox("上下文配置")
+        ctx_layout = QHBoxLayout(ctx_group)
+        ctx_layout.setSpacing(10)
+
+        ctx_layout.addWidget(QLabel("最大上下文 tokens:"))
+        self._ctx_tokens_spin = QSpinBox()
+        self._ctx_tokens_spin.setRange(4096, 200_000)
+        self._ctx_tokens_spin.setSingleStep(4096)
+        self._ctx_tokens_spin.setValue(self.config.get("max_context_tokens", 120_000))
+        self._ctx_tokens_spin.setToolTip("写作用的上下文上限，留空间给输出。140K模型建议设120K")
+        ctx_layout.addWidget(self._ctx_tokens_spin)
+
+        ctx_layout.addWidget(QLabel("(140K模型建议120K，留20K给输出)"))
+        ctx_layout.addStretch()
+
+        layout.addWidget(ctx_group)
+
         # ── 中部：左侧列表 + 右侧编辑 ──
         body = QHBoxLayout()
         body.setSpacing(16)
@@ -494,7 +512,18 @@ class ModelDialog(QDialog):
         layout.addLayout(bottom_row)
 
         self._refresh_model_list()
-        self._on_provider_changed(0)
+        self._init_provider_ui()
+
+    def _init_provider_ui(self):
+        """初始化供应商 UI 状态，不触发 Ollama 网络请求。"""
+        if not self._providers:
+            return
+        provider = self._providers[0]
+        self.base_url_input.setText(provider["base_url"])
+        is_ollama = provider["type"] == "ollama"
+        self.ollama_group.setVisible(is_ollama)
+        if is_ollama:
+            self.ollama_status.setText(t("settings_ollama_detecting"))
 
     def _refresh_model_list(self):
         self.model_list.clear()
@@ -608,6 +637,7 @@ class ModelDialog(QDialog):
         if QMessageBox.question(self, t("dialog_confirm"),
                                 t("msg_delete_agent", name)) == QMessageBox.StandardButton.Yes:
             self._saved_models.pop(name, None)
+            self._save_config_only()
             self._refresh_model_list()
 
     def _on_provider_changed(self, index: int):
@@ -709,6 +739,7 @@ class ModelDialog(QDialog):
                 "model": self.model_input.text().strip(),
             }
         self.config["saved_models"] = self._saved_models
+        self.config["max_context_tokens"] = self._ctx_tokens_spin.value()
         default_names = {p["name"] for p in load_default_providers()}
         custom_providers = [p for p in self._providers if p["name"] not in default_names]
         if custom_providers:
@@ -903,12 +934,14 @@ class AgentDialog(QDialog):
         if QMessageBox.question(self, t("dialog_confirm"),
                                 t("msg_delete_agent", name)) == QMessageBox.StandardButton.Yes:
             del self._agents[name]
+            save_agents(self._agents)
             self._refresh_agent_list()
 
     def _reset_agents(self):
         if QMessageBox.question(self, t("dialog_confirm"),
                                 t("msg_reset_agents")) == QMessageBox.StandardButton.Yes:
             self._agents = reset_agents()
+            save_agents(self._agents)
             self._refresh_agent_list()
             if self.agent_list.count() > 0:
                 self.agent_list.setCurrentRow(0)
