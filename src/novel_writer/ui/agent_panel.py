@@ -1,259 +1,23 @@
 from __future__ import annotations
 
-import re
-import sqlite3
 from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTextEdit, QScrollArea, QFrame,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QKeyEvent
 
 from .agent_animation import AgentIndicator
+from .chat_rendering import COLOR_POOL, AGENT_PANEL_GLOBALS, get_color
+from .chat_widgets import ChatMessage, ChatTextEdit
+from ..core.chat_history import ChatHistory
 from ..locales import t
 from ..core.logger import get_logger
 from .styles import get_theme_colors
 
 logger = get_logger(__name__)
 
-# 默认颜色池
-COLOR_POOL = ["#ff6b8a", "#51cf66", "#4da6ff", "#ffd43b", "#cc5de8", "#ff922b",
-              "#20c997", "#748ffc", "#f06595", "#5c7cfa", "#63e6be", "#e599f7"]
-
-AGENT_PANEL_GLOBALS: dict = {"agent_emojis": {}, "agent_colors": {}, "config": {}}
-
-
-def get_color(name: str, idx: int = 0) -> str:
-    return AGENT_PANEL_GLOBALS["agent_colors"].get(name, COLOR_POOL[idx % len(COLOR_POOL)])
-
-
-# ── Markdown → HTML 轻量渲染器 ──
-
-def _is_light_color(hex_color: str) -> bool:
-    """判断颜色是否为浅色（用于 Markdown 渲染时动态选择代码块背景色）。"""
-    h = hex_color.lstrip("#")
-    if len(h) == 3:
-        h = "".join(c * 2 for c in h)
-    try:
-        r, g, b = int(h[:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    except (ValueError, IndexError):
-        return False
-    return (r * 299 + g * 587 + b * 114) / 1000 > 128
-
-
-def _inline_md(text: str, fg: str = "#e8e8ed") -> str:
-    """行内 Markdown：粗体、斜体、行内代码。"""
-    code_bg = "rgba(0,0,0,0.06)" if _is_light_color(fg) else "rgba(255,255,255,0.08)"
-    text = re.sub(r'`([^`]+)`',
-                  r'<code style="background:' + code_bg + r';padding:1px 5px;'
-                  r'border-radius:3px;font-family:Consolas,monospace;font-size:12px;">\1</code>', text)
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    return text
-
-
-def _md_to_html(text: str, fg: str = "#e8e8ed") -> str:
-    """轻量 Markdown → HTML，支持代码块、标题、列表、表格。"""
-    is_light = _is_light_color(fg)
-    code_bg = "rgba(0,0,0,0.06)" if is_light else "rgba(0,0,0,0.25)"
-    code_fg = "#6e6e73" if is_light else "#a6adc8"
-    border_color = "rgba(0,0,0,0.1)" if is_light else "rgba(255,255,255,0.1)"
-
-    lines = text.split("\n")
-    out: list[str] = []
-    in_code_block = False
-    in_list = False
-    in_table = False
-    table_rows: list[str] = []
-
-    for line in lines:
-        # 代码块
-        if line.strip().startswith("```"):
-            if in_code_block:
-                out.append("</pre>")
-                in_code_block = False
-            else:
-                if in_list:
-                    out.append("</ul>")
-                    in_list = False
-                out.append(
-                    f'<pre style="background:{code_bg};color:{code_fg};padding:10px 14px;'
-                    'border-radius:8px;font-family:Consolas,monospace;font-size:12px;'
-                    'overflow-x:auto;line-height:1.5;">')
-                in_code_block = True
-            continue
-        if in_code_block:
-            out.append(line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-            continue
-
-        stripped = line.strip()
-
-        # 表格
-        if "|" in stripped and stripped.startswith("|"):
-            if re.match(r'^\|[\s\-:|]+\|$', stripped):
-                continue
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
-            if not in_table:
-                in_table = True
-                table_rows = []
-                header = "".join(
-                    f'<th style="padding:6px 12px;border:1px solid {border_color};'
-                    f'text-align:left;font-weight:600;">{c}</th>' for c in cells)
-                table_rows.append(f"<tr>{header}</tr>")
-            else:
-                row = "".join(
-                    f'<td style="padding:4px 12px;border:1px solid {border_color};">{c}</td>'
-                    for c in cells)
-                table_rows.append(f"<tr>{row}</tr>")
-            continue
-        elif in_table:
-            out.append(
-                f'<table style="border-collapse:collapse;margin:8px 0;width:100%;">'
-                f'{"".join(table_rows)}</table>')
-            in_table = False
-            table_rows = []
-
-        # 标题
-        if stripped.startswith("### "):
-            out.append(f'<b style="font-size:13px;">{stripped[4:]}</b><br>')
-        elif stripped.startswith("## "):
-            out.append(f'<b style="font-size:14px;">{stripped[3:]}</b><br>')
-        elif stripped.startswith("# "):
-            out.append(f'<b style="font-size:15px;">{stripped[2:]}</b><br>')
-        # 无序列表
-        elif stripped.startswith("- ") or stripped.startswith("* "):
-            if not in_list:
-                in_list = True
-                out.append("<ul>")
-            out.append(f"<li>{_inline_md(stripped[2:], fg)}</li>")
-        # 有序列表
-        elif re.match(r'^\d+\.\s', stripped):
-            if not in_list:
-                in_list = True
-                out.append('<ul style="list-style-type:decimal;">')
-            text = re.sub(r"^\d+\.\s", "", stripped)
-            out.append(f'<li>{_inline_md(text, fg)}</li>')
-        # 空行
-        elif not stripped:
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append("<br>")
-        else:
-            if in_list:
-                out.append("</ul>")
-                in_list = False
-            out.append(_inline_md(stripped, fg))
-
-    if in_list:
-        out.append("</ul>")
-    if in_table:
-        out.append(
-            f'<table style="border-collapse:collapse;margin:8px 0;width:100%;">'
-            f'{"".join(table_rows)}</table>')
-    if in_code_block:
-        out.append("</pre>")
-
-    return "<br>".join(out)
-
-
-# ── 消息气泡 ──
-
-class ChatMessage(QFrame):
-    """单条消息气泡，支持 Markdown 渲染。"""
-
-    def __init__(self, role: str, content: str, agent_name: str = "", parent=None):
-        super().__init__(parent)
-        self._role = role
-        self._raw_content = content
-        self._agent_name = agent_name
-        self.setFrameShape(QFrame.Shape.NoFrame)
-
-        self._outer = QHBoxLayout(self)
-        self._outer.setContentsMargins(8, 4, 8, 4)
-
-        self._bubble = QFrame()
-        self._bubble_layout = QVBoxLayout(self._bubble)
-        self._bubble_layout.setContentsMargins(14, 10, 14, 10)
-        self._bubble_layout.setSpacing(4)
-
-        self._label = QLabel()
-        self._label.setWordWrap(True)
-        self._label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse |
-            Qt.TextInteractionFlag.LinksAccessibleByMouse
-        )
-        self._bubble_layout.addWidget(self._label)
-
-        self._avatar = None
-        if role == "user":
-            self._outer.addStretch()
-            self._outer.addWidget(self._bubble, 0)
-        else:
-            self._outer.addWidget(self._bubble, 1)
-
-        self._apply_style()
-        self._set_content(content)
-
-    def _apply_style(self):
-        colors = get_theme_colors(
-            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "dark"),
-            AGENT_PANEL_GLOBALS.get("config")
-        )
-        accent = colors.get("accent", "#6e8efb")
-        card = colors.get("card", "#1c1c26")
-        fg = colors.get("fg", "#e8e8ed")
-
-        if self._role == "user":
-            self._bubble.setStyleSheet(
-                f"QFrame {{ background-color: {accent}; border-radius: 14px; }}")
-            self._label.setStyleSheet(
-                f"QLabel {{ color: #ffffff; background: transparent; border: none; "
-                f"font-size: 13px; }}")
-            self._fg = "#ffffff"
-        else:
-            self._bubble.setStyleSheet(
-                f"QFrame {{ background-color: {card}; border-radius: 14px; "
-                f"border: 1px solid {colors.get('border', 'rgba(255,255,255,0.06)')}; }}")
-            self._label.setStyleSheet(
-                f"QLabel {{ color: {fg}; background: transparent; border: none; "
-                f"font-size: 13px; }}")
-            self._fg = fg
-
-    def _set_content(self, content: str) -> None:
-        if not content:
-            return
-        if self._role == "user":
-            safe = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            self._label.setText(safe.replace("\n", "<br>"))
-        else:
-            html = _md_to_html(content, fg=self._fg)
-            self._label.setTextFormat(Qt.TextFormat.RichText)
-            self._label.setText(html)
-
-    def refresh_style(self):
-        """刷新主题样式。"""
-        self._apply_style()
-        self._set_content(self._raw_content)
-
-
-# ── Ctrl+Enter 发送的输入框 ──
-
-class ChatTextEdit(QTextEdit):
-    """支持 Ctrl+Enter 发送的文本输入框。"""
-    submit = Signal()
-
-    def keyPressEvent(self, event: QKeyEvent):
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                self.submit.emit()
-                return
-        super().keyPressEvent(event)
-
-
-# ── Agent 面板主体 ──
 
 class AgentPanel(QWidget):
 
@@ -272,7 +36,7 @@ class AgentPanel(QWidget):
         self._stream_agent: str = ""
         self._pending_streams: dict[str, tuple] = {}
         self._quick_buttons: list[QPushButton] = []
-        self._db_path: Path | None = None  # 项目级数据库路径
+        self._chat_db: ChatHistory | None = None  # 项目级聊天记录存储
         self._setup_ui()
 
     def _setup_ui(self):
@@ -572,8 +336,7 @@ class AgentPanel(QWidget):
             answer = parts[1] if len(parts) > 1 else ""
             display_text = f"💭 *思考过程:*\n{think_content}\n\n{answer}"
 
-        # C-10 修复：widget 可能已被 deleteLater 销毁（切换 Agent 或清空聊天时）
-        # 记录日志而非静默吞掉，便于调试
+        # widget 可能已被 deleteLater 销毁（切换 Agent 或清空聊天时）
         try:
             self._stream_widget._set_content(display_text)
         except RuntimeError as e:
@@ -610,8 +373,6 @@ class AgentPanel(QWidget):
         self._stream_widget = None
         self._stream_text = ""
         self._stream_agent = ""
-
-    # ── 滚动 ──
 
     def _scroll_to_bottom(self):
         sb = self.scroll_area.verticalScrollBar()
@@ -682,20 +443,20 @@ class AgentPanel(QWidget):
         self._chat_history.clear()
         self.save_history()
 
-    # ── 项目级数据库管理 ──
+    # ── 项目级聊天记录 ──
 
     def set_project_db(self, project_dir: Path | None):
         """切换项目数据库路径。切换前自动保存当前项目的聊天记录。"""
-        if self._db_path and self._chat_history:
+        if self._chat_db and self._chat_history:
             self.save_history()
         if project_dir:
-            self._db_path = project_dir / "chat.db"
+            self._chat_db = ChatHistory(project_dir / "chat.db")
             self._project_loaded = True
             self._no_project_hint.setVisible(False)
             self.input_edit.setEnabled(True)
             self.btn_run.setEnabled(True)
         else:
-            self._db_path = None
+            self._chat_db = None
             self._project_loaded = False
             self._no_project_hint.setVisible(True)
             self.input_edit.setEnabled(False)
@@ -708,71 +469,20 @@ class AgentPanel(QWidget):
         for msg in self._msg_widgets:
             msg.deleteLater()
         self._msg_widgets.clear()
-        if self._db_path:
+        if self._chat_db:
             self.load_history()
-
-    # ── 聊天记录持久化 (SQLite) ──
-
-    def _get_db(self) -> sqlite3.Connection:
-        # M-07 修复：缓存数据库连接，避免频繁打开关闭
-        if hasattr(self, '_db_conn') and self._db_conn is not None:
-            try:
-                # 测试连接是否有效
-                self._db_conn.execute("SELECT 1")
-                return self._db_conn
-            except sqlite3.Error:
-                # 连接已失效，重新创建
-                try:
-                    self._db_conn.close()
-                except Exception:
-                    pass
-                self._db_conn = None
-
-        if not self._db_path:
-            raise RuntimeError("未设置项目数据库路径")
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db_conn = sqlite3.connect(str(self._db_path))
-        self._db_conn.execute("""CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""")
-        self._db_conn.commit()
-        return self._db_conn
 
     def save_history(self):
         """将当前所有聊天记录写入 SQLite（全量覆盖当前项目）。"""
-        if not self._db_path:
+        if not self._chat_db:
             return
-        db = self._get_db()
-        try:
-            db.execute("DELETE FROM messages")
-            rows = []
-            for agent_name, messages in self._chat_history.items():
-                for m in messages:
-                    rows.append((agent_name, m["type"], m["text"]))
-            db.executemany("INSERT INTO messages (agent, role, content) VALUES (?, ?, ?)", rows)
-            db.commit()
-        finally:
-            db.close()
+        self._chat_db.save(self._chat_history)
 
     def load_history(self):
         """从 SQLite 加载当前项目的聊天记录。"""
-        if not self._db_path or not self._db_path.exists():
+        if not self._chat_db:
             return
-        db = self._get_db()
-        try:
-            self._chat_history = {}
-            for agent, role, content in db.execute(
-                    "SELECT agent, role, content FROM messages ORDER BY id"):
-                if agent not in self._chat_history:
-                    self._chat_history[agent] = []
-                self._chat_history[agent].append(
-                    {"type": role, "text": content, "agent_name": agent})
-        finally:
-            db.close()
+        self._chat_history = self._chat_db.load()
 
     # ── 工作状态 ──
 

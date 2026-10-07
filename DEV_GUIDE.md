@@ -62,9 +62,18 @@ novel-writer/
 │   │   ├── agents/
 │   │   │   ├── __init__.py         # load_agents() / save_agents()
 │   │   │   └── base.py             # BaseAgent + AgentConfig
-│   │   ├── project_io.py           # 项目目录 IO
+│   │   ├── project_io.py           # 项目目录 IO（含 find_chapter_file）
+│   │   ├── app_config.py           # 应用路径常量 + 用户配置读写
+│   │   ├── chat_history.py         # 聊天记录持久化（项目级 SQLite）
 │   │   ├── world_state.py          # 大世界状态管理
-│   │   ├── workflow.py             # 工作流引擎
+│   │   ├── workflow/               # 工作流引擎（包）
+│   │   │   ├── constants.py        # 技能名与步骤 id 分组
+│   │   │   ├── definition.py       # WorkflowStep/Def、内置模板、build_workflow
+│   │   │   ├── context.py          # 分层上下文组装与压缩
+│   │   │   ├── prompts.py          # 节奏控制/角色锚定/内置步骤提示词
+│   │   │   ├── builtin_steps.py    # 特殊步骤处理器注册表
+│   │   │   ├── sediment.py         # 写后沉淀（记忆/伏笔/追读力）
+│   │   │   └── runner.py           # WorkflowRunner 执行器
 │   │   ├── quality_checker.py      # 质量检查模块
 │   │   ├── exporter.py             # 导出功能（TXT/EPUB/PDF）
 │   │   ├── reading_power.py        # 追读力系统
@@ -80,15 +89,21 @@ novel-writer/
 │   ├── assets/                     # 图标资源（icon.svg, status_icon.png）
 │   └── ui/
 │       ├── styles.py               # 4 套主题（深夜墨/晨雾白/远山蓝/苍山绿）
-│       ├── main_window.py          # 主窗口（三栏布局）
+│       ├── main_window.py          # 主窗口（三栏布局，纯 UI 编排）
+│       ├── workers.py              # 后台线程（AgentWorker / TestConnectionWorker）
+│       ├── project_dialogs.py      # 打开项目 / 工作流模式对话框
+│       ├── appearance_dialog.py    # 外观设置（含 ColorPicker）
+│       ├── model_dialog.py         # 模型设置
+│       ├── agent_dialog.py         # 智能体管理
 │       ├── sidebar.py              # 侧边栏
 │       ├── editor_panel.py         # 编辑区（正文 + 8个规划文档标签页）
 │       ├── agent_panel.py          # 智能体面板（办公室+工作流+对话）
+│       ├── chat_rendering.py       # 聊天 Markdown 渲染 + 颜色池
+│       ├── chat_widgets.py         # 消息气泡 / 输入框控件
 │       ├── office_scene.py         # 办公室场景（QPainter + Agent 动画）
 │       ├── workflow_bar.py         # 工作流迷你进度条
 │       ├── workflow_panel.py       # WorkflowThread（后台执行）
-│       ├── agent_animation.py      # Agent 指示器动画
-│       └── settings_dialog.py      # 设置对话框（外观/模型/智能体）
+│       └── agent_animation.py      # Agent 指示器动画
 ```
 
 ## 架构设计
@@ -192,7 +207,7 @@ ws.build_context_text()                     # 生成文本摘要，注入 LLM �
 
 配置集中在 `config/agents.json`，每个 Agent 可配独立模型。Agent 的 `skills` 字段用于工作流技能匹配。
 
-### 工作流引擎 (`core/workflow.py`)
+### 工作流引擎 (`core/workflow/`)
 
 ```python
 class WorkflowMode(Enum):
@@ -204,13 +219,16 @@ class WorkflowMode(Enum):
 
 class WorkflowRunner:
     async def run(workflow, progress)         # 执行完整工作流
-    async def run_single_step(step_id, n)     # 执行单个步骤
     def find_agent(skill)                     # 技能匹配
-    def _build_pacing_context(n, total)       # 节奏控制上下文
 
 def build_workflow(mode, project_info, start, end) -> WorkflowDef:
     """根据模式构建工作流定义。"""
+
+BUILTIN_STEP_HANDLERS  # 内置步骤注册表（toc/fix_titles/world_state_update/chapter_summary/quality_check）
 ```
+
+- 特殊步骤（toc、fix_titles、world_state_update、chapter_summary、quality_check）通过 `builtin_steps.BUILTIN_STEP_HANDLERS` 注册表分发，不走标准 LLM 步骤路径
+- 上下文按 `ContextTier`（GLOBAL/WORLD/NARRATIVE/WORKING）分层组装，超限时按 RAG→旧章节→规划文档→推演→概要的优先级压缩
 
 - 章节步骤自动从响应提取标题生成文件名
 - 已有章节文件会被复用（覆盖写入），不重复创建

@@ -73,53 +73,18 @@ def generate_toc(project_dir: Path) -> str:
     return toc_text
 
 
-def fix_chapter_titles(project_dir: Path) -> list[str]:
-    """校准章节标题：用文件名中的标题修正正文第一行的 heading。
-
-    Returns:
-        修复日志列表，每项描述一次修改
-    """
-    chapters = scan_chapters(project_dir)
-    logs = []
-
-    for ch in chapters:
-        content = read_md(ch["content_path"])
-        if not content.strip():
+def find_chapter_file(project_dir: Path, n: int) -> str | None:
+    """查找第 n 章的已有文件名，找到则返回文件名（不含目录）。"""
+    chapters_dir = project_dir / CHAPTERS_DIR
+    if not chapters_dir.exists():
+        return None
+    for f in chapters_dir.iterdir():
+        if not f.is_file():
             continue
-
-        filename_title = ch["title"]
-        lines = content.split("\n")
-
-        # 找到第一个 heading 行
-        heading_idx = -1
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                heading_idx = i
-                break
-
-        if heading_idx >= 0:
-            import re
-            m = re.match(r"^#{1,3}\s+(.+)$", lines[heading_idx].strip())
-            if m:
-                content_title = m.group(1).strip()
-                if content_title != filename_title:
-                    heading_level = len(lines[heading_idx].strip()) - len(lines[heading_idx].strip().lstrip("#"))
-                    lines[heading_idx] = f"{'#' * heading_level} {filename_title}"
-                    new_content = "\n".join(lines)
-                    write_md(ch["content_path"], new_content)
-                    logs.append(f"第{ch['number']}章: 「{content_title}」→「{filename_title}」")
-            else:
-                lines[heading_idx] = f"# {filename_title}"
-                new_content = "\n".join(lines)
-                write_md(ch["content_path"], new_content)
-                logs.append(f"第{ch['number']}章: 补充标题「{filename_title}」")
-        else:
-            new_content = f"# {filename_title}\n\n{content}"
-            write_md(ch["content_path"], new_content)
-            logs.append(f"第{ch['number']}章: 新增标题「{filename_title}」")
-
-    return logs
+        m = _CHAPTER_RE.match(f.name)
+        if m and int(m.group(1)) == n:
+            return f.name
+    return None
 
 
 def rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> str:

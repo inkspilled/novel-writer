@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from pathlib import Path
+import shutil
 from functools import partial
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter, QInputDialog,
-    QMessageBox, QDialog, QVBoxLayout, QListWidget, QListWidgetItem,
-    QPushButton, QHBoxLayout, QLabel, QComboBox, QSpinBox, QGroupBox,
+    QMessageBox, QDialog, QLabel,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 
 from .sidebar import Sidebar
 from .editor_panel import EditorPanel
 from .agent_panel import AgentPanel
+from .workers import AgentWorker
 from .workflow_panel import WorkflowThread
-from .settings_dialog import AppearanceDialog, ModelDialog, AgentDialog
+from .project_dialogs import OpenProjectDialog, WorkflowModeDialog
+from .appearance_dialog import AppearanceDialog
+from .model_dialog import ModelDialog
+from .agent_dialog import AgentDialog
 from .styles import build_style
 from ..locales import t, set_language
 from ..models.project import Project
@@ -25,78 +28,18 @@ from ..core.llm import LLMClient
 from ..core.agents import load_agents
 from ..core.agents.base import BaseAgent, AgentConfig
 from ..core import project_io
-from ..core.workflow import WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, WorkflowMode, build_workflow
+from ..core.app_config import (
+    ASSETS_DIR, LOGO_PATH, PROJECTS_DIR,
+    load_config as _load_app_config,
+    save_config as _save_app_config,
+)
+from ..core.workflow import (
+    WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, WorkflowMode, build_workflow,
+    PLANNING_STEP_IDS, build_character_constraint,
+)
 from ..core.logger import get_logger
 
 logger = get_logger(__name__)
-
-DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
-CONFIG_PATH = DATA_DIR / "config.json"
-PROJECTS_DIR = DATA_DIR / "projects"
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-
-
-class AgentWorker(QThread):
-    """后台线程执行 Agent 调用，支持流式输出。"""
-    chunk_received = Signal(str)  # 流式文本块
-    finished = Signal(str)  # 完成时的完整响应
-    error = Signal(str)
-
-    def __init__(self, agent: BaseAgent, user_input: str, context: str = ""):
-        super().__init__()
-        self.agent = agent
-        self.user_input = user_input
-        self.context = context
-        self._cancelled = False
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._task: asyncio.Task | None = None
-
-    def cancel(self):
-        """请求取消进行中的任务。"""
-        self._cancelled = True
-        if self._loop and self._task and not self._task.done():
-            self._loop.call_soon_threadsafe(self._task.cancel)
-
-    def run(self):
-        logger.debug("AgentWorker.run: agent=%r, input=%r", self.agent.name, self.user_input[:80])
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            full_response = ""
-            async def collect_stream():
-                nonlocal full_response
-                async for chunk in self.agent.stream_run(self.user_input, self.context):
-                    if self._cancelled:
-                        break
-                    full_response += chunk
-                    # C-09 修复：信号发射异常记录日志，不静默吞掉
-                    try:
-                        self.chunk_received.emit(chunk)
-                    except RuntimeError as e:
-                        # Widget 可能已销毁，记录并退出
-                        logger.debug("Signal emit failed (widget destroyed): %s", e)
-                        break
-                return full_response
-
-            self._task = self._loop.create_task(collect_stream())
-            self._loop.run_until_complete(self._task)
-            if not self._cancelled:
-                self.finished.emit(full_response)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            if not self._cancelled:
-                logger.error("AgentWorker error: %s", e)
-                try:
-                    self.error.emit(str(e)[:500])
-                except RuntimeError:
-                    pass
-        finally:
-            # 不关闭 LLM 客户端 — 它是共享的，由 MainWindow 管理生命周期
-            self._loop.close()
-            self._loop = None
-            self._task = None
 
 
 class MainWindow(QMainWindow):
@@ -113,18 +56,17 @@ class MainWindow(QMainWindow):
             geo.moveCenter(screen.availableGeometry().center())
             self.move(geo.topLeft())
 
-        self.config = self._load_config()
+        self.config = _load_app_config()
         set_language(self.config.get("language", "zh"))
         self.setWindowTitle(t("window_title"))
 
         # 窗口图标（标题栏 + macOS dock）
-        logo = PROJECT_ROOT / "logo.png"
-        if logo.exists():
-            self.setWindowIcon(QIcon(str(logo)))
+        if LOGO_PATH.exists():
+            self.setWindowIcon(QIcon(str(LOGO_PATH)))
         self.project = Project()
         self.agents: dict[str, BaseAgent] = {}
-        self.llm = None
-        self._worker = None
+        self.llm: LLMClient | None = None
+        self._worker: AgentWorker | None = None
         self._old_workers: list[AgentWorker] = []
 
         self._setup_ui()
@@ -134,6 +76,8 @@ class MainWindow(QMainWindow):
         self._init_llm()
         self._init_agents()
         self._setup_workflow()
+
+    # ── UI 构建 ──
 
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -180,13 +124,13 @@ class MainWindow(QMainWindow):
         self._file_menu.addAction(self._save_action)
         self._export_menu = self._file_menu.addMenu(t("menu_export"))
         self._export_txt_action = QAction(t("menu_export_txt"), self)
-        self._export_txt_action.triggered.connect(self._export_txt)
+        self._export_txt_action.triggered.connect(partial(self._export, "txt"))
         self._export_menu.addAction(self._export_txt_action)
         self._export_epub_action = QAction(t("menu_export_epub"), self)
-        self._export_epub_action.triggered.connect(self._export_epub)
+        self._export_epub_action.triggered.connect(partial(self._export, "epub"))
         self._export_menu.addAction(self._export_epub_action)
         self._export_pdf_action = QAction(t("menu_export_pdf"), self)
-        self._export_pdf_action.triggered.connect(self._export_pdf)
+        self._export_pdf_action.triggered.connect(partial(self._export, "pdf"))
         self._export_menu.addAction(self._export_pdf_action)
         self._settings_action = QAction("项目设置", self)
         self._settings_action.setShortcut(QKeySequence("Ctrl+Shift+,"))
@@ -239,14 +183,74 @@ class MainWindow(QMainWindow):
             label.setContentsMargins(8, 0, 0, 0)
             self.statusBar().addPermanentWidget(label)
 
-    def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
-            return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-        return {}
+    def _refresh_ui_texts(self):
+        """切换语言后刷新所有 UI 文本。"""
+        lang = self.config.get("language", "zh")
+        set_language(lang)
+        self.setWindowTitle(t("window_title"))
+        # 菜单
+        self._file_menu.setTitle(t("menu_file"))
+        self._new_action.setText(t("menu_new_project"))
+        self._open_action.setText(t("menu_open_project"))
+        self._save_action.setText(t("menu_save_project"))
+        self._exit_action.setText(t("menu_exit"))
+        self._model_agent_menu.setTitle(t("menu_model_agent"))
+        self._model_action.setText(t("menu_model_open"))
+        self._manage_action.setText(t("menu_agent_manage"))
+        self._about_menu.setTitle(t("menu_about"))
+        self._appearance_action.setText(t("menu_appearance_open"))
+        self._about_action.setText(t("menu_about_app"))
+        self._workflow_menu.setTitle(t("workflow_menu"))
+        self._workflow_open_action.setText(t("workflow_menu_open"))
+        self._workflow_default_action.setText(t("workflow_menu_default"))
+        # 侧边栏
+        self.sidebar.retranslate()
+        # 编辑区
+        self.editor.retranslate()
+        # Agent 面板
+        self.agent_panel.retranslate()
+
+    def _apply_theme(self, theme_name: str = None, preview_config: dict = None):
+        theme_name = theme_name or self.config.get("theme", "dark")
+        self.config["theme"] = theme_name
+        cfg = preview_config or self.config
+        self.setStyleSheet(build_style(theme_name, cfg))
+        self.agent_panel.set_config(cfg)
+        self.agent_panel.refresh_theme()
+
+    def _show_toast(self, text: str, duration: int = 2000, error: bool = False):
+        """显示一个自动消失的提示框。"""
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QLabel as _QLabel
+        if error:
+            style = "QLabel { background: #c0392b; color: white; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; }"
+        else:
+            style = "QLabel { background: palette(highlight); color: palette(highlighted-text); padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; }"
+        toast = _QLabel(text, self)
+        toast.setStyleSheet(style)
+        toast.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.ToolTip)
+        toast.adjustSize()
+        x = self.x() + (self.width() - toast.width()) // 2
+        y = self.y() + self.height() - 100
+        toast.move(x, y)
+        toast.show()
+        QTimer.singleShot(duration, toast.deleteLater)
+
+    def _show_about(self):
+        """显示关于对话框。"""
+        QMessageBox.about(
+            self,
+            t("menu_about_app"),
+            f"<h2 style='margin-bottom:8px;'>Novel Writer</h2>"
+            f"<p>{t('about_version')}</p>"
+            f"<p>{t('about_desc')}</p>"
+            f"<p style='color:gray;font-size:12px;'>PySide6 · Python {'.'.join(map(str, __import__('sys').version_info[:3]))}</p>",
+        )
+
+    # ── 配置与 LLM/Agent 初始化 ──
 
     def _save_config(self):
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8-sig")
+        _save_app_config(self.config)
 
     def _create_llm(self, provider: dict):
         """根据供应商配置创建 LLM 实例。统一走 OpenAI 兼容协议。"""
@@ -307,6 +311,8 @@ class MainWindow(QMainWindow):
             )
             self.agents[name] = BaseAgent(agent_config, llm)
 
+    # ── 项目管理 ──
+
     def _new_project(self):
         # 先保存当前项目
         if self.project.title:
@@ -328,7 +334,6 @@ class MainWindow(QMainWindow):
         # 复制封面到项目目录
         cover_rel = ""
         if data["cover"]:
-            import shutil
             src = Path(data["cover"])
             ext = src.suffix or ".png"
             dst = project_dir / f"cover{ext}"
@@ -383,58 +388,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, t("dialog_prompt"), t("msg_no_projects_saved"))
             return
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle(t("dialog_open_project"))
-        dialog.setMinimumSize(400, 360)
-        layout = QVBoxLayout(dialog)
-
-        layout.addWidget(QLabel(t("dialog_select_project")))
-        project_list = QListWidget()
-        for info in projects_info:
-            item = QListWidgetItem(
-                f"{info['title']}  ({info['chapter_count']} {t('sidebar_chapters')} · {info['total_words']:,} {t('editor_words')})")
-            item.setData(Qt.ItemDataRole.UserRole, str(info["dir"]))
-            project_list.addItem(item)
-        if project_list.count() > 0:
-            project_list.setCurrentRow(0)
-        layout.addWidget(project_list)
-
-        btn_row = QHBoxLayout()
-        btn_del = QPushButton(t("settings_btn_delete"))
-        btn_del.setObjectName("danger")
-        btn_row.addWidget(btn_del)
-        btn_row.addStretch()
-        btn_open = QPushButton(t("settings_btn_open"))
-        btn_open.setObjectName("primary")
-        btn_cancel = QPushButton(t("settings_cancel"))
-        btn_row.addWidget(btn_open)
-        btn_row.addWidget(btn_cancel)
-        layout.addLayout(btn_row)
-
-        def do_open():
-            item = project_list.currentItem()
-            if item:
-                path = Path(item.data(Qt.ItemDataRole.UserRole))
-                self._load_project_from_dir(path)
-                dialog.accept()
-
-        def do_delete():
-            item = project_list.currentItem()
-            if not item:
-                return
-            path = Path(item.data(Qt.ItemDataRole.UserRole))
-            title = item.text().split("  (")[0]
-            if QMessageBox.question(dialog, t("dialog_confirm_delete"), t("msg_delete_project", title)) == QMessageBox.StandardButton.Yes:
-                project_io.delete_project(path)
-                row = project_list.row(item)
-                project_list.takeItem(row)
-
-        btn_open.clicked.connect(do_open)
-        btn_del.clicked.connect(do_delete)
-        btn_cancel.clicked.connect(dialog.reject)
-        project_list.itemDoubleClicked.connect(lambda: do_open())
-
+        dialog = OpenProjectDialog(projects_info, self)
         dialog.exec()
+        if dialog.selected_dir:
+            self._load_project_from_dir(dialog.selected_dir)
 
     def _load_project_from_dir(self, path: Path):
         """从项目目录加载项目。"""
@@ -486,8 +443,71 @@ class MainWindow(QMainWindow):
                 len(self.project.chapters),
             )
 
+    def _save_project(self):
+        if not self.project.title:
+            return
+        # 如果还没有项目目录（兼容旧流程），创建一个
+        if not self.project.project_dir:
+            safe_name = self.project.title.replace(" ", "_").replace("/", "_")
+            project_dir = PROJECTS_DIR / safe_name
+            project_dir.mkdir(parents=True, exist_ok=True)
+            self.project.set_project_dir(project_dir)
+        try:
+            self.project.save()
+            self._show_toast(t("status_saved", self.project.title))
+        except Exception as e:
+            self._show_toast(f"保存失败: {e}", error=True)
+            logger.error("项目保存失败: %s", e)
+
+    def _on_planning_save(self, doc_name: str):
+        """保存规划文档。"""
+        if not self.project.project_dir:
+            return
+        from .editor_panel import PLANNING_DOCS
+        for label, rel_path in PLANNING_DOCS:
+            if label == doc_name:
+                content = self.editor.get_planning_content(doc_name)
+                fpath = self.project.project_dir / rel_path
+                try:
+                    project_io.write_md(fpath, content)
+                    self._show_toast(f"已保存: {doc_name}")
+                    logger.info("规划文档已保存: %s", fpath)
+                except Exception as e:
+                    self._show_toast(f"保存失败: {e}", error=True)
+                    logger.error("规划文档保存失败: %s - %s", fpath, e)
+                return
+
+    def _refresh_chapters(self):
+        """从磁盘重新加载章节列表到侧边栏。"""
+        if not self.project.project_dir:
+            return
+        # 重新扫描章节文件
+        scanned = project_io.scan_chapters(self.project.project_dir)
+        # 更新 Project 对象的 chapters 列表
+        existing = {ch.number: ch for ch in self.project.chapters}
+        for item in scanned:
+            if item["number"] not in existing:
+                from ..models.chapter import Chapter
+                ch = Chapter(
+                    number=item["number"],
+                    title=item["title"],
+                    _content_path=str(item["content_path"]),
+                    _outline_path=str(item["outline_path"]) if item["outline_path"] else "",
+                )
+                self.project.chapters.append(ch)
+        self.project.chapters.sort(key=lambda c: c.number)
+        # 刷新侧边栏
+        self.sidebar.load_chapters(self.project.chapters)
+        self.sidebar.update_stats(
+            self.project.total_words(),
+            self.project.target_words,
+            len(self.project.chapters),
+        )
+
+    # ── Agent 对话 ──
+
     def _on_agent_run(self, agent_name: str, user_input: str):
-        agent = self._agents.get(agent_name)
+        agent = self.agents.get(agent_name)
         logger.debug("_on_agent_run: agent=%r, has_agent=%s, input=%r", agent_name, agent is not None, user_input[:80])
         if not agent:
             QMessageBox.warning(self, t("dialog_error"), t("msg_agent_not_init", agent_name))
@@ -497,7 +517,6 @@ class MainWindow(QMainWindow):
         logger.debug("context_len=%d, context_preview=%r", len(context), context[:200])
         self.agent_panel.set_working(True, agent_name)
         self._worker = AgentWorker(agent, user_input, context)
-        # C-07 修复：使用 partial 替代 lambda，避免内存泄漏
         self._worker.chunk_received.connect(partial(self._on_agent_stream, agent_name))
         self._worker.finished.connect(partial(self._on_agent_finished, agent_name))
         self._worker.error.connect(self._on_agent_error)
@@ -508,7 +527,6 @@ class MainWindow(QMainWindow):
         if self._worker is not None:
             if self._worker.isRunning():
                 self._worker.cancel()
-                # C-08 修复：移除 terminate()，只用 wait() 等待安全退出
                 self._worker.wait(5000)
             self._old_workers.append(self._worker)
             self._worker = None
@@ -546,8 +564,7 @@ class MainWindow(QMainWindow):
                                 char_content = content
                 # 角色约束
                 if char_content:
-                    from ..core.workflow import _build_character_constraint
-                    constraint = _build_character_constraint(char_content)
+                    constraint = build_character_constraint(char_content)
                     if constraint:
                         parts.append(constraint)
 
@@ -589,6 +606,8 @@ class MainWindow(QMainWindow):
             self.agent_panel.append_stream_chunk(chunk, agent_name)
         except Exception:
             pass
+
+    # ── 设置对话框 ──
 
     def _open_agent_manage(self):
         """打开 Agent 管理对话框。"""
@@ -639,7 +658,6 @@ class MainWindow(QMainWindow):
             self.project.synopsis = data["synopsis"]
             # 更新封面
             if data["cover"] and self.project.project_dir:
-                import shutil
                 src = Path(data["cover"])
                 ext = src.suffix or ".png"
                 dst = self.project.project_dir / f"cover{ext}"
@@ -660,149 +678,33 @@ class MainWindow(QMainWindow):
             self._refresh_ui_texts()
             self.statusBar().showMessage(t("status_settings_saved"))
 
-    def _show_about(self):
-        """显示关于对话框。"""
-        QMessageBox.about(
-            self,
-            t("menu_about_app"),
-            f"<h2 style='margin-bottom:8px;'>Novel Writer</h2>"
-            f"<p>{t('about_version')}</p>"
-            f"<p>{t('about_desc')}</p>"
-            f"<p style='color:gray;font-size:12px;'>PySide6 · Python {'.'.join(map(str, __import__('sys').version_info[:3]))}</p>",
-        )
+    # ── 导出 ──
 
-    def _refresh_ui_texts(self):
-        """切换语言后刷新所有 UI 文本。"""
-        lang = self.config.get("language", "zh")
-        set_language(lang)
-        self.setWindowTitle(t("window_title"))
-        # 菜单
-        self._file_menu.setTitle(t("menu_file"))
-        self._new_action.setText(t("menu_new_project"))
-        self._open_action.setText(t("menu_open_project"))
-        self._save_action.setText(t("menu_save_project"))
-        self._exit_action.setText(t("menu_exit"))
-        self._model_agent_menu.setTitle(t("menu_model_agent"))
-        self._model_action.setText(t("menu_model_open"))
-        self._manage_action.setText(t("menu_agent_manage"))
-        self._about_menu.setTitle(t("menu_about"))
-        self._appearance_action.setText(t("menu_appearance_open"))
-        self._about_action.setText(t("menu_about_app"))
-        self._workflow_menu.setTitle(t("workflow_menu"))
-        self._workflow_open_action.setText(t("workflow_menu_open"))
-        self._workflow_default_action.setText(t("workflow_menu_default"))
-        # 侧边栏
-        self.sidebar.retranslate()
-        # 编辑区
-        self.editor.retranslate()
-        # Agent 面板
-        self.agent_panel.retranslate()
-
-    def _apply_theme(self, theme_name: str = None, preview_config: dict = None):
-        theme_name = theme_name or self.config.get("theme", "dark")
-        self.config["theme"] = theme_name
-        cfg = preview_config or self.config
-        self.setStyleSheet(build_style(theme_name, cfg))
-        self.agent_panel.set_config(cfg)
-        self.agent_panel.refresh_theme()
-
-    def _save_project(self):
-        if not self.project.title:
-            return
-        # 如果还没有项目目录（兼容旧流程），创建一个
-        if not self.project.project_dir:
-            safe_name = self.project.title.replace(" ", "_").replace("/", "_")
-            project_dir = PROJECTS_DIR / safe_name
-            project_dir.mkdir(parents=True, exist_ok=True)
-            self.project.set_project_dir(project_dir)
-        try:
-            self.project.save()
-            self._show_toast(t("status_saved", self.project.title))
-        except Exception as e:
-            self._show_toast(f"保存失败: {e}", error=True)
-            logger.error("项目保存失败: %s", e)
-
-    def _on_planning_save(self, doc_name: str):
-        """保存规划文档。"""
-        if not self.project.project_dir:
-            return
-        from ..ui.editor_panel import PLANNING_DOCS
-        for label, rel_path in PLANNING_DOCS:
-            if label == doc_name:
-                content = self.editor.get_planning_content(doc_name)
-                fpath = self.project.project_dir / rel_path
-                try:
-                    project_io.write_md(fpath, content)
-                    self._show_toast(f"已保存: {doc_name}")
-                    logger.info("规划文档已保存: %s", fpath)
-                except Exception as e:
-                    self._show_toast(f"保存失败: {e}", error=True)
-                    logger.error("规划文档保存失败: %s - %s", fpath, e)
-                return
-
-    def _show_toast(self, text: str, duration: int = 2000, error: bool = False):
-        """显示一个自动消失的提示框。"""
-        from PySide6.QtCore import QTimer
-        from PySide6.QtWidgets import QLabel as _QLabel
-        if error:
-            style = "QLabel { background: #c0392b; color: white; padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; }"
-        else:
-            style = "QLabel { background: palette(highlight); color: palette(highlighted-text); padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600; }"
-        toast = _QLabel(text, self)
-        toast.setStyleSheet(style)
-        toast.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.ToolTip)
-        toast.adjustSize()
-        x = self.x() + (self.width() - toast.width()) // 2
-        y = self.y() + self.height() - 100
-        toast.move(x, y)
-        toast.show()
-        QTimer.singleShot(duration, toast.deleteLater)
-
-    def _export_txt(self):
-        """导出为 TXT 格式。"""
+    def _export(self, fmt: str):
+        """导出当前项目（txt/epub/pdf）。"""
         if not self.project.project_dir:
             QMessageBox.warning(self, t("menu_export"), t("export_no_project"))
             return
         try:
             from ..core.exporter import Exporter
             exporter = Exporter(self.project.project_dir)
-            output_path = exporter.export_txt()
-            QMessageBox.information(self, t("export_success"), f"{output_path}")
-        except Exception as e:
-            QMessageBox.critical(self, t("export_failed"), str(e))
-            logger.error("TXT 导出失败: %s", e)
-
-    def _export_epub(self):
-        """导出为 EPUB 格式。"""
-        if not self.project.project_dir:
-            QMessageBox.warning(self, t("menu_export"), t("export_no_project"))
-            return
-        try:
-            from ..core.exporter import Exporter
-            exporter = Exporter(self.project.project_dir)
-            output_path = exporter.export_epub()
+            exporters = {
+                "txt": exporter.export_txt,
+                "epub": exporter.export_epub,
+                "pdf": exporter.export_pdf,
+            }
+            output_path = exporters[fmt]()
             QMessageBox.information(self, t("export_success"), f"{output_path}")
         except ImportError as e:
-            QMessageBox.warning(self, t("export_missing_dep"), "pip install ebooklib")
+            deps = {"epub": "ebooklib", "pdf": "reportlab"}
+            if fmt in deps:
+                QMessageBox.warning(self, t("export_missing_dep"), f"pip install {deps[fmt]}")
+            else:
+                QMessageBox.critical(self, t("export_failed"), str(e))
+                logger.error("%s 导出失败: %s", fmt.upper(), e)
         except Exception as e:
             QMessageBox.critical(self, t("export_failed"), str(e))
-            logger.error("EPUB 导出失败: %s", e)
-
-    def _export_pdf(self):
-        """导出为 PDF 格式。"""
-        if not self.project.project_dir:
-            QMessageBox.warning(self, t("menu_export"), t("export_no_project"))
-            return
-        try:
-            from ..core.exporter import Exporter
-            exporter = Exporter(self.project.project_dir)
-            output_path = exporter.export_pdf()
-            QMessageBox.information(self, t("export_success"), f"{output_path}")
-        except ImportError as e:
-            QMessageBox.warning(self, t("export_missing_dep"), "pip install reportlab")
-        except Exception as e:
-            QMessageBox.critical(self, t("export_failed"), str(e))
-            logger.error("PDF 导出失败: %s", e)
+            logger.error("%s 导出失败: %s", fmt.upper(), e)
 
     # ── 工作流 ──
 
@@ -811,10 +713,24 @@ class MainWindow(QMainWindow):
         bar = self.agent_panel.workflow_bar
         bar.start_requested.connect(self._workflow_start)
         bar.stop_requested.connect(self._workflow_stop)
-        self._wf_runner = None
-        self._wf_thread = None
-        self._wf_def = None
-        self._wf_progress = {}
+        self._wf_runner: WorkflowRunner | None = None
+        self._wf_thread: WorkflowThread | None = None
+        self._wf_def: WorkflowDef | None = None
+        self._wf_progress: dict = {}
+
+    def _default_wf_data(self) -> dict:
+        """默认工作流定义（带当前项目信息）。"""
+        return {
+            "name": DEFAULT_WORKFLOW["name"],
+            "description": DEFAULT_WORKFLOW["description"],
+            "steps": DEFAULT_WORKFLOW["steps"],
+            "project": {
+                "title": self.project.title,
+                "genre": self.project.genre,
+                "style": self.project.style,
+                "target_chapters": 20,
+            },
+        }
 
     def _load_workflow_for_project(self):
         """为当前项目加载工作流定义。"""
@@ -826,112 +742,12 @@ class MainWindow(QMainWindow):
         if wf_data:
             self._wf_def = WorkflowDef.from_dict(wf_data)
         else:
-            wf_data = DEFAULT_WORKFLOW.copy()
-            wf_data["project"] = {
-                "title": self.project.title,
-                "genre": self.project.genre,
-                "style": self.project.style,
-                "target_chapters": 20,
-            }
-            self._wf_def = WorkflowDef.from_dict(wf_data)
+            self._wf_def = WorkflowDef.from_dict(self._default_wf_data())
         self.agent_panel.workflow_bar.set_has_workflow(True)
         # 计算已完成百分比
         done = sum(1 for v in self._wf_progress.values() if v == "done")
         total = len(self._wf_def.steps) if self._wf_def else 1
         self.agent_panel.workflow_bar.set_progress(int(done / total * 100))
-
-    def _show_mode_dialog(self) -> tuple[WorkflowMode, int, int] | None:
-        """显示工作流模式选择对话框，返回 (mode, start_ch, end_ch) 或 None。"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle(t("workflow_title"))
-        dialog.setMinimumWidth(380)
-        layout = QVBoxLayout(dialog)
-        layout.setSpacing(12)
-        layout.setContentsMargins(20, 20, 20, 20)
-
-        # 模式选择
-        mode_group = QGroupBox("工作流模式")
-        mode_layout = QVBoxLayout(mode_group)
-        mode_combo = QComboBox()
-        mode_combo.addItem("📝 新书立意 — 只生成规划文档", WorkflowMode.NEW_BOOK_PLANNING)
-        mode_combo.addItem("📖 新书全流程 — 从立意到审校", WorkflowMode.NEW_BOOK)
-        mode_combo.addItem("✍️ 续写 — 从已有章节继续", WorkflowMode.CONTINUE)
-        mode_combo.addItem("🔍 查漏补缺 — 检查并补写缺失章节", WorkflowMode.FILL_GAPS)
-        mode_combo.addItem("✅ 校验 — 审核+校对已有章节", WorkflowMode.VALIDATE)
-        mode_layout.addWidget(mode_combo)
-        layout.addWidget(mode_group)
-
-        # 章节范围
-        chapter_group = QGroupBox("章节范围")
-        chapter_layout = QHBoxLayout(chapter_group)
-
-        chapter_layout.addWidget(QLabel("从第"))
-        start_spin = QSpinBox()
-        start_spin.setRange(1, 99999)
-        start_spin.setValue(1)
-        chapter_layout.addWidget(start_spin)
-        chapter_layout.addWidget(QLabel("章"))
-
-        chapter_layout.addWidget(QLabel("到第"))
-        end_spin = QSpinBox()
-        end_spin.setRange(1, 99999)
-        end_spin.setValue(self.project.target_chapters or 100)
-        chapter_layout.addWidget(end_spin)
-        chapter_layout.addWidget(QLabel("章"))
-
-        layout.addWidget(chapter_group)
-
-        # 续写模式：自动检测起始章节
-        def on_mode_changed(idx):
-            mode = mode_combo.currentData()
-            if mode == WorkflowMode.CONTINUE:
-                # 扫描已有章节数，自动设置起始章节（锁死不可改）
-                chapters = project_io.scan_chapters(self.project.project_dir)
-                if chapters:
-                    last_num = max(c["number"] for c in chapters)
-                    start_spin.setValue(last_num + 1)
-                    end_spin.setValue(last_num + 20)
-                start_spin.setEnabled(False)  # 锁死起始章节
-                end_spin.setEnabled(True)
-                chapter_group.setTitle("续写范围")
-            elif mode == WorkflowMode.NEW_BOOK:
-                start_spin.setValue(1)
-                start_spin.setEnabled(False)
-                end_spin.setEnabled(True)
-                chapter_group.setTitle("目标章节数")
-            elif mode == WorkflowMode.NEW_BOOK_PLANNING:
-                chapter_group.setTitle("无需设置章节范围")
-                start_spin.setEnabled(False)
-                end_spin.setEnabled(False)
-            elif mode == WorkflowMode.FILL_GAPS:
-                start_spin.setEnabled(False)
-                end_spin.setEnabled(False)
-                chapter_group.setTitle("自动检测缺失章节")
-            elif mode == WorkflowMode.VALIDATE:
-                start_spin.setEnabled(False)
-                end_spin.setEnabled(False)
-                chapter_group.setTitle("校验全部章节")
-
-        mode_combo.currentIndexChanged.connect(on_mode_changed)
-        on_mode_changed(0)  # 初始化
-
-        # 按钮
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_cancel = QPushButton(t("settings_cancel"))
-        btn_cancel.clicked.connect(dialog.reject)
-        btn_row.addWidget(btn_cancel)
-        btn_ok = QPushButton(t("workflow_start"))
-        btn_ok.setObjectName("primary")
-        btn_ok.clicked.connect(dialog.accept)
-        btn_row.addWidget(btn_ok)
-        layout.addLayout(btn_row)
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-
-        mode = mode_combo.currentData()
-        return (mode, start_spin.value(), end_spin.value())
 
     def _workflow_start(self):
         """开始执行工作流 — 先弹出模式选择对话框。"""
@@ -942,11 +758,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_agents"))
             return
 
-        result = self._show_mode_dialog()
-        if not result:
+        dialog = WorkflowModeDialog(self.project.project_dir, self.project.target_chapters or 100, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-
-        mode, start_ch, end_ch = result
+        mode, start_ch, end_ch = dialog.get_result()
 
         # 保存目标章节数到项目配置
         if end_ch > 0:
@@ -992,7 +807,6 @@ class MainWindow(QMainWindow):
         )
 
         # 创建后台线程执行
-        from .workflow_panel import WorkflowThread
         self._wf_thread = WorkflowThread(
             self._wf_runner, self._wf_def, self._wf_progress
         )
@@ -1025,8 +839,7 @@ class MainWindow(QMainWindow):
         if step_id == "chapter":
             self._refresh_chapters()
         # 规划步骤完成后刷新规划文档编辑器
-        PLANNING_STEPS = {"ideation", "outline", "characters", "world", "timeline", "main_plot", "sub_plot", "foreshadow"}
-        if step_id in PLANNING_STEPS:
+        if step_id in PLANNING_STEP_IDS:
             self.editor.refresh_planning()
 
     def _on_wf_step_error(self, step_id: str, error: str):
@@ -1060,33 +873,6 @@ class MainWindow(QMainWindow):
         self._refresh_chapters()
         self.statusBar().showMessage(t("workflow_stopped"))
 
-    def _refresh_chapters(self):
-        """从磁盘重新加载章节列表到侧边栏。"""
-        if not self.project.project_dir:
-            return
-        # 重新扫描章节文件
-        scanned = project_io.scan_chapters(self.project.project_dir)
-        # 更新 Project 对象的 chapters 列表
-        existing = {ch.number: ch for ch in self.project.chapters}
-        for item in scanned:
-            if item["number"] not in existing:
-                from ..models.chapter import Chapter
-                ch = Chapter(
-                    number=item["number"],
-                    title=item["title"],
-                    _content_path=str(item["content_path"]),
-                    _outline_path=str(item["outline_path"]) if item["outline_path"] else "",
-                )
-                self.project.chapters.append(ch)
-        self.project.chapters.sort(key=lambda c: c.number)
-        # 刷新侧边栏
-        self.sidebar.load_chapters(self.project.chapters)
-        self.sidebar.update_stats(
-            self.project.total_words(),
-            self.project.target_words,
-            len(self.project.chapters),
-        )
-
     def _open_workflow_panel(self):
         """打开工作流面板（保留兼容，实际通过 workflow_bar 操作）。"""
         if not self.project.title:
@@ -1099,15 +885,8 @@ class MainWindow(QMainWindow):
         if not self.project.title:
             QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
             return
-        wf_data = DEFAULT_WORKFLOW.copy()
-        wf_data["project"] = {
-            "title": self.project.title,
-            "genre": self.project.genre,
-            "style": self.project.style,
-            "target_chapters": 20,
-        }
         project_io.save_workflow(self.project.project_dir, {
-            "workflow": wf_data,
+            "workflow": self._default_wf_data(),
             "progress": {},
         })
         self._load_workflow_for_project()
@@ -1115,7 +894,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._stop_worker()
-        # M-10 修复：使用单个事件循环关闭所有连接，避免阻塞
+        # 使用单个事件循环关闭所有连接，避免阻塞
         all_llms = [agent.llm for agent in self.agents.values()]
         if self.llm:
             all_llms.append(self.llm)
