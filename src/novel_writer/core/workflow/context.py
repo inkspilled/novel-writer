@@ -320,7 +320,14 @@ class ContextBuilder:
                         if content:
                             results.append((p, content))
         else:
-            p = self.project_dir / f.format(n=n, **self.project_info)
+            formatted = f.format(n=n, **self.project_info)
+            p = self.project_dir / formatted
+            if not p.exists():
+                # 章节文件可能以 {n}_标题.txt 命名，用 find_chapter_file 回退定位
+                if f.startswith("chapters/") and "{n}" in f:
+                    ch_name = project_io.find_chapter_file(self.project_dir, n)
+                    if ch_name:
+                        p = self.project_dir / "chapters" / ch_name
             if p.exists():
                 content = project_io.read_md(p)
                 if content:

@@ -242,12 +242,15 @@ class WorkflowRunner:
 
     def _resolve_output(self, step: WorkflowStep, project: dict, n: int, content: str) -> str:
         """确定步骤的输出路径。"""
-        if step.id == "chapter":
+        if step.id in ("chapter", "polish"):
+            # 正文写作和润色都定位到实际章节文件（{n}_标题.txt）
             existing = self._find_chapter_file(n)
             if existing:
                 return f"chapters/{existing}"
-            title = extract_chapter_title(content, n)
-            return f"chapters/{project_io.chapter_filename(n, title)}"
+            if step.id == "chapter":
+                title = extract_chapter_title(content, n)
+                return f"chapters/{project_io.chapter_filename(n, title)}"
+            return ""  # polish 没有已有章节时跳过
         if step.id == "inspiration":
             return f"inspiration/{project_io.inspiration_filename(n, '灵感')}"
         return step.output.format(n=n, **project)
@@ -276,6 +279,19 @@ class WorkflowRunner:
                              step.id, n, output, reason)
                 if self.on_error:
                     self.on_error(step.id, f"第{n}章内容校验失败: {reason}，跳过写入")
+                return False
+        elif step.id in ("proofread", "review") and not content.strip():
+            # 报告类步骤：空内容不写入，防止清空已有报告
+            logger.warning("%s 返回空内容，跳过写入 %s", step.id, output)
+            return False
+
+        # 润色保护：输出必须比原文更长或持平（润色不应大幅缩短），且不得偏离主题
+        if step.id == "polish" and out_path.exists():
+            original = project_io.read_md(out_path)
+            if original and len(content.strip()) < len(original.strip()) * 0.5:
+                logger.warning("润色输出过短（%d < 原文 50%%），跳过覆写", len(content))
+                if self.on_error:
+                    self.on_error(step.id, f"第{n}章润色输出过短，已跳过覆写")
                 return False
 
         # 章节文件写入前备份（保留原始备份，不覆盖已有 .bak）
