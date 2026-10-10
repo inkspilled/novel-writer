@@ -87,10 +87,6 @@ class TestConnectionWorker(QThread):
     def run(self):
         try:
             base_url = self.base_url.rstrip("/")
-            # 自动补 /v1（Ollama / llama.cpp 等本地服务可能只填根地址）
-            if not base_url.endswith("/v1"):
-                base_url += "/v1"
-
             from openai import OpenAI as _OpenAI
             client = _OpenAI(api_key=self.api_key or "test", base_url=base_url, timeout=15.0)
             resp = client.chat.completions.create(
@@ -124,9 +120,6 @@ class FetchModelsWorker(QThread):
     def run(self):
         try:
             base_url = self.base_url.rstrip("/")
-            if not base_url.endswith("/v1"):
-                base_url += "/v1"
-
             from openai import OpenAI as _OpenAI
             client = _OpenAI(api_key=self.api_key or "fetch", base_url=base_url, timeout=10.0)
             resp = client.models.list()

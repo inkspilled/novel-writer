@@ -260,9 +260,6 @@ class MainWindow(QMainWindow):
         base_url = provider.get("base_url", "").rstrip("/")
         if not base_url:
             base_url = "https://api.openai.com/v1"
-        # 自动补 /v1（Ollama / llama.cpp 等本地服务可能只填根地址）
-        if not base_url.endswith("/v1"):
-            base_url += "/v1"
         api_key = provider.get("api_key", "")
         return LLMClient(model=model, api_key=api_key, base_url=base_url)
 
