@@ -56,6 +56,7 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "novel_writer"
 
 from novel_writer.core.logger import get_logger
+from novel_writer.ui.splash import SplashScreen, STARTUP_STAGES
 from novel_writer.ui.main_window import MainWindow
 
 logger = get_logger(__name__)
@@ -93,8 +94,20 @@ def main():
     font.setStyleHint(QFont.StyleHint.SansSerif)
     app.setFont(font)
 
+    # 启动画面
+    splash = SplashScreen()
+    splash.show()
+    splash.set_stage(STARTUP_STAGES[0][0], STARTUP_STAGES[0][1])
+    app.processEvents()
+
     window = MainWindow()
-    window.show()
+
+    # 逐阶段推进进度条
+    for text, frac in STARTUP_STAGES[1:]:
+        splash.set_stage(text, frac)
+        app.processEvents()
+
+    splash.finish(window)
     logger.info("Novel Writer 已启动")
 
     sys.exit(app.exec())

@@ -1,8 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+# onedir 模式（DLL 形式）：启动快，杀毒误报少，按需加载
 import os
-from pathlib import Path
-
-block_cipher = None
 
 a = Analysis(
     ['src/novel_writer/app.py'],
@@ -10,26 +8,64 @@ a = Analysis(
     binaries=[],
     datas=[
         ('logo.png', '.'),
+        ('logo.ico', '.'),
+        ('config', 'config'),
     ],
     hiddenimports=[
         'novel_writer.core.llm.client',
-        'novel_writer.core.llm.providers',
+        'novel_writer.core.llm.base',
+        'novel_writer.core.llm.claude',
+        'novel_writer.core.llm.ollama',
+        'novel_writer.core.llm.openai_compat',
         'novel_writer.core.project_io',
         'novel_writer.core.exporter',
         'novel_writer.core.logger',
+        'novel_writer.core.memory',
+        'novel_writer.core.world_state',
+        'novel_writer.core.quality_checker',
+        'novel_writer.core.reading_power',
+        'novel_writer.core.anti_patterns',
+        'novel_writer.core.character_sim',
+        'novel_writer.core.chapter_tracker',
+        'novel_writer.core.rag',
+        'novel_writer.core.text_signals',
+        'novel_writer.core.app_config',
+        'novel_writer.core.chat_history',
+        'novel_writer.core.workflow.definition',
+        'novel_writer.core.workflow.runner',
+        'novel_writer.core.workflow.context',
+        'novel_writer.core.workflow.prompts',
+        'novel_writer.core.workflow.builtin_steps',
+        'novel_writer.core.workflow.sediment',
         'novel_writer.ui.main_window',
-        'novel_writer.ui.chat_widget',
-        'novel_writer.ui.project_widget',
-        'novel_writer.ui.settings_widget',
+        'novel_writer.ui.splash',
+        'novel_writer.ui.model_dialog',
+        'novel_writer.ui.sidebar',
+        'novel_writer.ui.editor_panel',
+        'novel_writer.ui.agent_panel',
+        'novel_writer.ui.workflow_panel',
+        'novel_writer.ui.workflow_bar',
+        'novel_writer.ui.workers',
+        'novel_writer.ui.styles',
+        'novel_writer.ui.chat_rendering',
+        'novel_writer.ui.chat_widgets',
+        'novel_writer.ui.office_scene',
+        'novel_writer.ui.agent_animation',
+        'novel_writer.ui.appearance_dialog',
+        'novel_writer.ui.agent_dialog',
+        'novel_writer.ui.new_project_dialog',
+        'novel_writer.ui.project_dialogs',
         'PySide6.QtCore',
         'PySide6.QtWidgets',
         'PySide6.QtGui',
+        'PySide6.QtSvg',
         'openai',
         'anthropic',
         'httpx',
         'httpcore',
+        'h11',
         'pydantic',
-        'ebooklib',
+        'certifi',
         'reportlab',
     ],
     hookspath=[],
@@ -39,26 +75,37 @@ a = Analysis(
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,  # onedir：DLL 独立，启动快
     name='NovelWriter',
     icon='logo.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=[],
+    upx=False,
     runtime_tmpdir=None,
-    console=False,
+    console=False,  # 无控制台窗口
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[
+        # 大型 C 扩展 .pyd（UPX 压缩易损坏）
+        '*.pyd', 'python3*.dll', 'PySide6/*.pyd', 'PySide6/*.dll',
+    ],
+    name='NovelWriter',
 )
