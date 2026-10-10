@@ -128,7 +128,7 @@ class MemoryScratchpad:
         self.upsert(MemoryItem(
             category="story_facts",
             subject=subject,
-            field="伏笔回收",
+            aspect="伏笔回收",
             value=f"伏笔「{subject}」在第{source_chapter}章回收",
             source_chapter=source_chapter,
         ))

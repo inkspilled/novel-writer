@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .logger import get_logger
+from .text_signals import COOL_KEYWORDS, HOOK_KEYWORDS, MICRO_KEYWORDS
 
 logger = get_logger(__name__)
 
@@ -260,14 +261,7 @@ class QualityChecker:
 
     def _check_hook(self, content: str, report: QualityReport):
         """检查钩子。"""
-        # 钩子关键词
-        hook_keywords = {
-            'crisis': ['危险', '死', '杀', '逃', '追', '攻击', '爆炸', '崩塌', '坠落'],
-            'mystery': ['秘密', '真相', '谜', '奇怪', '诡异', '不可思议', '为什么', '到底'],
-            'desire': ['想要', '渴望', '追求', '梦想', '希望', '等待', '期待'],
-            'emotion': ['愤怒', '悲伤', '绝望', '感动', '心碎', '泪', '笑', '恨'],
-            'choice': ['选择', '抉择', '两难', '要么', '必须', '不得不', '放弃'],
-        }
+        hook_keywords = HOOK_KEYWORDS
         
         # 统计钩子类型
         hook_counts = {}
@@ -301,12 +295,7 @@ class QualityChecker:
 
     def _check_cool_points(self, content: str, report: QualityReport):
         """检查爽点。"""
-        cool_keywords = {
-            '打脸反转': ['打脸', '嘲讽', '不屑', '小看', '碾压'],
-            '底牌揭示': ['底牌', '隐藏', '真正', '其实', '原来'],
-            '逆袭胜利': ['逆袭', '翻盘', '反杀', '绝地', '逆转'],
-            '反派落败': ['报应', '活该', '罪有应得', '落败', '崩溃'],
-        }
+        cool_keywords = COOL_KEYWORDS
         
         found_cool_points = []
         for cp, keywords in cool_keywords.items():
@@ -327,12 +316,7 @@ class QualityChecker:
 
     def _check_micro_payoffs(self, content: str, report: QualityReport):
         """检查微兑现。"""
-        micro_keywords = {
-            '信息': ['得知', '发现', '明白', '了解', '知道'],
-            '能力': ['学会', '掌握', '突破', '领悟', '觉醒'],
-            '关系': ['信任', '结盟', '友谊', '和解', '认可'],
-            '资源': ['获得', '得到', '收获', '宝物', '功法'],
-        }
+        micro_keywords = MICRO_KEYWORDS
         
         found_micro_payoffs = []
         for mp, keywords in micro_keywords.items():

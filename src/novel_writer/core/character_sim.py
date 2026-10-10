@@ -17,6 +17,11 @@ from pathlib import Path
 
 SIM_CACHE_DIR = "sim_cache"
 
+# 非角色标题跳过名单（唯一权威，prompts.build_character_constraint 转引本表）
+CHARACTER_SKIP_TITLES = frozenset({
+    "核心同伴", "关键对立/引导角色", "关系网络", "动态演进", "主角",
+})
+
 
 @dataclass
 class CharacterProfile:
@@ -26,6 +31,7 @@ class CharacterProfile:
     motivation: str = ""
     weakness: str = ""
     background: str = ""
+    is_protagonist: bool = False
 
 
 @dataclass
@@ -49,12 +55,27 @@ class PlotSimulation:
 
 
 def parse_characters(char_content: str) -> list[CharacterProfile]:
-    """从人物设定文本中解析角色档案。"""
+    """从人物设定文本中解析角色档案（含主角标记）。"""
     characters = []
     lines = char_content.split("\n")
     current = None
+    current_start = 0
 
-    for line in lines:
+    def _flush(end: int):
+        nonlocal current
+        if current and current.name:
+            # 主角检测：标题后 10 行（或到下一标题前）含「主角」/「protagonist」
+            for j in range(current_start + 1, min(current_start + 11, end)):
+                if re.match(r"^#{2,4}\s+", lines[j].strip()):
+                    break
+                low = lines[j].lower()
+                if "主角" in lines[j] or "protagonist" in low:
+                    current.is_protagonist = True
+                    break
+            characters.append(current)
+        current = None
+
+    for i, line in enumerate(lines):
         line = line.strip()
 
         # 匹配角色名（### 或 ## 开头，排除非角色标题）
@@ -63,11 +84,11 @@ def parse_characters(char_content: str) -> list[CharacterProfile]:
             name = m.group(1).strip()
             if re.match(r"^[一二三四五六七八九十]", name):
                 continue
-            if name in ("核心同伴", "关键对立/引导角色", "关系网络", "动态演进", "主角"):
+            if name in CHARACTER_SKIP_TITLES:
                 continue
-            if current and current.name:
-                characters.append(current)
+            _flush(i)
             current = CharacterProfile(name=name)
+            current_start = i
             continue
 
         if not current:
@@ -83,9 +104,7 @@ def parse_characters(char_content: str) -> list[CharacterProfile]:
         elif "背景" in line and ("：" in line or ":" in line):
             current.background = line.split("：" if "：" in line else ":")[-1].strip()
 
-    if current and current.name:
-        characters.append(current)
-
+    _flush(len(lines))
     return characters
 
 

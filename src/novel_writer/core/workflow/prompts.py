@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+from ..character_sim import parse_characters
+
 
 def build_pacing_context(n: int, total: int, for_update: bool = False) -> str:
     """生成节奏控制上下文，防止长篇小说节奏失控。
@@ -76,42 +78,20 @@ def build_pacing_context(n: int, total: int, for_update: bool = False) -> str:
 
 
 def build_character_constraint(char_content: str) -> str:
-    """从人物设定内容中提取角色信息，生成写作约束指令。"""
+    """从人物设定内容中提取角色信息，生成写作约束指令。
 
-    lines = char_content.split("\n")
-    characters = []
-    protagonist = ""
-
-    # 解析人物设定：匹配 "### 角色名" 或 "## 角色名" 格式
-    for i, line in enumerate(lines):
-        m = re.match(r"^#{2,4}\s+(.+?)$", line.strip())
-        if m:
-            name = m.group(1).strip()
-            # 跳过非角色标题（如 "一、核心人物设定" 之类的章节标题）
-            if re.match(r"^[一二三四五六七八九十]", name):
-                continue
-            if name in ("核心同伴", "关键对立/引导角色", "关系网络", "动态演进"):
-                continue
-            # 检查是否标记为主角
-            is_protagonist = False
-            for j in range(i + 1, min(i + 10, len(lines))):
-                if re.match(r"^#{2,4}\s+", lines[j].strip()):
-                    break
-                if "主角" in lines[j] or "protagonist" in lines[j].lower():
-                    is_protagonist = True
-                    break
-            characters.append(name)
-            if is_protagonist and not protagonist:
-                protagonist = name
-
-    # 如果没找到显式主角标记，用第一个角色
-    if characters and not protagonist:
-        protagonist = characters[0]
-
-    if not characters:
+    角色解析统一走 character_sim.parse_characters（跳过名单唯一来源）。
+    """
+    profiles = parse_characters(char_content)
+    if not profiles:
         return ""
 
-    # 生成约束指令
+    characters = [p.name for p in profiles]
+    protagonist = next((p.name for p in profiles if p.is_protagonist), "")
+    # 未显式标记主角时取第一个角色
+    if not protagonist:
+        protagonist = characters[0]
+
     parts = ["=== 【写作约束 · 角色锚定】 ==="]
     parts.append(f"主角：{protagonist}")
     parts.append(f"已登场角色：{', '.join(characters)}")

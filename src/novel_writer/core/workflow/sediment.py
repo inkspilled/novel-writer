@@ -50,12 +50,15 @@ def sediment_chapter(project_dir, chapter: int, content: str):
         r"(?:竟然|居然|原来|没想到|殊不知)([^。，！？]{5,40})",
         r"(?:如果|倘若|万一)([^。，！？]{5,40})",
     ]
+    loop_seq = 0
     for pat in foreshadow_patterns:
         for m in re.finditer(pat, content):
             val = m.group(0)[:60]
+            loop_seq += 1
+            # subject 含片段与序号，避免同章多伏笔在 open_loops 去重键下互相覆盖
             mem.upsert(MemoryItem(
                 category="open_loops",
-                subject=f"第{chapter}章伏笔",
+                subject=f"第{chapter}章伏笔{loop_seq}·{val[:24]}",
                 aspect="悬念",
                 value=val,
                 source_chapter=chapter,
@@ -82,6 +85,13 @@ def sediment_chapter(project_dir, chapter: int, content: str):
 
     mem.compact()
     mem.save()
+
+    # 过期反模式清理（距今超过 10 章的低严重度项）
+    try:
+        from ..anti_patterns import AntiPatternTracker
+        AntiPatternTracker(project_dir).clear_resolved(chapter)
+    except Exception as e:
+        logger.debug("反模式过期清理失败: %s", e)
 
     # 追读力分析
     try:
