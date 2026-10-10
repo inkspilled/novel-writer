@@ -163,6 +163,37 @@ PLANNING_WORKFLOW = {
 }
 
 
+def _parse_expected_chapters(project_dir: str) -> int | None:
+    """从规划方向解析预期总章数。
+
+    扫描 planning/立意.md 中的分卷描述，如「速成上路(30章)→虚浮翻车(35章)→我自为道(35章)」，
+    提取各卷章数求和。找不到或解析失败返回 None。
+    """
+    if not project_dir:
+        return None
+    try:
+        ideation = Path(project_dir) / "planning" / "立意.md"
+        if not ideation.exists():
+            return None
+        text = ideation.read_text(encoding="utf-8")
+        # 匹配「(N章)」或（N章）模式，提取所有章数
+        import re
+        matches = re.findall(r"[（(](\d+)\s*章[）)]", text)
+        if matches:
+            total = sum(int(m) for m in matches)
+            if 5 <= total <= 5000:
+                return total
+        # 也匹配「共N章」「目标N章」
+        m = re.search(r"(?:共|目标)\s*(\d+)\s*章", text)
+        if m:
+            total = int(m.group(1))
+            if 5 <= total <= 5000:
+                return total
+    except Exception:
+        pass
+    return None
+
+
 def build_workflow(
     mode: WorkflowMode,
     project_info: dict,
@@ -220,6 +251,12 @@ def build_workflow(
         "style": project_info.get("style", ""),
         "target_chapters": end_chapter,
     }
+    # 从规划方向解析预期总章数，与 end_chapter 对不上时以规划为准（并告警）
+    expected = _parse_expected_chapters(project_info.get("_project_dir", ""))
+    if expected and abs(expected - end_chapter) > max(5, expected * 0.15):
+        logger.warning("目标章节数 %d 与规划方向预期 %d 章差异较大，以规划方向为准", end_chapter, expected)
+        end_chapter = expected
+        data["project"]["target_chapters"] = expected
     # 查漏补缺模式：记录缺失章节
     if mode == WorkflowMode.FILL_GAPS and "_gaps" in data:
         data["project"]["_gaps"] = data.pop("_gaps")
