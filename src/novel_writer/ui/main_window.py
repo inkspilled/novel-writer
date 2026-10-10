@@ -483,10 +483,17 @@ class MainWindow(QMainWindow):
         # 更新 Project 对象的 chapters 列表
         existing = {ch.number: ch for ch in self.project.chapters}
         for item in scanned:
-            if item["number"] not in existing:
+            num = item["number"]
+            if num in existing:
+                # 已有章节：同步路径和标题（fix_titles 改名后路径会变）
+                ch = existing[num]
+                ch.title = item["title"]
+                ch._content_path = str(item["content_path"].resolve())
+                ch._outline_path = str(item["outline_path"].resolve()) if item["outline_path"] else ""
+            else:
                 from ..models.chapter import Chapter
                 ch = Chapter(
-                    number=item["number"],
+                    number=num,
                     title=item["title"],
                     _content_path=str(item["content_path"].resolve()),
                     _outline_path=str(item["outline_path"].resolve()) if item["outline_path"] else "",
