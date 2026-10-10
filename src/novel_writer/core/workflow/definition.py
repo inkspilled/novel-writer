@@ -167,7 +167,7 @@ def build_workflow(
     mode: WorkflowMode,
     project_info: dict,
     start_chapter: int = 1,
-    end_chapter: int = 20,
+    end_chapter: int = 100,
 ) -> WorkflowDef:
     """根据模式构建工作流定义。
 

@@ -732,7 +732,7 @@ class MainWindow(QMainWindow):
                 "title": self.project.title,
                 "genre": self.project.genre,
                 "style": self.project.style,
-                "target_chapters": 20,
+                "target_chapters": self.project.target_chapters or 100,
             },
         }
 
@@ -789,6 +789,7 @@ class MainWindow(QMainWindow):
             "genre": self.project.genre,
             "style": self.project.style,
             "theme": self.project.theme,
+            "target_chapters": end_ch,
             "_project_dir": str(self.project.project_dir),
         }
         self._wf_def = build_workflow(mode, project_info, start_ch, end_ch)
