@@ -73,7 +73,7 @@ class TestTemplateEquivalence:
         assert by_id["polish"]["every"] == 2
         assert by_id["summary"]["every"] == 5
         for sid in ("update_outline", "update_characters", "update_foreshadow"):
-            assert by_id[sid]["every"] == 10
+            assert by_id[sid]["every"] == 5
             assert by_id[sid]["update_planning"] is True
 
     def test_templates_not_mutated_by_build(self):
