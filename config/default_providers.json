@@ -1,13 +1,12 @@
 [
-  {"name": "DeepSeek", "type": "openai_compat", "base_url": "https://api.deepseek.com/v1"},
-  {"name": "Moonshot (Kimi)", "type": "openai_compat", "base_url": "https://api.moonshot.cn/v1"},
-  {"name": "智谱 GLM", "type": "openai_compat", "base_url": "https://open.bigmodel.cn/api/paas/v4"},
-  {"name": "通义千问", "type": "openai_compat", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
-  {"name": "小米 MiMo", "type": "openai_compat", "base_url": "https://api.milai.com/v1"},
-  {"name": "OpenAI", "type": "openai_compat", "base_url": "https://api.openai.com/v1"},
-  {"name": "Claude (需代理)", "type": "openai_compat", "base_url": ""},
-  {"name": "Ollama (本地)", "type": "ollama", "base_url": "http://localhost:11434"},
-  {"name": "llama.cpp (本地)", "type": "openai_compat", "base_url": "http://localhost:8080/v1"},
-  {"name": "vLLM (本地)", "type": "openai_compat", "base_url": "http://localhost:8000/v1"},
-  {"name": "LM Studio (本地)", "type": "openai_compat", "base_url": "http://localhost:1234/v1"}
+  {"name": "DeepSeek", "base_url": "https://api.deepseek.com/v1"},
+  {"name": "Moonshot (Kimi)", "base_url": "https://api.moonshot.cn/v1"},
+  {"name": "智谱 GLM", "base_url": "https://open.bigmodel.cn/api/paas/v4"},
+  {"name": "通义千问", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+  {"name": "小米 MiMo", "base_url": "https://api.milai.com/v1"},
+  {"name": "OpenAI", "base_url": "https://api.openai.com/v1"},
+  {"name": "Ollama (本地)", "base_url": "http://localhost:11434"},
+  {"name": "llama.cpp (本地)", "base_url": "http://localhost:8080/v1"},
+  {"name": "vLLM (本地)", "base_url": "http://localhost:8000/v1"},
+  {"name": "LM Studio (本地)", "base_url": "http://localhost:1234/v1"}
 ]

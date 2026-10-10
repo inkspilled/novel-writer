@@ -1,4 +1,4 @@
-"""模型设置对话框 — 供应商配置、已保存模型管理、连接测试。"""
+"""模型设置对话框 — API 地址 + Key + 模型下拉选择。"""
 from __future__ import annotations
 
 import json
@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QTimer
 
-from .workers import TestConnectionWorker
+from .workers import TestConnectionWorker, FetchModelsWorker
 from ..locales import t
 from ..core.logger import get_logger
 
@@ -22,7 +22,7 @@ _CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
 
 
 def load_default_providers() -> list[dict]:
-    """从 default_providers.json 加载默认模型供应商列表。"""
+    """从 default_providers.json 加载默认 API 端点列表。"""
     path = _CONFIG_DIR / "default_providers.json"
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
@@ -126,7 +126,8 @@ class ModelDialog(QDialog):
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(12)
 
-        provider_group = QGroupBox(t("settings_provider_group"))
+        # ── API 配置（统一 OpenAI 兼容） ──
+        provider_group = QGroupBox("API 配置")
         pg = QFormLayout(provider_group)
         pg.setSpacing(10)
 
@@ -149,29 +150,28 @@ class ModelDialog(QDialog):
         self.base_url_input.setPlaceholderText(t("settings_ph_base_url"))
         pg.addRow(t("settings_base_url"), self.base_url_input)
 
-        self.model_input = QLineEdit()
+        # 模型名：可编辑下拉 + 拉取按钮
+        model_row = QHBoxLayout()
+        model_row.setSpacing(8)
+        self.model_input = QComboBox()
+        self.model_input.setEditable(True)
+        self.model_input.setMinimumWidth(200)
         self.model_input.setPlaceholderText(t("settings_ph_model"))
-        pg.addRow(t("settings_model_name"), self.model_input)
+        model_row.addWidget(self.model_input, 1)
+        self._btn_fetch_models = QPushButton("📋 拉取模型")
+        self._btn_fetch_models.setToolTip("从 API 获取可用模型列表（GET /models）")
+        self._btn_fetch_models.clicked.connect(self._fetch_models)
+        model_row.addWidget(self._btn_fetch_models)
+        pg.addRow(t("settings_model_name"), model_row)
+
+        self._model_status = QLabel()
+        self._model_status.setStyleSheet("color: gray; font-size: 12px;")
+        pg.addRow("", self._model_status)
 
         self._btn_test = QPushButton(t("settings_test_conn"))
         self._btn_test.clicked.connect(self._test_connection)
         pg.addRow("", self._btn_test)
         scroll_layout.addWidget(provider_group)
-
-        # Ollama
-        self.ollama_group = QGroupBox(t("settings_ollama_group"))
-        og = QVBoxLayout(self.ollama_group)
-        self.ollama_status = QLabel(t("settings_ollama_detecting"))
-        og.addWidget(self.ollama_status)
-        self.ollama_model_list = QListWidget()
-        self.ollama_model_list.setMaximumHeight(120)
-        self.ollama_model_list.itemDoubleClicked.connect(self._on_ollama_model_selected)
-        og.addWidget(self.ollama_model_list)
-        self._refresh_btn = QPushButton(t("settings_ollama_refresh"))
-        self._refresh_btn.clicked.connect(self._refresh_ollama_models)
-        og.addWidget(self._refresh_btn)
-        scroll_layout.addWidget(self.ollama_group)
-        self.ollama_group.setVisible(False)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -214,15 +214,11 @@ class ModelDialog(QDialog):
         self._init_provider_ui()
 
     def _init_provider_ui(self):
-        """初始化供应商 UI 状态，不触发 Ollama 网络请求。"""
+        """初始化 API 配置 UI 状态。"""
         if not self._providers:
             return
         provider = self._providers[0]
-        self.base_url_input.setText(provider["base_url"])
-        is_ollama = provider["type"] == "ollama"
-        self.ollama_group.setVisible(is_ollama)
-        if is_ollama:
-            self.ollama_status.setText(t("settings_ollama_detecting"))
+        self.base_url_input.setText(provider.get("base_url", ""))
 
     def _refresh_model_list(self):
         self.model_list.clear()
@@ -237,7 +233,6 @@ class ModelDialog(QDialog):
         info = self._saved_models.get(name)
         if not info:
             return
-        # 填充右侧字段
         provider_name = info.get("name", "")
         for i in range(self.provider_combo.count()):
             if self.provider_combo.itemText(i) == provider_name:
@@ -245,11 +240,18 @@ class ModelDialog(QDialog):
                 break
         self.api_key_input.setText(info.get("api_key", ""))
         self.base_url_input.setText(info.get("base_url", ""))
-        self.model_input.setText(info.get("model", ""))
+        self._set_model_text(info.get("model", ""))
+
+    def _set_model_text(self, text: str):
+        """设置模型下拉文本（兼容 QComboBox）。"""
+        self.model_input.setCurrentText(text)
+
+    def _get_model_text(self) -> str:
+        return self.model_input.currentText().strip()
 
     def _save_as_model_config(self):
         """将当前右侧配置保存为命名模型（不关闭对话框）。"""
-        model_name = self.model_input.text().strip()
+        model_name = self._get_model_text()
         if not model_name:
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
             return
@@ -262,12 +264,8 @@ class ModelDialog(QDialog):
                                     t("model_name_exists", name)) != QMessageBox.StandardButton.Yes:
                 return
         provider_name = self.provider_combo.currentText()
-        provider = next((p for p in self._providers if p["name"] == provider_name), None)
-        if not provider:
-            return
         self._saved_models[name] = {
             "name": provider_name,
-            "type": provider["type"],
             "api_key": self.api_key_input.text().strip(),
             "base_url": self.base_url_input.text().strip(),
             "model": model_name,
@@ -276,17 +274,12 @@ class ModelDialog(QDialog):
 
     def _set_as_default(self):
         """将当前右侧配置设为默认模型（不关闭对话框）。"""
-        model_name = self.model_input.text().strip()
+        model_name = self._get_model_text()
         if not model_name:
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
             return
-        provider_name = self.provider_combo.currentText()
-        provider = next((p for p in self._providers if p["name"] == provider_name), None)
-        if not provider:
-            return
         self.config["current_provider"] = {
-            "name": provider_name,
-            "type": provider["type"],
+            "name": self.provider_combo.currentText(),
             "api_key": self.api_key_input.text().strip(),
             "base_url": self.base_url_input.text().strip(),
             "model": model_name,
@@ -326,7 +319,7 @@ class ModelDialog(QDialog):
                 break
         self.api_key_input.setText(info.get("api_key", ""))
         self.base_url_input.setText(info.get("base_url", ""))
-        self.model_input.setText(info.get("model", ""))
+        self._set_model_text(info.get("model", ""))
 
     def _delete_model_config(self):
         current = self.model_list.currentItem()
@@ -344,62 +337,73 @@ class ModelDialog(QDialog):
             return
         provider = self._providers[index]
         self.api_key_input.clear()
-        self.base_url_input.setText(provider["base_url"])
+        self.base_url_input.setText(provider.get("base_url", ""))
         self.model_input.clear()
-        is_ollama = provider["type"] == "ollama"
-        self.ollama_group.setVisible(is_ollama)
-        if is_ollama:
-            self._refresh_ollama_models()
 
     def _new_model_config(self):
         """新增模型：清空表单，让用户填写新配置。"""
         self.model_list.clearSelection()
         self.provider_combo.setCurrentIndex(0)
         self.api_key_input.clear()
-        self.base_url_input.setText(self._providers[0]["base_url"] if self._providers else "")
+        self.base_url_input.setText(self._providers[0].get("base_url", "") if self._providers else "")
         self.model_input.clear()
 
-    def _on_ollama_model_selected(self, item: QListWidgetItem):
-        name = item.text().split("  (")[0].strip()
-        self.model_input.setText(name)
+    def _fetch_models(self):
+        """从 API 拉取可用模型列表（异步）。"""
+        base_url = self.base_url_input.text().strip()
+        if not base_url:
+            QMessageBox.warning(self, t("dialog_prompt"), "请先填写 API 地址")
+            return
+        api_key = self.api_key_input.text().strip()
+        self._btn_fetch_models.setEnabled(False)
+        self._btn_fetch_models.setText("⏳ 拉取中...")
+        self._model_status.setText("正在获取模型列表...")
 
-    def _refresh_ollama_models(self):
-        import httpx
-        self.ollama_model_list.clear()
-        try:
-            resp = httpx.get("http://localhost:11434/api/tags", timeout=3)
-            resp.raise_for_status()
-            models = resp.json().get("models", [])
-            if models:
-                self.ollama_status.setText(t("test_connected_models", len(models)))
-                for m in models:
-                    size_gb = m.get("size", 0) / 1e9
-                    self.ollama_model_list.addItem(f"{m['name']}  ({size_gb:.1f} GB)")
+        self._fetch_worker = FetchModelsWorker(api_key, base_url)
+        self._fetch_worker.success.connect(self._on_models_fetched)
+        self._fetch_worker.error.connect(self._on_fetch_error)
+        self._fetch_worker.start()
+
+    def _on_models_fetched(self, models: list):
+        self._btn_fetch_models.setEnabled(True)
+        self._btn_fetch_models.setText("📋 拉取模型")
+        if not models:
+            self._model_status.setText("未获取到模型")
+            return
+        current = self._get_model_text()
+        self.model_input.blockSignals(True)
+        self.model_input.clear()
+        for m in models:
+            self.model_input.addItem(m["id"])
+        # 恢复当前选中
+        if current:
+            idx = self.model_input.findText(current)
+            if idx >= 0:
+                self.model_input.setCurrentIndex(idx)
             else:
-                self.ollama_status.setText(t("test_connected_no_models"))
-        except Exception as e:
-            self.ollama_status.setText(t("test_not_connected", str(e)))
+                self.model_input.setCurrentText(current)
+        self.model_input.blockSignals(False)
+        self._model_status.setText(f"获取到 {len(models)} 个模型")
+
+    def _on_fetch_error(self, msg: str):
+        self._btn_fetch_models.setEnabled(True)
+        self._btn_fetch_models.setText("📋 拉取模型")
+        self._model_status.setText(f"获取失败: {msg}")
 
     def _test_connection(self):
         """测试连接（异步，不阻塞UI）。"""
-        provider_name = self.provider_combo.currentText()
-        provider = next((p for p in self._providers if p["name"] == provider_name), None)
-        if not provider:
-            return
         api_key = self.api_key_input.text().strip()
         base_url = self.base_url_input.text().strip()
-        model = self.model_input.text().strip()
+        model = self._get_model_text()
 
         if not model:
             QMessageBox.warning(self, t("dialog_prompt"), t("msg_input_model"))
             return
 
-        # 禁用按钮，显示测试中
         self._btn_test.setEnabled(False)
         self._btn_test.setText("⏳ 测试中...")
 
-        # 启动后台线程
-        self._test_worker = TestConnectionWorker(provider, api_key, base_url, model)
+        self._test_worker = TestConnectionWorker(api_key, base_url, model)
         self._test_worker.success.connect(self._on_test_success)
         self._test_worker.error.connect(self._on_test_error)
         self._test_worker.start()
@@ -427,16 +431,12 @@ class ModelDialog(QDialog):
 
     def _save_config_only(self):
         """仅保存配置到内存，不关闭对话框。"""
-        provider_name = self.provider_combo.currentText()
-        provider = next((p for p in self._providers if p["name"] == provider_name), None)
-        if provider:
-            self.config["current_provider"] = {
-                "name": provider_name,
-                "type": provider["type"],
-                "api_key": self.api_key_input.text().strip(),
-                "base_url": self.base_url_input.text().strip(),
-                "model": self.model_input.text().strip(),
-            }
+        self.config["current_provider"] = {
+            "name": self.provider_combo.currentText(),
+            "api_key": self.api_key_input.text().strip(),
+            "base_url": self.base_url_input.text().strip(),
+            "model": self._get_model_text(),
+        }
         self.config["saved_models"] = self._saved_models
         self.config["max_context_tokens"] = self._ctx_tokens_spin.value()
         default_names = {p["name"] for p in load_default_providers()}

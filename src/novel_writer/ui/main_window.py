@@ -253,17 +253,17 @@ class MainWindow(QMainWindow):
         _save_app_config(self.config)
 
     def _create_llm(self, provider: dict):
-        """根据供应商配置创建 LLM 实例。统一走 OpenAI 兼容协议。"""
+        """创建 LLM 实例 — 统一走 OpenAI 兼容协议（api_key + base_url + model）。"""
         model = provider.get("model", "")
         if not model:
             return None
-        base_url = provider.get("base_url", "")
-        api_key = provider.get("api_key", "")
-        # Ollama 使用 /v1 端点
-        if provider.get("type") == "ollama":
-            base_url = base_url.rstrip("/") + "/v1"
+        base_url = provider.get("base_url", "").rstrip("/")
         if not base_url:
             base_url = "https://api.openai.com/v1"
+        # 自动补 /v1（Ollama / llama.cpp 等本地服务可能只填根地址）
+        if not base_url.endswith("/v1"):
+            base_url += "/v1"
+        api_key = provider.get("api_key", "")
         return LLMClient(model=model, api_key=api_key, base_url=base_url)
 
     def _init_llm(self):

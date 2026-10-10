@@ -74,37 +74,25 @@ class AgentWorker(QThread):
 
 
 class TestConnectionWorker(QThread):
-    """后台测试模型连接的 Worker 线程。"""
+    """后台测试模型连接的 Worker 线程（统一 OpenAI 兼容协议）。"""
     success = Signal(str)  # model_name
     error = Signal(str)    # error_message
 
-    def __init__(self, provider: dict, api_key: str, base_url: str, model: str):
+    def __init__(self, api_key: str, base_url: str, model: str):
         super().__init__()
-        self.provider = provider
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
 
     def run(self):
         try:
-            base_url = self.base_url
-            # Ollama 先检查模型是否存在
-            if self.provider.get("type") == "ollama":
-                import httpx
-                try:
-                    tags = httpx.get(base_url + "/api/tags", timeout=3)
-                    tags.raise_for_status()
-                    available = [m["name"] for m in tags.json().get("models", [])]
-                    if self.model not in available:
-                        self.error.emit(f"模型不存在。可用: {', '.join(available[:3])}")
-                        return
-                except Exception as e:
-                    self.error.emit(f"无法连接 Ollama: {str(e)}")
-                    return
-                base_url = base_url.rstrip("/") + "/v1"
+            base_url = self.base_url.rstrip("/")
+            # 自动补 /v1（Ollama / llama.cpp 等本地服务可能只填根地址）
+            if not base_url.endswith("/v1"):
+                base_url += "/v1"
 
             from openai import OpenAI as _OpenAI
-            client = _OpenAI(api_key=self.api_key or "test", base_url=base_url, timeout=10.0)
+            client = _OpenAI(api_key=self.api_key or "test", base_url=base_url, timeout=15.0)
             resp = client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "hi"}],
@@ -120,4 +108,37 @@ class TestConnectionWorker(QThread):
                 error_msg = "API Key 无效"
             elif "timeout" in error_msg.lower():
                 error_msg = "连接超时，请检查网络"
+            self.error.emit(error_msg)
+
+
+class FetchModelsWorker(QThread):
+    """后台拉取可用模型列表（GET /models）。"""
+    success = Signal(list)  # [{"id": "model-name", ...}, ...]
+    error = Signal(str)
+
+    def __init__(self, api_key: str, base_url: str):
+        super().__init__()
+        self.api_key = api_key
+        self.base_url = base_url
+
+    def run(self):
+        try:
+            base_url = self.base_url.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url += "/v1"
+
+            from openai import OpenAI as _OpenAI
+            client = _OpenAI(api_key=self.api_key or "fetch", base_url=base_url, timeout=10.0)
+            resp = client.models.list()
+            models = [{"id": m.id} for m in resp.data]
+            models.sort(key=lambda x: x["id"])
+            self.success.emit(models)
+        except Exception as e:
+            error_msg = str(e)
+            if "APIConnectionError" in error_msg:
+                error_msg = "无法连接到服务器，请检查 URL"
+            elif "AuthenticationError" in error_msg:
+                error_msg = "API Key 无效（本地服务通常无需 Key）"
+            elif "timeout" in error_msg.lower():
+                error_msg = "连接超时，请检查服务是否启动"
             self.error.emit(error_msg)
