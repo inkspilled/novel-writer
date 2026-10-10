@@ -13,3 +13,4 @@ data/
 logs/
 logo.ico
 output/
+.zcode/
