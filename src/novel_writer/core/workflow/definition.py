@@ -101,13 +101,13 @@ class WorkflowDef:
 
 _PLANNING_STEPS = [
     {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md"},
-    {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲。本书目标写{target_chapters}章，请将故事分为多个阶段（开篇铺垫、前期发展、中期推进、后期高潮、收束终章），每个阶段标注起止章节和核心剧情。大纲要足够详细，能支撑{target_chapters}章的篇幅，避免剧情在前100章就走完。", "input": ["planning/立意.md"], "output": "planning/大纲.md"},
+    {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲。注意：必须严格按照【规划方向】中的分卷章数来规划总篇幅（如「30章→35章→35章」即100章），不要被其他数字误导。请将故事分为多个阶段（开篇铺垫、前期发展、中期推进、后期高潮、收束终章），每个阶段标注起止章节和核心剧情。大纲要足够详细，能支撑全部分卷的篇幅，避免剧情提前走完。", "input": ["planning/立意.md"], "output": "planning/大纲.md"},
     {"id": "characters", "needs": "人物设定", "prompt": "根据大纲设计主要人物档案（性格、背景、成长弧线、关系）。", "input": ["planning/大纲.md"], "output": "planning/人物设定.md"},
     {"id": "world", "needs": "世界观构建", "prompt": "根据大纲构建详细的世界观设定。", "input": ["planning/大纲.md", "planning/人物设定.md"], "output": "planning/世界观.md"},
     {"id": "timeline", "needs": "故事结构", "prompt": "根据大纲设计故事时间线。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md"], "output": "planning/时间线.md"},
-    {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点和对应章节范围。本书共{target_chapters}章，主线冲突的升级节奏必须匹配这个篇幅。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md"], "output": "planning/主线.md"},
-    {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。支线数量和深度必须匹配{target_chapters}章的篇幅，不能在前100章就把所有支线写完。", "input": ["planning/大纲.md", "planning/主线.md"], "output": "planning/支线.md"},
-    {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。本书共{target_chapters}章，伏笔的埋设和回收要分布在整本书中，不要全部集中在前几十章。", "input": ["planning/大纲.md", "planning/主线.md", "planning/支线.md"], "output": "planning/伏笔.md"},
+    {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点和对应章节范围。主线冲突的升级节奏必须匹配立意中规划的分卷篇幅，不要压缩剧情。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/立意.md"], "output": "planning/主线.md"},
+    {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。支线数量和深度必须匹配立意中规划的分卷篇幅，不能提前把所有支线写完。", "input": ["planning/大纲.md", "planning/主线.md", "planning/立意.md"], "output": "planning/支线.md"},
+    {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。伏笔的埋设和回收要分布在整本书的各卷中，不要全部集中在前几十章。", "input": ["planning/大纲.md", "planning/主线.md", "planning/支线.md", "planning/立意.md"], "output": "planning/伏笔.md"},
 ]
 
 _FIX_TITLES_STEP = {"id": "fix_titles", "needs": "", "prompt": "", "output": "", "optional": True}
