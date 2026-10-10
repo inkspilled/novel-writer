@@ -1,5 +1,9 @@
 # Novel Writer 开发指南
 
+> **算法口径**（质量检查/追读力/上下文组装/工作流/记忆/世界状态等）已拆至
+> **[docs/](docs/README.md)** —— 新增文档只在 `docs/README.md` 登记，本文件不再维护算法清单。
+> 出现口径冲突时，以 `docs/README.md` 的「权威归属」表裁决；表未覆盖的以 `src/novel_writer/` 实现为真值。
+
 ## 技术栈
 
 | 技术 | 版本 | 用途 |
@@ -22,8 +26,24 @@ novel-writer/
 ├── build_installer.bat             # 一键打包脚本
 ├── installer.iss                   # Inno Setup 安装包脚本
 ├── logo.png                        # 应用图标
+├── docs/                           # 项目文档（总索引见 docs/README.md）
+│   ├── README.md                   # 唯一文档总目录（性质标签 + 权威归属）
+│   ├── 质量检查算法.md              # 十维规则打分
+│   ├── 追读力算法.md                # 钩子/爽点/微兑现/债务
+│   ├── 反模式追踪算法.md            # AI 味禁忌库
+│   ├── 长期记忆算法.md              # 11 桶记忆
+│   ├── 大世界状态算法.md            # 世界/角色/物品/时间线快照
+│   ├── 章节四维追踪算法.md          # 资源/情感/信息边界/支线
+│   ├── 写后沉淀算法.md              # 章后自动沉淀管线
+│   ├── 分层上下文组装算法.md        # 四层 ContextTier + 压缩
+│   ├── RAG检索算法.md               # BM25 关键词检索
+│   ├── 工作流引擎算法.md            # 五模式 × 步骤组合
+│   ├── 节奏控制与角色锚定算法.md    # 七阶段 + 角色硬约束
+│   ├── 角色推演算法.md              # 多视角剧情推演
+│   ├── LLM多驱动接口.md             # 四驱动统一契约
+│   └── 项目存储与文件格式.md        # 目录布局/原子写/IO API
 ├── logs/                           # 日志目录（gitignore）
-│   ├── info.log                    # INFO/DEBUG 日志（按天滚动，100MB 上限）
+│   ├── info.log                    # INFO/DEBUG（按天滚动，100MB 上限）
 │   └── error.log                   # WARNING+ 日志
 ├── config/
 │   ├── agents.json                 # 智能体配置（含 system_prompt）
@@ -31,338 +51,142 @@ novel-writer/
 │   └── default_providers.json      # 默认模型供应商列表
 ├── data/                           # 用户数据（gitignore）
 │   ├── config.json                 # 用户配置（主题、语言、模型）
-│   └── projects/                   # 小说项目目录
-│       └── {project_name}/
-│           ├── meta.json           # 项目元信息
-│           ├── chat.db             # 聊天记录（项目级 SQLite）
-│           ├── world_state.json    # 大世界状态（人物/物品/地点/时间线）
-│           ├── memory.json         # 长期记忆（11桶）
-│           ├── planning/           # 规划文档（.md）
-│           ├── chapters/           # 章节正文（.txt）+ 细纲（.md）+ 概要（.summary.md）
-│           ├── inspiration/        # 灵感记录（.md）
-│           ├── review/             # 审校报告（.md）
-│           └── workflow.json       # 工作流进度
+│   └── projects/                   # 小说项目目录 → 详见 docs/项目存储与文件格式.md
 ├── tests/                          # 单元测试
-│   ├── test_quality_checker.py     # 质量检查测试
-│   ├── test_reading_power.py       # 追读力测试
-│   ├── test_workflow.py            # 工作流测试
-│   └── test_exporter.py            # 导出功能测试
-├── src/novel_writer/
-│   ├── __main__.py                 # python -m novel_writer 入口
-│   ├── app.py                      # QApplication 启动
-│   ├── locales.py                  # i18n（中/英）
-│   ├── core/
-│   │   ├── logger.py               # 日志配置（get_logger 入口）
-│   │   ├── llm/
-│   │   │   ├── base.py             # BaseLLM + LLMMessage/LLMResponse
-│   │   │   ├── client.py           # 统一 LLMClient（OpenAI 兼容）
-│   │   │   ├── claude.py           # ClaudeLLM（Anthropic 原生）
-│   │   │   ├── ollama.py           # OllamaLLM（本地模型）
-│   │   │   └── openai_compat.py    # OpenAICompatLLM
-│   │   ├── agents/
-│   │   │   ├── __init__.py         # load_agents() / save_agents()
-│   │   │   └── base.py             # BaseAgent + AgentConfig
-│   │   ├── project_io.py           # 项目目录 IO（含 find_chapter_file）
-│   │   ├── app_config.py           # 应用路径常量 + 用户配置读写
-│   │   ├── chat_history.py         # 聊天记录持久化（项目级 SQLite）
-│   │   ├── world_state.py          # 大世界状态管理
-│   │   ├── workflow/               # 工作流引擎（包）
-│   │   │   ├── constants.py        # 技能名与步骤 id 分组
-│   │   │   ├── definition.py       # WorkflowStep/Def、内置模板、build_workflow
-│   │   │   ├── context.py          # 分层上下文组装与压缩
-│   │   │   ├── prompts.py          # 节奏控制/角色锚定/内置步骤提示词
-│   │   │   ├── builtin_steps.py    # 特殊步骤处理器注册表
-│   │   │   ├── sediment.py         # 写后沉淀（记忆/伏笔/追读力）
-│   │   │   └── runner.py           # WorkflowRunner 执行器
-│   │   ├── quality_checker.py      # 质量检查模块
-│   │   ├── exporter.py             # 导出功能（TXT/EPUB/PDF）
-│   │   ├── reading_power.py        # 追读力系统
-│   │   ├── anti_patterns.py        # 反模式追踪
-│   │   ├── memory.py               # 长期记忆
-│   │   ├── rag.py                  # RAG 检索
-│   │   └── character_sim.py        # 角色推演
-│   ├── models/
-│   │   ├── project.py              # Project（基于目录的存储）
-│   │   ├── chapter.py              # Chapter（文件 IO）
-│   │   └── character.py            # Character
-│   ├── storage/                    # 存储抽象层
-│   ├── assets/                     # 图标资源（icon.svg, status_icon.png）
-│   └── ui/
-│       ├── styles.py               # 4 套主题（深夜墨/晨雾白/远山蓝/苍山绿）
-│       ├── main_window.py          # 主窗口（三栏布局，纯 UI 编排）
-│       ├── workers.py              # 后台线程（AgentWorker / TestConnectionWorker）
-│       ├── project_dialogs.py      # 打开项目 / 工作流模式对话框
-│       ├── appearance_dialog.py    # 外观设置（含 ColorPicker）
-│       ├── model_dialog.py         # 模型设置
-│       ├── agent_dialog.py         # 智能体管理
-│       ├── sidebar.py              # 侧边栏
-│       ├── editor_panel.py         # 编辑区（正文 + 8个规划文档标签页）
-│       ├── agent_panel.py          # 智能体面板（办公室+工作流+对话）
-│       ├── chat_rendering.py       # 聊天 Markdown 渲染 + 颜色池
-│       ├── chat_widgets.py         # 消息气泡 / 输入框控件
-│       ├── office_scene.py         # 办公室场景（QPainter + Agent 动画）
-│       ├── workflow_bar.py         # 工作流迷你进度条
-│       ├── workflow_panel.py       # WorkflowThread（后台执行）
-│       └── agent_animation.py      # Agent 指示器动画
+│   ├── test_quality_checker.py
+│   ├── test_reading_power.py
+│   ├── test_workflow.py
+│   ├── test_workflow_package.py
+│   └── test_exporter.py
+└── src/novel_writer/
+    ├── __main__.py                 # python -m novel_writer 入口
+    ├── app.py                      # QApplication 启动
+    ├── locales.py                  # i18n（中/英）
+    ├── core/
+    │   ├── logger.py               # 日志配置（get_logger 入口）
+    │   ├── llm/                    # → docs/LLM多驱动接口.md
+    │   │   ├── base.py             # BaseLLM + LLMMessage/LLMResponse
+    │   │   ├── client.py           # 统一 LLMClient（OpenAI 兼容）
+    │   │   ├── claude.py           # ClaudeLLM（Anthropic 原生）
+    │   │   ├── ollama.py           # OllamaLLM（本地模型）
+    │   │   └── openai_compat.py    # OpenAICompatLLM
+    │   ├── agents/
+    │   │   ├── __init__.py         # load_agents() / save_agents()
+    │   │   └── base.py             # BaseAgent + AgentConfig
+    │   ├── project_io.py           # → docs/项目存储与文件格式.md
+    │   ├── app_config.py           # 应用路径常量 + 用户配置读写
+    │   ├── chat_history.py         # 聊天记录持久化（项目级 SQLite）
+    │   ├── world_state.py          # → docs/大世界状态算法.md
+    │   ├── workflow/               # → docs/工作流引擎算法.md
+    │   │   ├── constants.py        # 技能名与步骤 id 分组
+    │   │   ├── definition.py       # WorkflowStep/Def、内置模板、build_workflow
+    │   │   ├── context.py          # → docs/分层上下文组装算法.md
+    │   │   ├── prompts.py          # → docs/节奏控制与角色锚定算法.md
+    │   │   ├── builtin_steps.py    # 特殊步骤处理器注册表
+    │   │   ├── sediment.py         # → docs/写后沉淀算法.md
+    │   │   └── runner.py           # WorkflowRunner 执行器
+    │   ├── quality_checker.py      # → docs/质量检查算法.md
+    │   ├── exporter.py             # 导出功能（TXT/EPUB/PDF）
+    │   ├── reading_power.py        # → docs/追读力算法.md
+    │   ├── anti_patterns.py        # → docs/反模式追踪算法.md
+    │   ├── memory.py               # → docs/长期记忆算法.md
+    │   ├── rag.py                  # → docs/RAG检索算法.md
+    │   ├── chapter_tracker.py      # → docs/章节四维追踪算法.md
+    │   └── character_sim.py        # → docs/角色推演算法.md
+    ├── models/
+    │   ├── project.py              # Project（基于目录的存储）
+    │   ├── chapter.py              # Chapter（文件 IO）
+    │   └── character.py            # Character
+    ├── storage/                    # 存储抽象层（占位，实际 IO 在 project_io）
+    ├── assets/                     # 图标资源
+    └── ui/
+        ├── styles.py               # 4 套主题（深夜墨/晨雾白/远山蓝/苍山绿）
+        ├── main_window.py          # 主窗口（三栏布局，纯 UI 编排）
+        ├── workers.py              # 后台线程（AgentWorker / TestConnectionWorker）
+        ├── project_dialogs.py      # 打开项目 / 工作流模式对话框
+        ├── appearance_dialog.py    # 外观设置（含 ColorPicker）
+        ├── model_dialog.py         # 模型设置
+        ├── agent_dialog.py         # 智能体管理
+        ├── sidebar.py              # 侧边栏
+        ├── editor_panel.py         # 编辑区（正文 + 8个规划文档标签页）
+        ├── agent_panel.py          # 智能体面板（办公室+工作流+对话）
+        ├── chat_rendering.py       # 聊天 Markdown 渲染 + 颜色池
+        ├── chat_widgets.py         # 消息气泡 / 输入框控件
+        ├── office_scene.py         # 办公室场景（QPainter + Agent 动画）
+        ├── workflow_bar.py         # 工作流迷你进度条
+        ├── workflow_panel.py       # WorkflowThread（后台执行）
+        └── agent_animation.py      # Agent 指示器动画
 ```
 
-## 架构设计
+## 架构速览
+
+> 各子系统的**原理、口径、公式、边界**见 `docs/` 对应文档；本节只留入口与一句话职责。
 
 ### 日志系统 (`core/logger.py`)
 
-参照 Java Logback 配置，提供统一的日志入口：
+参照 Java Logback 配置，统一入口 `get_logger(__name__)`。三路输出（info.log / error.log / 控制台彩色）、按天滚动 + 100MB 上限 + 保留 30 天、`threading.Lock` 线程安全、PyInstaller `sys.frozen` 兼容。
 
-```python
-from novel_writer.core.logger import get_logger
-logger = get_logger(__name__)
-```
+### LLM 层 (`core/llm/`) → [docs/LLM多驱动接口.md](docs/LLM多驱动接口.md)
 
-- **三路输出**：`info.log`（INFO/DEBUG）、`error.log`（WARNING+）、控制台（INFO+ 带彩色）
-- **滚动策略**：按天滚动 + 单文件 100MB 上限，保留 30 天
-- **线程安全**：`threading.Lock` 保护初始化，支持多线程场景
-- **PyInstaller 兼容**：自动检测 `sys.frozen`，日志输出到可执行文件旁
-
-### 文件格式
-
-- 章节正文：`.txt`（纯文本，不需要 Markdown 语法）
-- 章节概要：`{n}_标题.summary.md`（自动生成，结构化卡片）
-- 规划文档：`.md`（大纲、人物设定等有结构层级）
-- 细纲：`{n}_标题.outline.md`
-- 灵感：`.md`
-- 章节序号：变宽数字，不补零（`1_xxx.txt`），支持任意位数
-
-### 项目存储 (`core/project_io.py`)
-
-```python
-chapter_filename(number, title)         # "1_第一章.txt"
-scan_chapters(project_dir)              # 按数字排序扫描
-read_md / write_md                      # 原子写入（先写.tmp再rename，防崩溃丢数据）
-load_workflow / save_workflow            # 工作流进度
-rename_chapter(project_dir, n, title)   # 重命名章节（文件名+heading+细纲）
-safe_rename_chapter(project_dir, n, title)  # 安全重命名（冲突检测+自动备份）
-validate_chapter_content(content)       # 章节内容校验（空/过短/只有标题）
-generate_toc(project_dir)               # 生成 planning/目录.md
-fix_chapter_titles(project_dir)         # 用文件名标题修正正文 heading
-load_chapter_summaries(project_dir)     # 加载章节概要（用于上下文组装）
-```
-
-### 大世界状态系统 (`core/world_state.py`)
-
-像游戏存档一样追踪小说世界的结构化数据：
-
-```python
-from novel_writer.core.world_state import WorldState
-ws = WorldState(project_dir)
-ws.load()
-
-# 角色操作
-ws.get_character("凌尘")                    # 获取角色属性
-ws.update_character("凌尘", {"gold": 10})   # 更新属性（深度合并）
-ws.add_character("新角色", {...})            # 添加新角色
-
-# 物品操作
-ws.give_item("凌尘", "灵石矿", {...})       # 给予物品
-ws.remove_item("凌尘", "枯叶")              # 移除物品
-ws.add_item("青霜剑", {...})                # 添加到物品图鉴
-
-# 世界操作
-ws.add_location("禁地", {...})              # 添加地点
-ws.set_date("宗历1247年 秋")                # 设置时间
-ws.add_timeline_event(1, "事件", "地点")    # 记录时间线
-
-# LLM 结构化更新
-ws.apply_llm_update(update_json)            # 应用 LLM 返回的状态变化
-ws.save()
-
-# 上下文输出
-ws.build_context_text()                     # 生成文本摘要，注入 LLM 上下文
-```
-
-`world_state.json` 结构：
-```json
-{
-  "world": {"name": "青云修仙界", "locations": {...}, "power_system": {"levels": ["炼气", "筑基", ...]}},
-  "characters": {"凌尘": {"cultivation": {"level": "炼气", "sub_level": "二层"}, "hp": 100, "sp": 30, "gold": 5, "inventory": [...], "equipment": {...}, "skills": [...], "location": "杂院"}},
-  "items_catalog": {"青霜剑": {"type": "武器", "effect": "冰系攻击", "durability": "...", "uses": -1, "life_save": false}},
-  "timeline": [{"chapter": 1, "event": "...", "location": "..."}]
-}
-```
-
-### LLM 层 (`core/llm/`)
-
-多驱动架构，支持三种后端：
-
-| 驱动 | 文件 | 协议 | 适用场景 |
-|------|------|------|----------|
-| `LLMClient` | `client.py` | OpenAI 兼容 | DeepSeek/Kimi/GLM/通义/OpenAI |
-| `ClaudeLLM` | `claude.py` | Anthropic 原生 | Claude 系列（需 `anthropic` 包） |
-| `OllamaLLM` | `ollama.py` | Ollama HTTP | 本地模型（qwen3.5 等） |
-| `OpenAICompatLLM` | `openai_compat.py` | OpenAI 兼容 | 通用 OpenAI 兼容接口 |
-
-统一接口：`api_key + base_url + model`，切换后端只需改配置。
-
-注意：所有 LLM 驱动采用懒加载（`_get_async_openai()` 等），避免 PySide6 shiboken 与 openai/anthropic 的导入链冲突。所有客户端使用 `certifi.where()` 显式指定 CA 证书路径，避免 Windows 系统证书库卡顿。
+四驱动（OpenAI 兼容 / Claude 原生 / Ollama / 通用兼容）统一 `api_key + base_url + model` 契约。**懒加载** SDK 规避 shiboken 导入链冲突；显式 `certifi.where()` 规避 Windows 证书库卡顿。
 
 ### Agent 系统 (`core/agents/`)
 
-配置集中在 `config/agents.json`，每个 Agent 可配独立模型。Agent 的 `skills` 字段用于工作流技能匹配。
+配置集中在 `config/agents.json`，每个 Agent 可配独立模型。`skills` 字段用于工作流技能匹配（`WorkflowStep.needs` → `find_agent`）。
 
-### 工作流引擎 (`core/workflow/`)
+### 工作流引擎 (`core/workflow/`) → [docs/工作流引擎算法.md](docs/工作流引擎算法.md)
 
-```python
-class WorkflowMode(Enum):
-    NEW_BOOK              # 新书全流程：从立意到审校
-    NEW_BOOK_PLANNING     # 新书立意：只生成规划文档
-    CONTINUE              # 续写：从已有章节继续
-    FILL_GAPS             # 查漏补缺：检查缺失章节并补写
-    VALIDATE              # 校验：审核+校对已有章节
+五模式（NEW_BOOK / NEW_BOOK_PLANNING / CONTINUE / FILL_GAPS / VALIDATE）由共享步骤列表组合。支持 `every` 定时、`repeat` 循环、断点恢复、智能跳过。特殊步骤（toc / fix_titles / chapter_summary / world_state_update / quality_check）走 `BUILTIN_STEP_HANDLERS` 注册表，不走标准 LLM 路径。
 
-class WorkflowRunner:
-    async def run(workflow, progress)         # 执行完整工作流
-    def find_agent(skill)                     # 技能匹配
+### 上下文组装 (`core/workflow/context.py`) → [docs/分层上下文组装算法.md](docs/分层上下文组装算法.md)
 
-def build_workflow(mode, project_info, start, end) -> WorkflowDef:
-    """根据模式构建工作流定义。"""
+四层 ContextTier（GLOBAL/WORLD/NARRATIVE/WORKING），按步骤类型映射；超限按 RAG → 旧章节 → 规划 → 推演 → 概要优先级压缩。规划文档 BM25 检索只注入相关片段；人物设定全文注入。
 
-BUILTIN_STEP_HANDLERS  # 内置步骤注册表（toc/fix_titles/world_state_update/chapter_summary/quality_check）
-```
+### 质量检查 (`core/quality_checker.py`) → [docs/质量检查算法.md](docs/质量检查算法.md)
 
-- 特殊步骤（toc、fix_titles、world_state_update、chapter_summary、quality_check）通过 `builtin_steps.BUILTIN_STEP_HANDLERS` 注册表分发，不走标准 LLM 步骤路径
-- 上下文按 `ContextTier`（GLOBAL/WORLD/NARRATIVE/WORKING）分层组装，超限时按 RAG→旧章节→规划文档→推演→概要的优先级压缩
+10 维规则打分（0–100 加权总分）+ 问题/建议列表。纯规则，不调 LLM。
 
-- 章节步骤自动从响应提取标题生成文件名
-- 已有章节文件会被复用（覆盖写入），不重复创建
-- 支持循环步骤（repeat）、定时触发（every）、断点恢复
-- **智能跳过**：已有内容的章节在 LLM 调用前跳过，提升效率
-- **标题约束**：已有文件名的章节，prompt 中注入标题约束防止 LLM 改标题
-- **节奏控制**：根据目标章节数自动划分 7 个阶段，注入节奏要求到写作和反哺 prompt
-- **定时步骤**：灵感（每3章）、推演（每章）、概要（每章）、大世界状态（每章）、目录（每章）、润色（每2章）、校验（每章）、质量检查（每章）、摘要（每5章）、规划反哺（每10章）
-- **纯工具步骤**：`fix_titles`、`toc`、`chapter_summary`、`world_state_update`、`quality_check` 不走标准 agent 流程
+### 追读力 (`core/reading_power.py`) → [docs/追读力算法.md](docs/追读力算法.md)
 
-### 质量检查模块 (`core/quality_checker.py`)
+钩子 5 类 × 强度、爽点、微兑现、阅读债务；滑窗统计生成下一章写作指导。
 
-自动评估章节质量，10 个维度：
+### 记忆与世界状态 → [docs/长期记忆算法.md](docs/长期记忆算法.md) · [docs/大世界状态算法.md](docs/大世界状态算法.md)
 
-```python
-from novel_writer.core.quality_checker import QualityChecker
+- `memory.py`：11 桶跨章事实，同键去重 + outdated 审计。
+- `world_state.py`：世界/角色/物品/时间线**当前快照**，深度合并 + LLM 结构化更新。
+- 分工：**world_state 存快照，memory 存流水**。
 
-checker = QualityChecker(project_dir)
-report = checker.check_chapter(content, chapter_number)
+### 写后沉淀 (`core/workflow/sediment.py`) → [docs/写后沉淀算法.md](docs/写后沉淀算法.md)
 
-# 报告包含：
-# - total_score: 总分 0-100
-# - word_count_score: 篇幅得分
-# - structure_score: 结构得分
-# - dialogue_score: 对话得分
-# - scene_score: 场景得分
-# - rhythm_score: 节奏得分
-# - hook_score: 钩子得分
-# - cool_point_score: 爽点得分
-# - micro_payoff_score: 微兑现得分
-# - consistency_score: 一致性得分
-# - sentence_variety_score: 句式多样性得分
-# - issues: 问题列表
-# - suggestions: 建议列表
-```
+每章写完自动抽取：状态变化 / 伏笔 / 章节事件 / 四维追踪 → 记忆；追读力分析落盘。
+
+### 角色推演 (`core/character_sim.py`) → [docs/角色推演算法.md](docs/角色推演算法.md)
+
+人物设定 → 角色档案 → LLM 多视角推演 → 剧情建议；`sim_cache/sim_{n}.md` 注入写作上下文。
 
 ### 导出功能 (`core/exporter.py`)
 
-支持多种格式导出：
-
 ```python
 from novel_writer.core.exporter import Exporter
-
 exporter = Exporter(project_dir)
-
-# TXT 导出
-txt_path = exporter.export_txt()
-
-# EPUB 导出（需要 ebooklib）
-epub_path = exporter.export_epub()
-
-# PDF 导出（需要 reportlab）
-pdf_path = exporter.export_pdf()
+exporter.export_txt()    # TXT
+exporter.export_epub()   # EPUB（需 ebooklib）
+exporter.export_pdf()    # PDF（需 reportlab）
 ```
-
-### 追读力系统 (`core/reading_power.py`)
-
-量化读者体验，追踪章节吸引力：
-
-```python
-from novel_writer.core.reading_power import ReadingPowerTracker
-
-tracker = ReadingPowerTracker(project_dir)
-
-# 分析章节
-rp = tracker.analyze_chapter(content, chapter_number)
-tracker.record(rp)
-
-# 生成指导
-guidance = tracker.build_guidance(next_chapter_number)
-
-# 统计
-hook_stats = tracker.get_hook_stats(window=10)
-cool_point_stats = tracker.get_cool_point_stats(window=10)
-debt_total = tracker.get_debt_total()
-```
-
-### 智能上下文组装 (`_build_context`)
-
-4层分层架构 + BM25 检索，按任务类型自动裁剪：
-
-```python
-# ContextTier 枚举控制注入量
-Tier 0 (GLOBAL):   项目元信息                           # ~100 tokens
-Tier 1 (WORLD):    + 世界设定/角色状态/角色约束           # ~500 tokens
-Tier 2 (NARRATIVE):+ 剧情摘要/伏笔/反模式/追读力 + RAG  # ~2000 tokens
-Tier 3 (WORKING):  + 章节概要/全文/推演/RAG              # ~4000 tokens
-
-# 步骤 → 层级映射 (STEP_CONTEXT_TIERS)
-chapter       → WORKING   # 写作需要完整上下文
-polish        → NARRATIVE # 润色需要风格指导
-inspiration   → NARRATIVE # 灵感需要剧情进展
-review        → NARRATIVE # 审核需要世界观+叙事
-sim           → WORLD    # 推演需要角色设定
-proofread     → GLOBAL   # 校对只需当前章节
-quality_check → GLOBAL   # 质量检查只需当前章节
-toc/fix_titles→ GLOBAL   # 工具步骤
-```
-
-规划文档注入策略：
-- **人物设定.md**：全文注入（角色约束需要完整信息）
-- **其他规划文档**：统一走 BM25 检索，只注入与当前任务相关的片段（top 5，每段最多 300 字）
-- **历史章节**：最近 2 章全文 + 更早的走 RAG 检索
-- RAG 索引支持历史章节和规划文档的混合检索
-- 检索失败时回退为每个文档取前 500 字
-
-优化点：
-- 角色状态合并去重（world_state + memory.character_state）
-- 章节概要窗口 10→5，全文窗口 3→2
-- 上下文拆分稳定前缀/变量后缀，优化 Prompt Caching
-- Token 估算 + debug 日志
 
 ### UI 架构
 
 ```
 MainWindow (splitter: 220 / 560 / 620)
 ├── Sidebar         # 项目管理、章节树、字数统计
-├── EditorPanel     # 正文 + 8个规划文档标签页（QTabWidget）
-│   ├── 正文标签     # 章节编辑（字数统计 + 保存）
-│   └── 8个规划标签   # 立意/大纲/人物/世界观/时间线/主线/支线/伏笔
-│       ├── 未生成：灰色不可编辑
-│       └── 已生成：可编辑 + 保存按钮
-└── AgentPanel      # 整合面板
-    ├── OfficeScene     # 办公室场景 — QPainter + Agent 动画
-    ├── WorkflowMiniBar # 进度条（百分比）+ 执行日志 + 开始/停止
-    └── ChatArea        # 对话区 — SQLite 持久化
+├── EditorPanel     # 正文 + 8个规划文档标签页
+└── AgentPanel      # 办公室场景 + 工作流进度/日志 + 对话区
 ```
 
-- 右侧面板布局：办公室场景占大部分空间，下方依次是进度条、执行日志、对话区
 - 聊天记录按项目隔离：`data/projects/<name>/chat.db`
-- 对话上下文包含全部规划文档 + 所有章节正文
 - 工作流调用 Agent 时对话自动写入聊天记录
 - `AgentWorker(QThread)` 后台执行，信号驱动 UI
-- 流式输出按 Agent 隔离，切换不影响进行中的流
+- 流式输出按 Agent 隔离
 
 ### 菜单结构
 
@@ -373,7 +197,35 @@ MainWindow (splitter: 220 / 560 / 620)
 └── 关于           # 外观设置、关于
 ```
 
-## 添加新供应商
+## 常用命令
+
+```bash
+# 创建环境
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -e .
+
+# 启动
+python -m novel_writer
+
+# 测试
+python -m pytest tests/ -v
+python -m pytest tests/test_quality_checker.py -v
+python -m pytest tests/test_reading_power.py -v
+python -m pytest tests/test_workflow.py -v
+python -m pytest tests/test_exporter.py -v
+
+# 覆盖率
+python -m pytest tests/ --cov=src/novel_writer --cov-report=html
+
+# 打包
+build_installer.bat              # 一键：venv → 依赖 → ico → PyInstaller → Inno Setup
+                                 # 输出 output/NovelWriter-Setup.exe
+```
+
+## 扩展指南
+
+### 添加新供应商
 
 编辑 `config/default_providers.json`：
 
@@ -381,54 +233,29 @@ MainWindow (splitter: 220 / 560 / 620)
 {"name": "供应商名", "type": "openai_compat", "base_url": "https://api.example.com/v1"}
 ```
 
-支持的类型：
-- `openai_compat` — OpenAI 兼容协议（DeepSeek/Kimi/GLM/通义/OpenAI）
-- `ollama` — 本地 Ollama 模型
+类型：`openai_compat`（DeepSeek/Kimi/GLM/通义/OpenAI）· `ollama`（本地）。新增类型需同步 `llm/client.py` 分发与模型设置对话框。
 
-## Claude 原生接口
+### Claude 原生接口
 
-使用 `anthropic` 包直连，无需代理：
-
-1. 安装依赖：`pip install anthropic`
+1. `pip install anthropic`
 2. 设置 → 模型 → 选择 Claude 供应商
-3. 填入 API Key，选择模型（如 `claude-sonnet-4-20250514`）
+3. 填入 API Key，选择模型
 
-## Ollama 本地模型
+### Ollama 本地模型
 
-1. 安装 Ollama：https://ollama.com
+1. 安装 [Ollama](https://ollama.com)
 2. `ollama pull qwen3.5:9b`
 3. 设置 → 模型中选择 Ollama，自动检测已安装模型
 
-## 扩展智能体
+### 扩展智能体
 
 设置 → 智能体 中添加，或编辑 `config/agents.json`。
 
-## 开发环境
+### 新增算法/规范文档
 
-```bash
-git clone <repo-url>
-cd novel-writer
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-python -m novel_writer
-```
-
-## 运行测试
-
-```bash
-# 运行所有测试
-python -m pytest tests/ -v
-
-# 运行特定测试
-python -m pytest tests/test_quality_checker.py -v
-python -m pytest tests/test_reading_power.py -v
-python -m pytest tests/test_workflow.py -v
-python -m pytest tests/test_exporter.py -v
-
-# 查看测试覆盖率
-python -m pytest tests/ --cov=src/novel_writer --cov-report=html
-```
+1. 在 `docs/` 撰写（模板：引擎路径 + 一句话总结 + 口径表 + 边界）
+2. **只在 [docs/README.md](docs/README.md) 登记**，勿改本文件清单
+3. 若涉及口径冲突，更新 `docs/README.md`「权威归属」表
 
 ## 打包发布
 
@@ -438,16 +265,9 @@ python -m pytest tests/ --cov=src/novel_writer --cov-report=html
 build_installer.bat
 ```
 
-自动流程：
-1. 创建/检查虚拟环境
-2. 安装依赖（含 PyInstaller）
-3. 从 `logo.png` 生成 `logo.ico`
-4. PyInstaller 打包为单文件 exe
-5. Inno Setup 生成安装包
+自动流程：创建/检查 venv → 安装依赖（含 PyInstaller）→ `logo.png` 生成 `logo.ico` → PyInstaller 单文件 exe → Inno Setup 安装包。
 
-输出：`output/NovelWriter-Setup.exe`
-
-### 打包脚本文件
+### 打包脚本
 
 | 文件 | 用途 |
 |------|------|
@@ -457,7 +277,7 @@ build_installer.bat
 
 ### 前提条件
 
-- [Inno Setup 6](https://jrsoftware.org/isdl.php) — 生成安装包
+- [Inno Setup 6](https://jrsoftware.org/isdl.php)
 - Python >= 3.10
 
 ### 手动打包
@@ -469,14 +289,12 @@ pyinstaller novel-writer.spec
 
 ### 打包注意事项
 
-1. **数据目录**：打包后，`data/` 和 `config/` 目录会在可执行文件旁边创建
-2. **日志目录**：`logs/` 目录会在运行时自动创建
-3. **依赖项**：PyInstaller 会自动收集所有依赖，但某些动态导入的模块可能需要手动添加
-4. **PySide6 资源**：PyInstaller 会自动处理 PySide6 的资源文件
+1. **数据目录**：打包后 `data/`、`config/` 在可执行文件旁创建
+2. **日志目录**：`logs/` 运行时自动创建
+3. **依赖项**：PyInstaller 自动收集，动态导入可能需手动加 hidden imports
+4. **PySide6 资源**：PyInstaller 自动处理
 
 ### 分发
-
-打包后的目录结构：
 
 ```
 dist/NovelWriter/
@@ -487,4 +305,4 @@ dist/NovelWriter/
 └── logs/                    # 日志（运行时创建）
 ```
 
-可以直接将 `dist/NovelWriter/` 目录打包为 zip 分发。
+可直接 zip 分发 `dist/NovelWriter/`。
