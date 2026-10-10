@@ -84,6 +84,7 @@ class WorkflowModeDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(t("workflow_title"))
         self.setMinimumWidth(380)
+        self._default_end_chapter = default_end_chapter
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -146,7 +147,11 @@ class WorkflowModeDialog(QDialog):
             if chapters:
                 last_num = max(c["number"] for c in chapters)
                 start_spin.setValue(last_num + 1)
-                end_spin.setValue(last_num + 20)
+                # 结束章：优先用项目目标章节数（立意/分卷），而非 last+20
+                target = self._default_end_chapter
+                if target <= last_num:
+                    target = last_num + 20  # 目标不比已写的多时才兜底
+                end_spin.setValue(target)
             start_spin.setEnabled(False)  # 锁死起始章节
             end_spin.setEnabled(True)
             self._chapter_group.setTitle("续写范围")
