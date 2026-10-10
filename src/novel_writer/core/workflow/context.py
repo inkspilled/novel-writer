@@ -159,14 +159,18 @@ class ContextBuilder:
         self.max_context_tokens = max_context_tokens
 
     def build(self, input_files: list[str], n: int, step_id: str = "") -> str:
-        tier = STEP_CONTEXT_TIERS.get(step_id, ContextTier.WORKING)
-        parts: list[str] = []
+        """组装上下文 — 注意力优化布局。
 
-        # ── Tier 0: 项目元信息（所有任务共享，缓存友好前缀） ──
-        parts.append(self._meta_line())
+        布局原则（对抗「U 形注意力曲线」）：
+          头部（高注意力）= 硬约束 + 活性记忆卡 + 任务目标
+          中部（参考区）  = 世界设定 + 规划文档 + 历史章节
+          尾部（高注意力）= 未解伏笔 + 信息差 + 承接点 + 写作禁忌
+        """
+        tier = STEP_CONTEXT_TIERS.get(step_id, ContextTier.WORKING)
 
         # ── 校对步骤特殊处理：只注入当前章节 ──
         if step_id == "proofread":
+            parts = [self._meta_line()]
             chapter_file = project_io.find_chapter_file(self.project_dir, n)
             if chapter_file:
                 chapter_path = self.project_dir / project_io.CHAPTERS_DIR / chapter_file
@@ -177,40 +181,72 @@ class ContextBuilder:
             return "\n\n".join(parts)
 
         if tier.value < ContextTier.WORLD.value:
-            return self._assemble_input_files(parts, input_files, n)
+            return self._assemble_input_files([self._meta_line()], input_files, n)
 
-        # ── Tier 1: 世界观层 ──
+        # 准备数据源
         gs = WorldState(self.project_dir)
         gs.load()
         mem = MemoryScratchpad(self.project_dir)
 
-        self._add_world_brief(parts, gs)
-        char_states = build_merged_character_states(gs, mem)
-        if char_states:
-            parts.append(char_states)
+        # ═══ 头部：硬约束 + 活性记忆（高注意力区） ═══
+        head: list[str] = []
+        meta = self._meta_line()
+        if meta:
+            head.append(meta)
 
-        char_file_content = self._add_planning_docs(parts, input_files, n, step_id)
+        # 角色锚定硬约束 — 放最前面，确保模型最先看到
+        char_file_content = ""
+        planning_docs_for_rag: list[tuple[str, str]] = []
+        for f in input_files:
+            if f == "prev_chapters":
+                continue
+            for p, content in self._resolve_input_files(f, n):
+                if p.name.endswith("人物设定.md"):
+                    char_file_content = content
+                else:
+                    planning_docs_for_rag.append((p.name, content))
 
-        # 角色约束（从人物设定提取）
         if char_file_content:
             constraint = build_character_constraint(char_file_content)
             if constraint:
-                parts.append(constraint)
+                head.append(constraint)
+
+        # 活性记忆卡：按本章相关实体（从大纲提取）精准拉取状态
+        active_cards = self._build_active_memory_cards(gs, mem, n)
+        if active_cards:
+            head.append(active_cards)
+
+        # ═══ 中部：参考材料（可被压缩裁剪） ═══
+        middle: list[str] = []
+        self._add_world_brief(middle, gs)
+        char_states = build_merged_character_states(gs, mem)
+        if char_states:
+            middle.append(char_states)
+
+        # 规划文档：RAG 片段
+        if planning_docs_for_rag:
+            rag_parts = self._rag_planning_fragments(planning_docs_for_rag, step_id, n)
+            if rag_parts is None:
+                for fname, content in planning_docs_for_rag:
+                    middle.append(f"=== {fname}（摘要）===\n{content[:500]}")
+            elif rag_parts:
+                middle.append(rag_parts)
 
         if tier.value < ContextTier.NARRATIVE.value:
-            return "\n\n".join(parts)
+            # 低层级：头+中，尾部只保留最少
+            tail = self._build_attention_tail(mem, gs, n, minimal=True)
+            return "\n\n".join(head + middle + tail)
 
-        # ── Tier 2: 叙事记忆层 ──
-        self._add_narrative_memory(parts, mem, n)
+        if tier.value >= ContextTier.WORKING.value:
+            # 工作记忆也放中部（历史章节体量大）
+            self._add_working_memory(middle, input_files, n, step_id)
 
-        if tier.value < ContextTier.WORKING.value:
-            return "\n\n".join(parts)
+        # ═══ 尾部：必须处理的活性信号（高注意力区） ═══
+        tail = self._build_attention_tail(mem, gs, n, minimal=False)
 
-        # ── Tier 3: 工作记忆层（仅写作用） ──
-        self._add_working_memory(parts, input_files, n, step_id)
-
-        parts = compress_context(parts, self.max_context_tokens)
-        result = "\n\n".join(parts)
+        all_parts = head + middle + tail
+        all_parts = compress_context(all_parts, self.max_context_tokens)
+        result = "\n\n".join(all_parts)
         est_tokens = estimate_tokens(result)
         logger.debug("上下文组装完成: step=%s n=%d tier=%s tokens≈%d chars=%d",
                      step_id, n, tier.name, est_tokens, len(result))
@@ -387,6 +423,192 @@ class ContextBuilder:
             if f == "prev_chapters":
                 self._add_recent_chapters(parts, n)
                 self._add_chapter_rag(parts, n)
+
+    # ── 注意力优化布局：头部活性记忆卡 + 尾部高注意力信号 ──
+
+    def _extract_chapter_entities(self, n: int) -> list[str]:
+        """从大纲中提取第 n 章涉及的实体名（角色/地点）。
+
+        用确定性规则而非语义检索：扫描大纲该章描述段中出现的已知角色名和地点名。
+        """
+        entities: list[str] = []
+        outline_path = self.project_dir / "planning" / "大纲.md"
+        if not outline_path.exists():
+            return entities
+        outline = project_io.read_md(outline_path)
+        if not outline:
+            return entities
+
+        # 提取第 n 章的描述段
+        query = extract_chapter_query(outline, n)
+        if not query:
+            return entities
+
+        # 从 world_state 拉取已知实体名，逐一在本章描述中查找
+        gs = WorldState(self.project_dir)
+        gs.load()
+        for name in gs.characters:
+            if name and name in query:
+                entities.append(name)
+        for loc_name in (gs.world.get("locations") or {}):
+            if loc_name and loc_name in query:
+                entities.append(loc_name)
+
+        # 若未命中任何已知实体，回退到 memory 中最近出现过的角色
+        if not entities:
+            mem = MemoryScratchpad(self.project_dir)
+            for item in mem.get_active("character_state")[:5]:
+                subj = item.get("subject", "")
+                if subj and len(subj) >= 2:
+                    entities.append(subj)
+        return entities[:8]  # 最多 8 个实体
+
+    def _build_active_memory_cards(self, gs: WorldState, mem: MemoryScratchpad, n: int) -> str:
+        """构建活性记忆卡：只注入本章相关实体的当前状态（精准注入，非全量 dump）。
+
+        设计原则：把「本章要写的角色/地点的活信息」放在上下文头部高注意力区，
+        而不是淹没在中部的全量角色状态表里。
+        """
+        entities = self._extract_chapter_entities(n)
+        if not entities:
+            return ""
+
+        lines = [f"=== 活性记忆卡（第{n}章相关实体） ==="]
+        for name in entities:
+            card = [f"【{name}】"]
+
+            # world_state 结构化状态（角色）
+            char = gs.get_character(name)
+            if char:
+                cult = char.get("cultivation", {})
+                if cult:
+                    card.append(f"  境界: {cult.get('level', '?')}{cult.get('sub_level', '')}")
+                if char.get("location"):
+                    card.append(f"  位置: {char['location']}")
+                if char.get("hp") is not None:
+                    card.append(f"  生命: {char['hp']}  灵力: {char.get('sp', 0)}")
+                inv = char.get("inventory", [])
+                if inv:
+                    card.append(f"  持有: {', '.join(i.get('name', '?') for i in inv[:5])}")
+                skills = char.get("skills", [])
+                if skills:
+                    card.append(f"  技能: {', '.join(skills[:5])}")
+            else:
+                # 地点或其他实体
+                loc_info = (gs.world.get("locations") or {}).get(name)
+                if loc_info is not None:
+                    if isinstance(loc_info, dict):
+                        desc = loc_info.get("desc") or loc_info.get("description") or ""
+                        card.append(f"  描述: {desc[:80]}" if desc else "  地点")
+                    elif isinstance(loc_info, str):
+                        card.append(f"  描述: {loc_info[:80]}")
+                    else:
+                        card.append("  地点")
+
+            # memory 中该实体的活跃状态变化（近 3 章）
+            for item in mem.get_active("character_state"):
+                if item.get("subject") == name:
+                    asp = item.get("aspect", "")
+                    val = item.get("value", "")
+                    ch = item.get("source_chapter", 0)
+                    if ch >= n - 3:
+                        card.append(f"  [{asp}] {val}（第{ch}章）")
+
+            # 该实体的资源得失
+            for item in mem.get_active("resources"):
+                if item.get("subject") == name:
+                    val = item.get("value", "")
+                    ch = item.get("source_chapter", 0)
+                    if ch >= n - 3:
+                        card.append(f"  [资源] {val}（第{ch}章）")
+
+            # 该实体的情绪
+            for item in mem.get_active("emotional_arcs"):
+                if item.get("subject") == name:
+                    val = item.get("value", "")
+                    ch = item.get("source_chapter", 0)
+                    if ch >= n - 2:
+                        card.append(f"  [情绪] {val}（第{ch}章）")
+
+            if len(card) > 1:  # 不只标题行
+                lines.append("\n".join(card))
+
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _build_attention_tail(self, mem: MemoryScratchpad, gs: WorldState, n: int, minimal: bool = False) -> list[str]:
+        """构建注意力尾部：放在上下文末尾的高注意力区。
+
+        尾部内容是模型生成前「最后看到」的信息，注意力权重最高，
+        适合放必须处理的活性信号：未解伏笔、信息差、承接点、写作禁忌。
+        """
+        tail: list[str] = []
+
+        # ── 未解伏笔（必须回收的钩子） ──
+        open_loops = mem.get_open_loops(limit=6)
+        if open_loops:
+            loop_lines = ["⚠ 【未解伏笔 · 需要在近期章节处理】"]
+            for item in open_loops:
+                subj = item.get("subject", "")
+                val = item.get("value", "")
+                ch = item.get("source_chapter", 0)
+                loop_lines.append(f"- [{subj}] {val}（第{ch}章埋设）")
+            tail.append("\n".join(loop_lines))
+
+        if minimal:
+            return tail
+
+        # ── 读者承诺（待兑现的期待） ──
+        promises = mem.get_active("reader_promises")[:4]
+        if promises:
+            p_lines = ["⚠ 【读者承诺 · 待兑现】"]
+            for item in promises:
+                subj = item.get("subject", "")
+                val = item.get("value", "")
+                p_lines.append(f"- [{subj}] {val}")
+            tail.append("\n".join(p_lines))
+
+        # ── 信息差（谁知道什么/谁不知道什么） ──
+        info_items = mem.get_active("info_boundary")[:6]
+        if info_items:
+            i_lines = ["⚠ 【信息边界 · 避免穿帮】"]
+            for item in info_items:
+                subj = item.get("subject", "")
+                asp = item.get("aspect", "")
+                val = item.get("value", "")
+                if "未知" in asp or item.get("payload", {}).get("hidden"):
+                    i_lines.append(f"- {subj} **不知道**：{val}")
+                else:
+                    i_lines.append(f"- {subj} 已知：{val}")
+            tail.append("\n".join(i_lines))
+
+        # ── 上章承接点 ──
+        if n > 1:
+            prev_summary_path = None
+            prev_file = project_io.find_chapter_file(self.project_dir, n - 1)
+            if prev_file:
+                m = project_io._CHAPTER_RE.match(prev_file)
+                if m:
+                    prev_summary_path = project_io.chapter_summary_path(self.project_dir, n - 1, m.group(2))
+            if prev_summary_path and prev_summary_path.exists():
+                content = project_io.read_md(prev_summary_path)
+                # 只取「承接点」行
+                for line in content.split("\n"):
+                    if "承接" in line:
+                        tail.append(f"🔗 【上章承接点】{line.strip()}")
+                        break
+
+        # ── 反模式禁忌 + 追读力指导（写作约束，放尾部强化） ──
+        tracker = AntiPatternTracker(self.project_dir)
+        constraint_text = tracker.get_constraint_text()
+        if constraint_text:
+            tail.append(constraint_text)
+
+        rp_tracker = ReadingPowerTracker(self.project_dir)
+        rp_guidance = rp_tracker.build_guidance(n)
+        if rp_guidance:
+            tail.append(rp_guidance)
+
+        return tail
 
     def _add_recent_chapters(self, parts: list[str], n: int):
         chapters_dir = self.project_dir / project_io.CHAPTERS_DIR
