@@ -187,8 +187,8 @@ class WorkflowRunner:
                     return
 
         logger.info("执行步骤: %s (第%d章) -> %s", step.id, n, agent.title)
-        # 每个步骤独立：清空 agent 对话历史，防止跨步骤上下文累积膨胀
-        agent.clear_history()
+        # 注意：不清空 agent 历史 — 步骤间需要上下文关联
+        # （大纲→人物→世界观 通过对话历史传递，清空会导致各写各的）
         if self.on_step_start:
             self.on_step_start(step.id, n, agent.title)
 

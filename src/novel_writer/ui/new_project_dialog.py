@@ -309,11 +309,17 @@ class NewProjectDialog(QDialog):
         style = self.style_combo.currentText()
         title = self.title_edit.text().strip() or "未定"
 
+        # 互相关联：生成其中一个字段时，注入另一个字段的现有内容作为上下文
+        current_theme = self.theme_edit.toPlainText().strip()
+        current_direction = self.direction_edit.toPlainText().strip()
+
         if field == "theme":
+            # 生成核心立意时，参考已有的规划方向
+            ref = f"\n\n【已有规划方向（必须保持一致）】\n{current_direction}" if current_direction else ""
             prompt = f"""你是小说主编。根据一句话想法写核心立意。
 
 题材：{genre}  风格：{style}  书名：{title}
-用户想法：{one_liner}
+用户想法：{one_liner}{ref}
 
 严格按以下格式输出，总字数不超过200字：
 
@@ -324,10 +330,12 @@ class NewProjectDialog(QDialog):
 
 不要有任何多余解释。"""
         else:
+            # 生成规划方向时，必须参考已有的核心立意
+            ref = f"\n\n【已有核心立意（必须严格保持一致的题材和风格）】\n{current_theme}" if current_theme else ""
             prompt = f"""你是小说策划。根据一句话方向写规划方向。
 
 题材：{genre}  风格：{style}  书名：{title}
-用户想法：{one_liner}
+用户想法：{one_liner}{ref}
 
 严格按以下格式输出，总字数不超过200字：
 
