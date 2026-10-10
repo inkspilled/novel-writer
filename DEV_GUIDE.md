@@ -6,24 +6,28 @@
 
 ## 技术栈
 
-| 技术 | 版本 | 用途 |
-|------|------|------|
-| Python | >= 3.10 | 运行时 |
-| PySide6 | >= 6.7 | GUI 框架 |
-| Pydantic | >= 2.0 | 数据模型 |
-| openai | >= 1.0 | OpenAI 兼容 LLM 接口 |
-| anthropic | >= 0.40 | Claude 原生接口 |
-| httpx | >= 0.27 | Ollama HTTP 接口 |
-| reportlab | >= 4.0 | PDF 导出 |
+| 技术 | 版本 | 用途 | 许可 |
+|------|------|------|------|
+| Python | >= 3.10 | 运行时 | PSF |
+| PySide6 | >= 6.7 | GUI 框架 | LGPL-3.0（动态链接合规） |
+| Pydantic | >= 2.0 | 数据模型 | MIT |
+| openai | >= 1.0 | OpenAI 兼容 LLM 接口 | Apache-2.0 |
+| anthropic | >= 0.40 | Claude 原生接口 | MIT |
+| httpx | >= 0.27 | HTTP 客户端 | BSD-3 |
+| reportlab | >= 4.0 | PDF 导出 | BSD-3 |
+
+> EPUB 导出为**纯标准库**（`zipfile`），无第三方依赖。原 `ebooklib`（AGPL）因商用风险已移除。
 
 ## 项目结构
 
 ```
 novel-writer/
+├── main.py                         # 根目录入口（VSCode 可直接运行）
 ├── pyproject.toml                  # 项目配置 & 依赖
-├── novel-writer.spec               # PyInstaller 配置
+├── novel-writer.spec               # PyInstaller onedir 配置（DLL 模式，启动快）
 ├── build_installer.bat             # 一键打包脚本
 ├── installer.iss                   # Inno Setup 安装包脚本
+├── ChineseSimplified.isl           # 中文安装语言包
 ├── logo.png                        # 应用图标
 ├── docs/                           # 项目文档（总索引见 docs/README.md）
 │   ├── README.md                   # 唯一文档总目录（性质标签 + 权威归属）
@@ -91,7 +95,8 @@ novel-writer/
     │   ├── memory.py               # → docs/长期记忆算法.md
     │   ├── rag.py                  # → docs/RAG检索算法.md
     │   ├── chapter_tracker.py      # → docs/章节四维追踪算法.md
-    │   └── character_sim.py        # → docs/角色推演算法.md
+    │   ├── character_sim.py        # → docs/角色推演算法.md
+    │   └── text_signals.py         # 钩子/爽点/微兑现词表（唯一权威）
     ├── models/
     │   ├── project.py              # Project（基于目录的存储）
     │   ├── chapter.py              # Chapter（文件 IO）
@@ -109,6 +114,7 @@ novel-writer/
         ├── sidebar.py              # 侧边栏
         ├── editor_panel.py         # 编辑区（正文 + 8个规划文档标签页）
         ├── agent_panel.py          # 智能体面板（办公室+工作流+对话）
+        ├── splash.py               # 启动画面（品牌渐变 + 进度条缓动动画）
         ├── chat_rendering.py       # 聊天 Markdown 渲染 + 颜色池
         ├── chat_widgets.py         # 消息气泡 / 输入框控件
         ├── office_scene.py         # 办公室场景（QPainter + Agent 动画）
@@ -127,7 +133,7 @@ novel-writer/
 
 ### LLM 层 (`core/llm/`) → [docs/LLM多驱动接口.md](docs/LLM多驱动接口.md)
 
-四驱动（OpenAI 兼容 / Claude 原生 / Ollama / 通用兼容）统一 `api_key + base_url + model` 契约。**懒加载** SDK 规避 shiboken 导入链冲突；显式 `certifi.where()` 规避 Windows 证书库卡顿。
+**统一 OpenAI 兼容 API**：`api_key + base_url + model` 三要素，无类型区分。支持 Ollama / llama.cpp / vLLM / LM Studio / 云端 API。模型列表可拉取（`GET /models`）下拉选择。**懒加载** SDK 规避 shiboken 导入链冲突；显式 `certifi.where()` 规避 Windows 证书库卡顿。
 
 ### Agent 系统 (`core/agents/`)
 
@@ -204,20 +210,15 @@ python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -e .
 
-# 启动
-python -m novel_writer
+# 启动（三选一）
+python main.py                   # 根目录入口
+python -m novel_writer           # 模块入口
+# VSCode：打开 main.py → 右上角 ▶
 
 # 测试
 python -m pytest tests/ -v
-python -m pytest tests/test_quality_checker.py -v
-python -m pytest tests/test_reading_power.py -v
-python -m pytest tests/test_workflow.py -v
-python -m pytest tests/test_exporter.py -v
 
-# 覆盖率
-python -m pytest tests/ --cov=src/novel_writer --cov-report=html
-
-# 打包
+# 打包（onedir DLL 模式，启动快）
 build_installer.bat              # 一键：venv → 依赖 → ico → PyInstaller → Inno Setup
                                  # 输出 output/NovelWriter-Setup.exe
 ```
@@ -264,44 +265,28 @@ build_installer.bat              # 一键：venv → 依赖 → ico → PyInstal
 build_installer.bat
 ```
 
-自动流程：创建/检查 venv → 安装依赖（含 PyInstaller）→ `logo.png` 生成 `logo.ico` → PyInstaller 单文件 exe → Inno Setup 安装包。
+自动流程：创建/检查 venv → 安装依赖（含 PyInstaller）→ `logo.png` 生成 `logo.ico` → PyInstaller **onedir**（DLL 模式）→ Inno Setup 安装包。
+
+输出：`output/NovelWriter-Setup.exe`
 
 ### 打包脚本
 
 | 文件 | 用途 |
 |------|------|
-| `novel-writer.spec` | PyInstaller 配置（入口、数据文件、隐藏导入） |
+| `novel-writer.spec` | PyInstaller onedir 配置（DLL 独立，启动快，杀毒误报少） |
 | `build_installer.bat` | 一键打包脚本 |
-| `installer.iss` | Inno Setup 安装包脚本 |
-
-### 前提条件
-
-- [Inno Setup 6](https://jrsoftware.org/isdl.php)
-- Python >= 3.10
-
-### 手动打包
-
-```bash
-pip install pyinstaller
-pyinstaller novel-writer.spec
-```
-
-### 打包注意事项
-
-1. **数据目录**：打包后 `data/`、`config/` 在可执行文件旁创建
-2. **日志目录**：`logs/` 运行时自动创建
-3. **依赖项**：PyInstaller 自动收集，动态导入可能需手动加 hidden imports
-4. **PySide6 资源**：PyInstaller 自动处理
+| `installer.iss` | Inno Setup 安装包脚本（中英双语安装） |
+| `ChineseSimplified.isl` | 中文安装语言包 |
 
 ### 分发
 
 ```
 dist/NovelWriter/
 ├── NovelWriter.exe          # 主程序
-├── _internal/               # 依赖文件
+├── _internal/               # DLL/pyd/依赖（onedir 独立加载）
 ├── data/                    # 用户数据（运行时创建）
 ├── config/                  # 配置文件
 └── logs/                    # 日志（运行时创建）
 ```
 
-可直接 zip 分发 `dist/NovelWriter/`。
+onedir 模式 vs onefile：启动速度快（无需解压临时目录）、杀毒误报少。
