@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import html
 import json
 from pathlib import Path
 from typing import Optional
@@ -82,106 +83,144 @@ class Exporter:
         return output_path
 
     def export_epub(self, output_path: Optional[Path] = None) -> Path:
-        """导出为 EPUB 格式。"""
-        try:
-            import ebooklib
-            from ebooklib import epub
-        except ImportError:
-            raise ImportError("需要安装 ebooklib: pip install ebooklib")
-        
+        """导出为 EPUB 格式（纯标准库实现，无第三方依赖）。
+
+        EPUB 本质是 ZIP + XHTML，结构：
+          mimetype (stored uncompressed)
+          META-INF/container.xml
+          OEBPS/content.opf
+          OEBPS/toc.ncx
+          OEBPS/nav.xhtml
+          OEBPS/style/default.css
+          OEBPS/chapter_N.xhtml
+        """
+        import zipfile
+        import html as html_mod
+        from xml.sax.saxutils import escape
+
         if output_path is None:
             output_path = self.project_dir / "export" / f"{self.project_info.get('title', '小说')}.epub"
-        
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # 扫描所有章节
+
         chapters = project_io.scan_chapters(self.project_dir)
         if not chapters:
             raise ValueError("没有找到任何章节")
-        
-        # 创建 EPUB 书
-        book = epub.EpubBook()
-        
-        # 设置元数据
+
         title = self.project_info.get("title", "小说")
-        book.set_identifier(f"novel-{id(self)}")
-        book.set_title(title)
-        book.set_language("zh")
-        book.add_author(self.project_info.get("author", "未知"))
-        
-        # 添加样式
-        style = """
-        body {
-            font-family: "SimSun", "宋体", serif;
-            line-height: 1.8;
-            margin: 1em;
-        }
-        h1 {
-            text-align: center;
-            margin-bottom: 1em;
-        }
-        h2 {
-            margin-top: 1.5em;
-            margin-bottom: 0.5em;
-        }
-        p {
-            text-indent: 2em;
-            margin-bottom: 0.5em;
-        }
-        """
-        css = epub.EpubItem(
-            uid="style",
-            file_name="style/default.css",
-            media_type="text/css",
-            content=style.encode("utf-8")
+        author = self.project_info.get("author", "未知")
+        uid = f"novel-{hash(title) & 0xFFFFFFFF:08x}"
+
+        # 章节 HTML
+        chapter_files: list[tuple[str, str, str]] = []  # (filename, chapter_title, xhtml)
+        css = (
+            'body{font-family:"SimSun","宋体",serif;line-height:1.8;margin:1em;}'
+            'h1{text-align:center;margin-bottom:1em;}'
+            'p{text-indent:2em;margin-bottom:0.5em;}'
         )
-        book.add_item(css)
-        
-        # 创建目录页
-        toc_content = f"<h1>{title}</h1>\n<h2>目录</h2>\n<ul>\n"
-        for ch in chapters:
-            toc_content += f'<li><a href="chapter_{ch["number"]}.xhtml">第{ch["number"]}章 {ch["title"]}</a></li>\n'
-        toc_content += "</ul>"
-        
-        toc_page = epub.EpubHtml(
-            title="目录",
-            file_name="toc.xhtml",
-            lang="zh"
+
+        # 目录页
+        toc_items = "\n".join(
+            f'<li><a href="chapter_{ch["number"]}.xhtml">第{ch["number"]}章 {escape(ch["title"])}</a></li>'
+            for ch in chapters
         )
-        toc_page.content = toc_content.encode("utf-8")
-        toc_page.add_item(css)
-        book.add_item(toc_page)
-        
-        # 创建章节
-        epub_chapters = [toc_page]
+        toc_xhtml = self._wrap_xhtml(
+            "目录",
+            f'<h1>{escape(title)}</h1><h2>目录</h2><ul>{toc_items}</ul>',
+        )
+        chapter_files.append(("toc.xhtml", "目录", toc_xhtml))
+
         for ch in chapters:
             content = project_io.read_md(ch["content_path"])
-            if content:
-                # 将 Markdown 转换为 HTML
-                html_content = self._markdown_to_html(content, ch["title"])
-                
-                epub_chapter = epub.EpubHtml(
-                    title=f"第{ch['number']}章 {ch['title']}",
-                    file_name=f"chapter_{ch['number']}.xhtml",
-                    lang="zh"
+            if not content:
+                continue
+            body = self._markdown_to_html(content, ch["title"])
+            xhtml = self._wrap_xhtml(f"第{ch['number']}章 {ch['title']}", body)
+            fname = f"chapter_{ch['number']}.xhtml"
+            chapter_files.append((fname, f"第{ch['number']}章 {ch['title']}", xhtml))
+
+        # ── 打包 ZIP ──
+        with zipfile.ZipFile(str(output_path), "w", zipfile.ZIP_DEFLATED) as zf:
+            # mimetype 必须是第一个文件且不压缩
+            zf.writestr(
+                zipfile.ZipInfo("mimetype"),
+                "application/epub+zip",
+                compress_type=zipfile.ZIP_STORED,
+            )
+            zf.writestr("META-INF/container.xml",
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\n'
+                '  <rootfiles>\n'
+                '    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>\n'
+                '  </rootfiles>\n'
+                '</container>'
+            )
+            zf.writestr("OEBPS/style/default.css", css)
+
+            # content.opf
+            manifest_items = ['<item id="css" href="style/default.css" media-type="text/css"/>']
+            spine_items = []
+            for i, (fname, _, _) in enumerate(chapter_files):
+                cid = f"ch{i}"
+                manifest_items.append(f'<item id="{cid}" href="{fname}" media-type="application/xhtml+xml"/>')
+                spine_items.append(f'<itemref idref="{cid}"/>')
+            manifest_items.append('<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
+
+            zf.writestr("OEBPS/content.opf",
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">\n'
+                '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+                f'    <dc:identifier id="uid">{uid}</dc:identifier>\n'
+                f'    <dc:title>{escape(title)}</dc:title>\n'
+                f'    <dc:creator>{escape(author)}</dc:creator>\n'
+                '    <dc:language>zh</dc:language>\n'
+                '  </metadata>\n'
+                '  <manifest>\n'
+                f'    {"<n/>".join(manifest_items).replace("<n/>", chr(10))}\n'
+                '  </manifest>\n'
+                '  <spine toc="ncx">\n'
+                f'    {"<n/>".join(spine_items).replace("<n/>", chr(10))}\n'
+                '  </spine>\n'
+                '</package>'
+            )
+
+            # toc.ncx
+            nav_points = []
+            for i, (fname, ch_title, _) in enumerate(chapter_files):
+                nav_points.append(
+                    f'    <navPoint id="np{i}" playOrder="{i+1}">\n'
+                    f'      <navLabel><text>{escape(ch_title)}</text></navLabel>\n'
+                    f'      <content src="{fname}"/>\n'
+                    f'    </navPoint>'
                 )
-                epub_chapter.content = html_content.encode("utf-8")
-                epub_chapter.add_item(css)
-                book.add_item(epub_chapter)
-                epub_chapters.append(epub_chapter)
-        
-        # 设置目录
-        book.toc = epub_chapters
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        
-        # 设置 spine
-        book.spine = epub_chapters
-        
-        # 写入文件
-        epub.write_epub(str(output_path), book, {})
+            zf.writestr("OEBPS/toc.ncx",
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n'
+                f'  <head><meta name="dtb:uid" content="{uid}"/></head>\n'
+                f'  <docTitle><text>{escape(title)}</text></docTitle>\n'
+                '  <navMap>\n'
+                + "\n".join(nav_points) +
+                '\n  </navMap>\n</ncx>'
+            )
+
+            # 章节 XHTML
+            for fname, _, xhtml in chapter_files:
+                zf.writestr(f"OEBPS/{fname}", xhtml)
+
         logger.info("EPUB 导出完成: %s", output_path)
         return output_path
+
+    @staticmethod
+    def _wrap_xhtml(title: str, body: str) -> str:
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE html>\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh" lang="zh">\n'
+            '<head>\n'
+            f'  <title>{html.escape(title)}</title>\n'
+            '  <link rel="stylesheet" type="text/css" href="style/default.css"/>\n'
+            '</head>\n'
+            f'<body>\n{body}\n</body>\n</html>'
+        )
 
     def export_pdf(self, output_path: Optional[Path] = None) -> Path:
         """导出为 PDF 格式。"""

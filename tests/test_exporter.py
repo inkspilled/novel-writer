@@ -74,7 +74,7 @@ class TestExporter:
             assert output_path.exists()
             assert output_path.suffix == ".epub"
         except ImportError:
-            pytest.skip("需要安装 ebooklib")
+            pytest.skip("EPUB 导出测试失败")
 
     def test_export_pdf(self, exporter, project_dir):
         """测试 PDF 导出。"""

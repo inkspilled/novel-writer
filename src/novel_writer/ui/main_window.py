@@ -693,7 +693,7 @@ class MainWindow(QMainWindow):
             output_path = exporters[fmt]()
             QMessageBox.information(self, t("export_success"), f"{output_path}")
         except ImportError as e:
-            deps = {"epub": "ebooklib", "pdf": "reportlab"}
+            deps = {"pdf": "reportlab"}
             if fmt in deps:
                 QMessageBox.warning(self, t("export_missing_dep"), f"pip install {deps[fmt]}")
             else:

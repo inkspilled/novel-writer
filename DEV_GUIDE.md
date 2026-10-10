@@ -14,7 +14,6 @@
 | openai | >= 1.0 | OpenAI 兼容 LLM 接口 |
 | anthropic | >= 0.40 | Claude 原生接口 |
 | httpx | >= 0.27 | Ollama HTTP 接口 |
-| ebooklib | >= 0.18 | EPUB 导出 |
 | reportlab | >= 4.0 | PDF 导出 |
 
 ## 项目结构
@@ -170,7 +169,7 @@ novel-writer/
 from novel_writer.core.exporter import Exporter
 exporter = Exporter(project_dir)
 exporter.export_txt()    # TXT
-exporter.export_epub()   # EPUB（需 ebooklib）
+exporter.export_epub()   # EPUB（纯标准库）
 exporter.export_pdf()    # PDF（需 reportlab）
 ```
 

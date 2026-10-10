@@ -427,7 +427,7 @@ class ModelDialog(QDialog):
                     break
             self.api_key_input.setText(saved_provider.get("api_key", ""))
             self.base_url_input.setText(saved_provider.get("base_url", ""))
-            self.model_input.setText(saved_provider.get("model", ""))
+            self._set_model_text(saved_provider.get("model", ""))
 
     def _save_config_only(self):
         """仅保存配置到内存，不关闭对话框。"""
