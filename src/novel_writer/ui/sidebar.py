@@ -102,7 +102,7 @@ class Sidebar(QWidget):
         if current:
             idx = current.data(0, Qt.ItemDataRole.UserRole)
             if idx is not None:
-                self.chapter_selected.emit(idx)
+                self.chapter_selected.emit(int(idx))
 
     def retranslate(self):
         """刷新文本。"""

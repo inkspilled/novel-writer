@@ -236,6 +236,7 @@ class EditorPanel(QWidget):
         self._update_word_count()
         # 切换到正文标签
         self.tab_bar.setCurrentIndex(0)
+        self.content_edit.update()
 
     def get_content(self) -> str:
         return self.content_edit.toPlainText()

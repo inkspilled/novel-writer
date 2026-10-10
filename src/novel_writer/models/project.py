@@ -148,14 +148,14 @@ class Project:
             )
             proj.characters.append(char)
 
-        # 加载章节
+        # 加载章节（_content_path 统一存绝对路径，避免工作目录变化导致读不到）
         scanned = project_io.scan_chapters(project_dir)
         for item in scanned:
             ch = Chapter(
                 number=item["number"],
                 title=item["title"],
-                _content_path=str(item["content_path"]),
-                _outline_path=str(item["outline_path"]) if item["outline_path"] else "",
+                _content_path=str(item["content_path"].resolve()),
+                _outline_path=str(item["outline_path"].resolve()) if item["outline_path"] else "",
             )
             for ch_meta in meta.get("chapter_meta", []):
                 if ch_meta.get("number") == ch.number:

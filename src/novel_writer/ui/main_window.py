@@ -488,8 +488,8 @@ class MainWindow(QMainWindow):
                 ch = Chapter(
                     number=item["number"],
                     title=item["title"],
-                    _content_path=str(item["content_path"]),
-                    _outline_path=str(item["outline_path"]) if item["outline_path"] else "",
+                    _content_path=str(item["content_path"].resolve()),
+                    _outline_path=str(item["outline_path"].resolve()) if item["outline_path"] else "",
                 )
                 self.project.chapters.append(ch)
         self.project.chapters.sort(key=lambda c: c.number)
