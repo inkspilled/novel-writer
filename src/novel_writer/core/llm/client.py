@@ -30,7 +30,7 @@ def _get_retryable_errors():
 class _RateLimiter:
     """异步全局限流器，所有 LLMClient 实例共享。"""
 
-    def __init__(self, min_interval: float = 2.0):
+    def __init__(self, min_interval: float = 0.3):
         self._lock = asyncio.Lock()
         self._last_request_time: float = 0.0
         self._min_interval = min_interval
@@ -46,7 +46,7 @@ class _RateLimiter:
                 await asyncio.sleep(wait)
             self._last_request_time = time.monotonic()
 
-_global_limiter = _RateLimiter(min_interval=5.0)
+_global_limiter = _RateLimiter(min_interval=0.3)
 
 # N-01 修复：使用模块级缓存实现真正的单次懒加载
 _async_openai_cls = None
@@ -68,8 +68,9 @@ class LLMClient(BaseLLM):
         super().__init__(model, api_key, base_url, **kwargs)
         AsyncOpenAI = _get_async_openai()
         # 用 certifi 证书路径创建 httpx 客户端，避免 Windows 系统证书库卡顿
+        # 超时显式设为 300s：httpx 默认 5s 对 LLM 生成太短，会触发无谓重试
         import httpx, certifi
-        http_client = httpx.AsyncClient(verify=certifi.where())
+        http_client = httpx.AsyncClient(verify=certifi.where(), timeout=httpx.Timeout(300.0, connect=15.0))
         self.client = AsyncOpenAI(api_key=api_key or "ollama", base_url=base_url, max_retries=0, http_client=http_client)
         logger.info("LLM 客户端初始化: model=%s, base_url=%s", model, base_url)
 
@@ -92,7 +93,7 @@ class LLMClient(BaseLLM):
         messages: list[LLMMessage],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        max_retries: int = 8,
+        max_retries: int = 3,
     ) -> LLMResponse:
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
@@ -123,11 +124,11 @@ class LLMClient(BaseLLM):
                     logger.error("LLM 调用重试 %d 次后仍然失败: %s", attempt + 1, e)
                     raise
                 # 指数退避 + 随机抖动，429 限流时等待更久
-                base_wait = 2 ** attempt
+                base_wait = min(2 ** attempt, 15)
                 from openai import RateLimitError
                 if isinstance(e, RateLimitError):
-                    base_wait = max(base_wait + attempt * 3, 10)
-                wait = base_wait + random.uniform(0, 2)
+                    base_wait = max(base_wait + attempt * 2, 8)
+                wait = base_wait + random.uniform(0, 1)
                 logger.warning("LLM 调用遇到可重试错误 (%s)，第 %d 次重试，等待 %.1f 秒...", e, attempt + 1, wait)
                 await asyncio.sleep(wait)
         raise last_exc  # type: ignore[misc]
@@ -137,7 +138,7 @@ class LLMClient(BaseLLM):
         messages: list[LLMMessage],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        max_retries: int = 5,
+        max_retries: int = 3,
     ) -> AsyncIterator[str]:
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
@@ -168,11 +169,11 @@ class LLMClient(BaseLLM):
                 if attempt >= max_retries:
                     logger.error("流式 LLM 调用重试 %d 次后仍然失败: %s", attempt + 1, e)
                     raise
-                base_wait = 2 ** attempt
+                base_wait = min(2 ** attempt, 15)
                 from openai import RateLimitError
                 if isinstance(e, RateLimitError):
                     base_wait = max(base_wait + attempt * 2, 8)
-                wait = base_wait + random.uniform(0, 2)
+                wait = base_wait + random.uniform(0, 1)
                 logger.warning("流式 LLM 调用遇到可重试错误 (%s)，第 %d 次重试，等待 %.1f 秒...", e, attempt + 1, wait)
                 await asyncio.sleep(wait)
         raise last_exc  # type: ignore[misc]

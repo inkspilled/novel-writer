@@ -1,6 +1,7 @@
 """工作流执行器 — 技能匹配 + 文件传递。"""
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -78,58 +79,85 @@ class WorkflowRunner:
         periodic_steps = [s for s in workflow.steps if s.every > 0]
         normal_steps = [s for s in workflow.steps if s.every == 0]
 
+        # 将 normal_steps 按 parallel_ok 分组：连续的 parallel_ok 步骤归为一组并发执行
+        step_groups: list[list[WorkflowStep]] = []
         for step in normal_steps:
+            if step.parallel_ok and step_groups and step_groups[-1] and step_groups[-1][0].parallel_ok:
+                step_groups[-1].append(step)
+            else:
+                step_groups.append([step])
+
+        for group in step_groups:
             if self._stop:
                 break
-
-            step_progress = progress.get(step.id, "pending")
-            if step_progress == "done":
-                continue
-
-            if step.repeat > 0:
-                # 循环步骤（如逐章写作）
-                default_start = workflow.project.get("_start_chapter", 1)
-                start = default_start
-                if isinstance(step_progress, dict):
-                    start = max(step_progress.get("current", default_start), default_start)
-                # 查漏补缺模式：只执行缺失章节
-                gaps = workflow.project.get("_gaps", [])
-                chapters_to_write = gaps if gaps else list(range(start, step.repeat + 1))
-                for n in chapters_to_write:
-                    if self._stop:
-                        break
-                    # 章前定时步骤（灵感、角色推演）
-                    for ps in periodic_steps:
-                        if self._stop:
-                            break
-                        if ps.id in PRE_CHAPTER_PERIODIC_IDS and n % ps.every == 0:
-                            ps_key = f"{ps.id}_{n}"
-                            if progress.get(ps_key) != "done":
-                                await self._run_single(ps, workflow.project, n, progress)
-                                progress[ps_key] = "done"
-                                self._save_progress(progress)
-                    # 执行章节写作
-                    await self._run_single(step, workflow.project, n, progress)
-                    progress[step.id] = {"current": n, "total": step.repeat}
-                    self._save_progress(progress)
-                    # 章后定时步骤（润色、校验、摘要、规划反哺）
-                    for ps in periodic_steps:
-                        if self._stop:
-                            break
-                        if ps.id in POST_CHAPTER_PERIODIC_IDS and n % ps.every == 0:
-                            ps_key = f"{ps.id}_{n}"
-                            if progress.get(ps_key) != "done":
-                                await self._run_single(ps, workflow.project, n, progress)
-                                progress[ps_key] = "done"
-                                self._save_progress(progress)
+            if len(group) == 1:
+                await self._run_step_or_repeat(group[0], workflow.project, progress, periodic_steps)
             else:
-                # 单次步骤
-                await self._run_single(step, workflow.project, 1, progress)
-                progress[step.id] = "done"
-                self._save_progress(progress)
+                # 并发执行独立步骤（如规划阶段的人物/世界观/时间线/主线/支线/伏笔）
+                logger.info("并发执行 %d 个独立步骤: %s", len(group), [s.id for s in group])
+                tasks = [
+                    self._run_step_or_repeat(s, workflow.project, progress, periodic_steps)
+                    for s in group
+                    if progress.get(s.id, "pending") != "done"
+                ]
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for s, r in zip([s for s in group if progress.get(s.id, "pending") != "done"], results):
+                        if isinstance(r, Exception):
+                            logger.error("并发步骤失败: %s - %s", s.id, r)
+                            if self.on_error:
+                                self.on_error(s.id, str(r))
+                            raise r
+                        progress[s.id] = "done"
+                        self._save_progress(progress)
 
         logger.info("工作流执行完成: %s", workflow.name)
         return progress
+
+    async def _run_step_or_repeat(
+        self,
+        step: WorkflowStep,
+        project: dict,
+        progress: dict,
+        periodic_steps: list[WorkflowStep],
+    ):
+        """执行单个步骤（含 repeat 循环逻辑）。"""
+        if step.repeat > 0:
+            default_start = project.get("_start_chapter", 1)
+            start = default_start
+            step_progress = progress.get(step.id, "pending")
+            if isinstance(step_progress, dict):
+                start = max(step_progress.get("current", default_start), default_start)
+            gaps = project.get("_gaps", [])
+            chapters_to_write = gaps if gaps else list(range(start, step.repeat + 1))
+            for n in chapters_to_write:
+                if self._stop:
+                    break
+                for ps in periodic_steps:
+                    if self._stop:
+                        break
+                    if ps.id in PRE_CHAPTER_PERIODIC_IDS and n % ps.every == 0:
+                        ps_key = f"{ps.id}_{n}"
+                        if progress.get(ps_key) != "done":
+                            await self._run_single(ps, project, n, progress)
+                            progress[ps_key] = "done"
+                            self._save_progress(progress)
+                await self._run_single(step, project, n, progress)
+                progress[step.id] = {"current": n, "total": step.repeat}
+                self._save_progress(progress)
+                for ps in periodic_steps:
+                    if self._stop:
+                        break
+                    if ps.id in POST_CHAPTER_PERIODIC_IDS and n % ps.every == 0:
+                        ps_key = f"{ps.id}_{n}"
+                        if progress.get(ps_key) != "done":
+                            await self._run_single(ps, project, n, progress)
+                            progress[ps_key] = "done"
+                            self._save_progress(progress)
+        else:
+            await self._run_single(step, project, 1, progress)
+            progress[step.id] = "done"
+            self._save_progress(progress)
 
     async def _run_single(self, step: WorkflowStep, project: dict, n: int, progress: dict):
         # ── 内置特殊步骤（不走标准 LLM 流程） ──
@@ -159,6 +187,8 @@ class WorkflowRunner:
                     return
 
         logger.info("执行步骤: %s (第%d章) -> %s", step.id, n, agent.title)
+        # 每个步骤独立：清空 agent 对话历史，防止跨步骤上下文累积膨胀
+        agent.clear_history()
         if self.on_step_start:
             self.on_step_start(step.id, n, agent.title)
 

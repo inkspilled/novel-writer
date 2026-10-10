@@ -27,7 +27,8 @@ class ClaudeLLM(BaseLLM):
         super().__init__(model, api_key, **kwargs)
         anthropic = _get_anthropic()
         import httpx, certifi
-        http_client = httpx.AsyncClient(verify=certifi.where())
+        # 显式超时：httpx 默认 5s 对 LLM 生成太短
+        http_client = httpx.AsyncClient(verify=certifi.where(), timeout=httpx.Timeout(300.0, connect=15.0))
         self.client = anthropic.AsyncAnthropic(api_key=api_key, http_client=http_client)
         logger.info("Claude LLM 初始化: model=%s", model)
 
