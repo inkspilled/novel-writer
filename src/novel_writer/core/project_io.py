@@ -480,8 +480,18 @@ def load_workflow(project_dir: Path) -> dict:
 
 
 def save_workflow(project_dir: Path, data: dict) -> None:
+    """合并写入 workflow.json：runner 存进度时不能抹掉已保存的 workflow 定义。"""
     path = project_dir / WORKFLOW_FILE
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    merged: dict = {}
+    if path.exists():
+        try:
+            merged = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(merged, dict):
+                merged = {}
+        except (json.JSONDecodeError, OSError):
+            merged = {}
+    merged.update(data)
+    path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ── 项目目录扫描 ──
