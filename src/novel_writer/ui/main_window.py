@@ -762,6 +762,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_agents"))
             return
 
+        # 断点恢复：检测上次未完成的进度，询问用户（返回 True 表示已处理，直接返回）
+        if self._try_resume_workflow():
+            return
+
         dialog = WorkflowModeDialog(self.project.project_dir, self.project.target_chapters or 100, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -802,18 +806,61 @@ class MainWindow(QMainWindow):
             "progress": {},
         })
 
-        # 从配置读取上下文大小，默认 120K
+        self._launch_workflow(self._wf_def, self._wf_progress)
+
+    def _try_resume_workflow(self) -> bool:
+        """检测 workflow.json 中的未完成进度，询问是否从断点继续。
+
+        Returns:
+            True 表示启动流程已被处理（已续跑或用户取消），调用方直接返回；
+            False 表示无进度或用户选择重新开始，走正常新建流程。
+        """
+        if not self.project.project_dir:
+            return False
+        saved = project_io.load_workflow(self.project.project_dir)
+        progress = saved.get("progress") or {}
+        wf_data = saved.get("workflow")
+        if not wf_data or not self._progress_incomplete(progress):
+            return False
+        ret = QMessageBox.question(
+            self, t("dialog_prompt"),
+            "检测到上次工作流未完成，是否从断点继续？\n（选择「No」将重新开始并覆盖进度）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+        )
+        if ret == QMessageBox.StandardButton.Cancel:
+            return True
+        if ret != QMessageBox.StandardButton.Yes:
+            return False
+        self._wf_def = WorkflowDef.from_dict(wf_data)
+        self._wf_progress = dict(progress)
+        self._launch_workflow(self._wf_def, self._wf_progress)
+        return True
+
+    @staticmethod
+    def _progress_incomplete(progress: dict) -> bool:
+        """进度里是否存在未完成的步骤（循环步骤看 current 是否跑满；下划线开头为内部键）。"""
+        for k, v in progress.items():
+            if k.startswith("_"):
+                continue
+            if isinstance(v, dict):
+                if v.get("current", 0) < v.get("total", 1):
+                    return True
+            elif v != "done":
+                return True
+        return False
+
+    def _launch_workflow(self, wf_def, progress: dict):
+        """创建工作流执行器与后台线程并启动。"""
         max_context_tokens = self.config.get("max_context_tokens", 120_000)
         self._wf_runner = WorkflowRunner(
             agents=self.agents,
             project_dir=self.project.project_dir,
-            project_info=self._wf_def.project,
+            project_info=wf_def.project,
             max_context_tokens=max_context_tokens,
         )
 
-        # 创建后台线程执行
         self._wf_thread = WorkflowThread(
-            self._wf_runner, self._wf_def, self._wf_progress
+            self._wf_runner, wf_def, progress
         )
 
         # 连接线程信号（WorkflowThread.run() 会覆盖 runner 回调，所以连信号）

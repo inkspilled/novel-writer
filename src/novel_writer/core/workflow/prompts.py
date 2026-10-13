@@ -155,3 +155,47 @@ def build_chapter_summary_prompt(n: int, ch_title: str, content: str) -> str:
         f"- **承接点**：本章结尾留给下一章的悬念（1句）\n\n"
         f"正文：\n{content[:3000]}"
     )
+
+
+def build_proofread_batch_prompt(batch: list[tuple[int, str]], batch_idx: int, total: int) -> str:
+    """全书校对（分批）：校对一批章节，按章节列出问题。"""
+    parts = [
+        f"你是小说校对编辑。正在分批校对全书，当前是第 {batch_idx}/{total} 批。",
+        "逐章校对错别字、语法、标点问题，按章节分组列出发现的问题和修改建议。",
+        "没有问题的章节不用提及；只列问题，不要复述原文。\n",
+    ]
+    for num, text in batch:
+        parts.append(f"=== 第{num}章 ===\n{text}")
+    return "\n\n".join(parts)
+
+
+def build_review_batch_prompt(
+    batch: list[tuple[int, str]],
+    planning_summary: str,
+    batch_idx: int,
+    total: int,
+) -> str:
+    """全书审核（分批）：审查一批章节的剧情逻辑、人物一致性、节奏。"""
+    parts = [
+        f"你是小说审稿编辑。正在分批审核全书，当前是第 {batch_idx}/{total} 批。",
+        "审查本批各章的剧情逻辑、人物一致性、节奏问题，按章节列出发现（问题 + 修改建议）。",
+        "只报告实际问题，不要泛泛而谈；没有问题的章节不用提及。\n",
+    ]
+    if planning_summary:
+        parts.append(f"=== 规划参考（摘要） ===\n{planning_summary}\n")
+    for num, text in batch:
+        parts.append(f"=== 第{num}章 ===\n{text}")
+    return "\n\n".join(parts)
+
+
+def build_review_aggregate_prompt(findings: list[str], total_chapters: int) -> str:
+    """全书审核（汇总）：把各批次的问题清单聚合成最终报告。"""
+    return (
+        f"你是小说审稿主编。以下是分批审核全部 {total_chapters} 章后各批次的问题清单。\n"
+        "请汇总为一份最终审核报告，严格按此结构输出：\n\n"
+        "## 总体评价\n（2-3句）\n\n"
+        "## 重要问题\n（影响剧情逻辑/人物一致性的，按严重度排序）\n\n"
+        "## 一般问题\n（文笔/标点/节奏等）\n\n"
+        "## 修改建议\n（可操作的建议清单）\n\n"
+        + "\n\n".join(f[:3000] for f in findings)
+    )

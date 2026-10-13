@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -46,6 +47,9 @@ class WorkflowRunner:
         self._build_skill_index()
         self._stop = False
         self._context_builder = ContextBuilder(project_dir, project_info, max_context_tokens)
+        # 周期步骤触发时机（章前/章后）；未声明的自定义周期步骤默认按章后执行
+        self._pre_ids = set(PRE_CHAPTER_PERIODIC_IDS)
+        self._post_ids = set(POST_CHAPTER_PERIODIC_IDS)
         # 回调
         self.on_step_start: Callable[[str, int, str], None] | None = None  # (step_id, n, agent_title)
         self.on_step_end: Callable[[str, int, str, str], None] | None = None  # (step_id, n, agent_title, output)
@@ -79,6 +83,12 @@ class WorkflowRunner:
         periodic_steps = [s for s in workflow.steps if s.every > 0]
         normal_steps = [s for s in workflow.steps if s.every == 0]
 
+        # 未声明触发时机的自定义周期步骤默认按章后执行（原先会被静默丢弃）
+        for ps in periodic_steps:
+            if ps.id not in self._pre_ids and ps.id not in self._post_ids:
+                logger.warning("周期步骤 %s 未声明章前/章后触发时机，默认按章后执行", ps.id)
+                self._post_ids.add(ps.id)
+
         # 将 normal_steps 按 parallel_ok 分组：连续的 parallel_ok 步骤归为一组并发执行
         step_groups: list[list[WorkflowStep]] = []
         for step in normal_steps:
@@ -91,6 +101,11 @@ class WorkflowRunner:
             if self._stop:
                 break
             if len(group) == 1:
+                # 断点恢复：已完成（或循环已跑满）的步骤直接跳过，不重复烧 LLM 调用
+                step = group[0]
+                if self._step_completed(step, progress):
+                    logger.info("[跳过] 步骤 %s 已完成（断点恢复）", step.id)
+                    continue
                 await self._run_step_or_repeat(group[0], workflow.project, progress, periodic_steps)
             else:
                 # 并发执行独立步骤（如规划阶段的人物/世界观/时间线/主线/支线/伏笔）
@@ -114,6 +129,16 @@ class WorkflowRunner:
         logger.info("工作流执行完成: %s", workflow.name)
         return progress
 
+    @staticmethod
+    def _step_completed(step: WorkflowStep, progress: dict) -> bool:
+        """步骤是否已完成（普通步骤看 done；循环步骤看 current 是否跑满）。"""
+        prog = progress.get(step.id, "pending")
+        if prog == "done":
+            return True
+        if isinstance(prog, dict):
+            return prog.get("current", 0) >= prog.get("total", step.repeat or 1)
+        return False
+
     async def _run_step_or_repeat(
         self,
         step: WorkflowStep,
@@ -133,31 +158,60 @@ class WorkflowRunner:
             for n in chapters_to_write:
                 if self._stop:
                     break
+                # 每轮迭代清空全部 Agent 历史：跨章连贯性由 ContextBuilder
+                # （前文/概要/记忆卡）负责，历史跨章累积会在几十章后撑爆上下文
+                # （规划链在进入循环前已完成，其历史不该带进循环）。
+                # UI 聊天记录走独立的 chat_history 存储，不受影响。
+                for agent in self.agents.values():
+                    agent.clear_history()
                 for ps in periodic_steps:
                     if self._stop:
                         break
-                    if ps.id in PRE_CHAPTER_PERIODIC_IDS and n % ps.every == 0:
-                        ps_key = f"{ps.id}_{n}"
-                        if progress.get(ps_key) != "done":
-                            await self._run_single(ps, project, n, progress)
-                            progress[ps_key] = "done"
-                            self._save_progress(progress)
-                await self._run_single(step, project, n, progress)
+                    if ps.id in self._pre_ids and n % ps.every == 0:
+                        if progress.get(f"{ps.id}_{n}") != "done":
+                            await self._run_periodic(ps, project, n, progress)
+                try:
+                    await self._run_single(step, project, n, progress)
+                except WorkflowError:
+                    raise  # 配置类错误（如找不到智能体），继续重试无意义
+                except Exception as e:
+                    # 单章失败不终止整跑：记录后跳到下一章，结尾汇总
+                    logger.error("章节步骤失败（跳过继续）: 第%d章 - %s", n, e, exc_info=True)
+                    progress.setdefault("_errors", []).append(f"第{n}章: {e}")
+                    if self.on_error:
+                        self.on_error(step.id, f"第{n}章写作失败: {e}")
+                    continue
                 progress[step.id] = {"current": n, "total": step.repeat}
                 self._save_progress(progress)
                 for ps in periodic_steps:
                     if self._stop:
                         break
-                    if ps.id in POST_CHAPTER_PERIODIC_IDS and n % ps.every == 0:
-                        ps_key = f"{ps.id}_{n}"
-                        if progress.get(ps_key) != "done":
-                            await self._run_single(ps, project, n, progress)
-                            progress[ps_key] = "done"
-                            self._save_progress(progress)
+                    if ps.id in self._post_ids and n % ps.every == 0:
+                        if progress.get(f"{ps.id}_{n}") != "done":
+                            await self._run_periodic(ps, project, n, progress)
+            errors = progress.get("_errors")
+            if errors:
+                logger.warning("工作流循环完成，共 %d 章失败: %s", len(errors), "；".join(errors))
+                if self.on_error:
+                    self.on_error(step.id, f"共 {len(errors)} 章失败: {'；'.join(errors[-5:])}")
         else:
             await self._run_single(step, project, 1, progress)
             progress[step.id] = "done"
             self._save_progress(progress)
+
+    async def _run_periodic(self, ps: WorkflowStep, project: dict, n: int, progress: dict):
+        """执行章前/章后定时步骤 — 失败降级为记录错误并继续，不终止整跑。"""
+        ps_key = f"{ps.id}_{n}"
+        try:
+            await self._run_single(ps, project, n, progress)
+        except Exception as e:
+            logger.error("定时步骤失败（跳过继续）: %s 第%d章 - %s", ps.id, n, e, exc_info=True)
+            progress[ps_key] = "error"  # 恢复时 != "done" 会自动重试
+            if self.on_error:
+                self.on_error(ps.id, f"第{n}章 {ps.id} 失败: {e}")
+            return
+        progress[ps_key] = "done"
+        self._save_progress(progress)
 
     async def _run_single(self, step: WorkflowStep, project: dict, n: int, progress: dict):
         # ── 内置特殊步骤（不走标准 LLM 流程） ──
@@ -319,8 +373,17 @@ class WorkflowRunner:
         return True
 
     def _format_prompt(self, template: str, project: dict, n: int) -> str:
-        """格式化提示词模板。"""
-        return template.format(n=n, **project)
+        """格式化提示词模板 — 只替换已知键，未知 {x} 原样保留。
+
+        不用 str.format：AI 生成的工作流 prompt 里常带 JSON 示例等字面花括号，
+        str.format 会直接抛 KeyError/ValueError 中断整个工作流。
+        """
+        values = {"n": n, **project}
+        return re.sub(
+            r"\{(\w+)\}",
+            lambda m: str(values[m.group(1)]) if m.group(1) in values else m.group(0),
+            template,
+        )
 
     def _save_progress(self, progress: dict):
         """保存工作流进度到文件。"""

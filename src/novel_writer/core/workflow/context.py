@@ -237,6 +237,11 @@ class ContextBuilder:
             tail = self._build_attention_tail(mem, gs, n, minimal=True)
             return "\n\n".join(head + middle + tail)
 
+        # 滚动剧情摘要（summary 步骤每 5 章产出，写作时回流——修复长期只写盘未注入的死信）
+        rolling_summary = project_io.latest_summary(self.project_dir)
+        if rolling_summary:
+            middle.append(f"=== 剧情摘要 ===\n{rolling_summary}")
+
         if tier.value >= ContextTier.WORKING.value:
             # 工作记忆也放中部（历史章节体量大）
             self._add_working_memory(middle, input_files, n, step_id)
@@ -320,7 +325,13 @@ class ContextBuilder:
                         if content:
                             results.append((p, content))
         else:
-            formatted = f.format(n=n, **self.project_info)
+            # 只替换已知键，未知 {x} 原样保留（与 _format_prompt 同策略，防字面花括号炸 KeyError）
+            values = {"n": n, **self.project_info}
+            formatted = re.sub(
+                r"\{(\w+)\}",
+                lambda m: str(values[m.group(1)]) if m.group(1) in values else m.group(0),
+                f,
+            )
             p = self.project_dir / formatted
             if not p.exists():
                 # 章节文件可能以 {n}_标题.txt 命名，用 find_chapter_file 回退定位
@@ -414,6 +425,12 @@ class ContextBuilder:
                         prev_summary = project_io.read_md(prev_summary_path)
                         if prev_summary:
                             parts.append(f"=== 上一章要点回顾 ===\n【第{n-1}章《{prev_title}》】\n{prev_summary}\n\n注意：本章要承接上章剧情，保持连贯性。")
+
+        # 本章灵感（inspiration 步骤产出回流——修复长期只写盘未注入的死信）
+        if step_id == "chapter":
+            inspiration = self._load_inspiration(n)
+            if inspiration:
+                parts.append(f"=== 灵感 ===\n{inspiration}")
 
         # 角色推演结果
         sim_text = load_sim_cache(self.project_dir, n)
@@ -616,6 +633,17 @@ class ContextBuilder:
             tail.append(rp_guidance)
 
         return tail
+
+    def _load_inspiration(self, n: int) -> str:
+        """加载本章灵感文件（inspiration 步骤的 {n}_*.md 产出）。"""
+        insp_dir = self.project_dir / "inspiration"
+        if not insp_dir.exists():
+            return ""
+        for f in sorted(insp_dir.glob(f"{n}_*.md")):
+            text = project_io.read_md(f)
+            if text:
+                return text
+        return ""
 
     def _add_recent_chapters(self, parts: list[str], n: int):
         chapters_dir = self.project_dir / project_io.CHAPTERS_DIR

@@ -6,6 +6,20 @@ from typing import AsyncIterator
 
 from ..llm.base import BaseLLM, LLMMessage, LLMResponse
 
+# 历史消息 token 预算：超限从最旧轮次开始丢弃（防御长对话场景，
+# 与 workflow/context.estimate_tokens 同一启发式口径；本地实现避免循环导入）
+HISTORY_TOKEN_BUDGET = 24_000
+
+
+def _estimate_messages_tokens(messages: list[LLMMessage]) -> int:
+    total = 0
+    for m in messages:
+        content = m.content or ""
+        cn = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
+        en = len(content) - cn
+        total += int(cn * 1.5 + en * 0.3)
+    return total
+
 
 @dataclass
 class AgentConfig:
@@ -42,10 +56,31 @@ class BaseAgent(ABC):
         if context:
             system_parts.append(context)
         system_content = "\n\n".join(system_parts)
+        history = self._trim_history(self.history)
         messages = [LLMMessage(role="system", content=system_content)]
-        messages.extend(self.history)
+        messages.extend(history)
         messages.append(LLMMessage(role="user", content=user_input))
         return messages
+
+    @staticmethod
+    def _trim_history(history: list[LLMMessage]) -> list[LLMMessage]:
+        """按 token 预算裁剪历史：保留最新轮次，丢最旧的（成对丢弃 user/assistant）。"""
+        if _estimate_messages_tokens(history) <= HISTORY_TOKEN_BUDGET:
+            return history
+        trimmed: list[LLMMessage] = []
+        total = 0
+        # 从最新往旧收集，成对保留，保证交替结构
+        pair: list[LLMMessage] = []
+        for m in reversed(history):
+            pair.append(m)
+            if m.role == "user":
+                pair_tokens = _estimate_messages_tokens(pair)
+                if total + pair_tokens > HISTORY_TOKEN_BUDGET and trimmed:
+                    break
+                total += pair_tokens
+                trimmed = pair[::-1] + trimmed
+                pair = []
+        return trimmed
 
     @staticmethod
     def _split_context_for_cache(context: str) -> tuple[str, str]:

@@ -111,12 +111,14 @@ class TestBuiltinStepHandlers:
     def test_all_builtin_steps_registered(self):
         assert set(BUILTIN_STEP_HANDLERS) == {
             "toc", "fix_titles", "world_state_update", "chapter_summary", "quality_check",
+            "proofread", "review",  # 批处理改造后由 handler 自行编排 LLM（分批校对/审核）
         }
 
-    def test_registry_steps_absent_from_standard_path(self):
-        """内置步骤没有 needs，不应进入标准 LLM 步骤路径。"""
+    def test_tool_steps_have_no_needs(self):
+        """纯工具步骤没有 needs；proofread/review 走注册表分发但不在此列。"""
+        tool_steps = {"toc", "fix_titles", "chapter_summary", "world_state_update", "quality_check"}
         for s in DEFAULT_WORKFLOW["steps"]:
-            if s["id"] in BUILTIN_STEP_HANDLERS:
+            if s["id"] in tool_steps:
                 assert s.get("needs", "") == ""
 
 
