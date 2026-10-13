@@ -13,29 +13,40 @@ import re
 from .memory import MemoryScratchpad, MemoryItem
 
 
+def _upsert_gain(mem: MemoryScratchpad, chapter: int, owner: str, item: str, source: str = ""):
+    """资源获得入账：subject 为获得者。source 非空时标注来源（如给予者）。"""
+    suffix = f"（{source}所给）" if source else ""
+    mem.upsert(MemoryItem(
+        category="resources",
+        subject=owner,
+        aspect=f"持有:{item}",
+        value=f"获得「{item}」{suffix}",
+        source_chapter=chapter,
+        payload={"action": "获得", "item": item},
+    ))
+
+
 def track_resources(mem: MemoryScratchpad, chapter: int, content: str):
     """追踪资源变化（获得/失去物品、金钱、能力）。"""
-    # 获得模式
-    gain_patterns = [
-        (r"(\w{2,6})(获得|得到|拿到|捡到|收到|夺取|抢到)(了?)([^。，！？]{2,20})", "获得"),
-        (r"(\w{2,6})（给了|递给|送给|赠予|交给)(了?)(\w{2,6})([^。，！？]{2,20})", "获得"),
-    ]
-    for pat, action in gain_patterns:
-        for m in re.finditer(pat, content):
-            groups = m.groups()
-            if len(groups) >= 4:
-                owner = groups[0]
-                item = groups[3] if len(groups) > 3 else groups[-1]
-                item = item.strip("了的")
-                if 2 <= len(item) <= 20:
-                    mem.upsert(MemoryItem(
-                        category="resources",
-                        subject=owner,
-                        aspect=f"持有:{item}",
-                        value=f"{action}「{item}」",
-                        source_chapter=chapter,
-                        payload={"action": action, "item": item},
-                    ))
+    # 主动获得：X 获得/夺取了 Y
+    for m in re.finditer(r"(\w{2,6})(获得|得到|拿到|捡到|收到|夺取|抢到)(了?)([^。，！？]{2,20})", content):
+        owner = m.group(1)
+        item = m.group(4).strip("了的")
+        if 2 <= len(item) <= 20:
+            _upsert_gain(mem, chapter, owner, item)
+
+    # 他人给予，入账给接受者（原先此模式正则有全角括号，编译即失败并拖垮整个
+    # track_all，是四维追踪长期只部分工作的根因）。两种语序分别处理：
+    #   「X 给了 Y 物品」（物品在后）/「X 把 物品 给了 Y」（物品在前，把-构造）
+    for m in re.finditer(r"(\w{2,6})(?:给了|递给|送给|赠予|交给)(了?)(\w{2,6})([^。，！？]{2,20})", content):
+        giver, recipient = m.group(1), m.group(3)
+        item = m.group(4).strip("了的")
+        if 2 <= len(item) <= 20:
+            _upsert_gain(mem, chapter, recipient, item, giver)
+    for m in re.finditer(r"(\w{2,6})把([^。，！？]{2,12}?)(?:给了|递给|送给|赠予|交给)(了?)(\w{2,6})", content):
+        giver, item, recipient = m.group(1), m.group(2).strip("了的"), m.group(4)
+        if 2 <= len(item) <= 12:
+            _upsert_gain(mem, chapter, recipient, item, giver)
 
     # 失去模式
     loss_patterns = [
@@ -178,8 +189,10 @@ def track_subplots(mem: MemoryScratchpad, chapter: int, content: str):
 
 
 def track_all(mem: MemoryScratchpad, chapter: int, content: str):
-    """一次性提取所有四维数据。"""
-    track_resources(mem, chapter, content)
-    track_emotions(mem, chapter, content)
-    track_info_boundary(mem, chapter, content)
-    track_subplots(mem, chapter, content)
+    """一次性提取所有四维数据。维度间相互隔离：单维异常不影响其他维度。"""
+    for tracker in (track_resources, track_emotions, track_info_boundary, track_subplots):
+        try:
+            tracker(mem, chapter, content)
+        except Exception as e:
+            from .logger import get_logger
+            get_logger(__name__).debug("四维追踪 %s 失败: %s", tracker.__name__, e)

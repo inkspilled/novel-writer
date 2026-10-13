@@ -173,6 +173,32 @@ class ModelDialog(QDialog):
         pg.addRow("", self._btn_test)
         scroll_layout.addWidget(provider_group)
 
+        # ── 语义检索（Embedding，可选） ──
+        embed_group = QGroupBox("语义检索（可选）")
+        eg = QFormLayout(embed_group)
+        eg.setSpacing(10)
+
+        embed_hint = QLabel(
+            "配置 Embedding 模型后，RAG 历史章节检索改用语义向量（别名/近义可召回）；\n"
+            "未配置或调用失败时自动回退关键词检索（BM25），不影响使用。")
+        embed_hint.setStyleSheet("color: gray; font-size: 12px;")
+        eg.addRow(embed_hint)
+
+        self._embed_model_input = QLineEdit()
+        self._embed_model_input.setPlaceholderText(
+            "如 Qwen/Qwen3-Embedding-8B、text-embedding-3-small（留空=不启用）")
+        eg.addRow("Embedding 模型", self._embed_model_input)
+
+        self._embed_base_url_input = QLineEdit()
+        self._embed_base_url_input.setPlaceholderText("留空则使用上方 API 地址")
+        eg.addRow("API 地址", self._embed_base_url_input)
+
+        self._embed_api_key_input = QLineEdit()
+        self._embed_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._embed_api_key_input.setPlaceholderText("留空则使用上方 API Key")
+        eg.addRow("API Key", self._embed_api_key_input)
+        scroll_layout.addWidget(embed_group)
+
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         right_layout.addWidget(scroll, 1)
@@ -428,6 +454,10 @@ class ModelDialog(QDialog):
             self.api_key_input.setText(saved_provider.get("api_key", ""))
             self.base_url_input.setText(saved_provider.get("base_url", ""))
             self._set_model_text(saved_provider.get("model", ""))
+        embed = self.config.get("embedding") or {}
+        self._embed_model_input.setText(embed.get("model", ""))
+        self._embed_base_url_input.setText(embed.get("base_url", ""))
+        self._embed_api_key_input.setText(embed.get("api_key", ""))
 
     def _save_config_only(self):
         """仅保存配置到内存，不关闭对话框。"""
@@ -439,6 +469,11 @@ class ModelDialog(QDialog):
         }
         self.config["saved_models"] = self._saved_models
         self.config["max_context_tokens"] = self._ctx_tokens_spin.value()
+        self.config["embedding"] = {
+            "model": self._embed_model_input.text().strip(),
+            "base_url": self._embed_base_url_input.text().strip(),
+            "api_key": self._embed_api_key_input.text().strip(),
+        }
         default_names = {p["name"] for p in load_default_providers()}
         custom_providers = [p for p in self._providers if p["name"] not in default_names]
         if custom_providers:

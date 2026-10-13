@@ -361,7 +361,9 @@ def write_planning(project_dir: Path, name: str, content: str) -> None:
 
 # ── 章节文件（正文用 .txt，细纲用 .md） ──
 
-_CHAPTER_RE = re.compile(r"^(\d+)_(.+)\.txt$")
+# 章节文件名："3_黎明前夜.txt"。负向断言排除写前备份 "3_黎明前夜.bak.txt"——
+# 否则 iterdir/glob 的第一个命中可能是备份，润色/续写/上下文都会读错文件
+_CHAPTER_RE = re.compile(r"^(?!.*\.bak\.txt$)(\d+)_(.+)\.txt$")
 _CHAPTER_OUTLINE_RE = re.compile(r"^(\d+)_(.+)\.outline\.md$")
 
 

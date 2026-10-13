@@ -1,4 +1,8 @@
-"""写后沉淀 — 从章节正文中提取记忆项、伏笔与追读力数据。"""
+"""写后沉淀 — 从章节最终正文提取记忆项、伏笔与追读力数据。
+
+双通道：LLM 语义提取为主（runner._llm_sediment 产出 JSON），
+正则提取为兜底（无可用 Agent 或 LLM 失败时）。
+"""
 from __future__ import annotations
 
 import re
@@ -23,49 +27,25 @@ def extract_chapter_title(content: str, n: int) -> str:
     return f"第{n}章"
 
 
-def sediment_chapter(project_dir, chapter: int, content: str):
-    """写后沉淀：从章节正文中提取记忆项 + 追读力分析。"""
+def sediment_chapter(project_dir, chapter: int, content: str, llm_data: dict | None = None):
+    """写后沉淀：从章节正文（应为润色后的最终落盘文本）提取记忆项 + 追读力分析。
+
+    双通道：
+    - llm_data 非空（LLM 沉淀成功）：语义提取为主——状态变化/伏笔开关/读者承诺/
+      关系/世界规则，伏笔回收按 subject 精确关闭；不跑正则状态/伏笔抽取。
+    - llm_data 为空（无可用 Agent 或 LLM 失败）：回退到正则提取（噪声大但零成本）。
+
+    章节事件、四维追踪、追读力两路共用。
+    """
     mem = MemoryScratchpad(project_dir)
 
-    # 提取可能的状态变化（X突破了/晋升为/受伤了/死了）
-    state_patterns = [
-        (r"(\w+)(突破|晋升|升级|进阶)", "实力变化"),
-        (r"(\w+)(受伤|重伤|濒死|死亡|陨落)", "身体状态"),
-        (r"(\w+)(到达|来到|离开|前往|回到)", "位置变化"),
-    ]
-    for pat, field_name in state_patterns:
-        for m in re.finditer(pat, content):
-            subj = m.group(1)
-            if len(subj) >= 2 and len(subj) <= 6:
-                mem.upsert(MemoryItem(
-                    category="character_state",
-                    subject=subj,
-                    aspect=field_name,
-                    value=m.group(0),
-                    source_chapter=chapter,
-                ))
+    if llm_data:
+        apply_llm_sediment(mem, chapter, llm_data)
+    else:
+        _extract_state_changes(mem, chapter, content)
+        _extract_foreshadows(mem, chapter, content)
 
-    # 提取伏笔关键词（如果/竟然/原来/没想到）
-    foreshadow_patterns = [
-        r"(?:竟然|居然|原来|没想到|殊不知)([^。，！？]{5,40})",
-        r"(?:如果|倘若|万一)([^。，！？]{5,40})",
-    ]
-    loop_seq = 0
-    for pat in foreshadow_patterns:
-        for m in re.finditer(pat, content):
-            val = m.group(0)[:60]
-            loop_seq += 1
-            # subject 含片段与序号，避免同章多伏笔在 open_loops 去重键下互相覆盖
-            mem.upsert(MemoryItem(
-                category="open_loops",
-                subject=f"第{chapter}章伏笔{loop_seq}·{val[:24]}",
-                aspect="悬念",
-                value=val,
-                source_chapter=chapter,
-                payload={"urgency": 0.6},
-            ))
-
-    # 记录章节事件
+    # 记录章节事件（两路共用，正则足够）
     title = extract_chapter_title(content, chapter)
     first_para = content.split("\n\n")[0][:100] if content else ""
     mem.upsert(MemoryItem(
@@ -83,8 +63,9 @@ def sediment_chapter(project_dir, chapter: int, content: str):
     except Exception as e:
         logger.debug("章节四维追踪失败: %s", e)
 
-    # 伏笔自动回收检测：正则匹配回收信号，标记已解决的 open_loops
-    _auto_close_loops(mem, chapter, content)
+    # 伏笔自动回收：LLM 路径由 resolved 按 subject 精确关闭，正则检测只在兜底路径跑
+    if not llm_data:
+        _auto_close_loops(mem, chapter, content)
 
     mem.compact()
     mem.save()
@@ -104,6 +85,140 @@ def sediment_chapter(project_dir, chapter: int, content: str):
         rp_tracker.record(rp)
     except Exception as e:
         logger.debug("追读力分析失败: %s", e)
+
+
+def _clean(value, max_len: int) -> str:
+    """防御性清洗 LLM 输出字段：非字符串/超长一律规整。"""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:max_len]
+
+
+def apply_llm_sediment(mem, chapter: int, data: dict):
+    """把 LLM 沉淀 JSON 写入记忆桶（LLM 输出不可信，逐条防御性校验）。"""
+    for item in data.get("character_state") or []:
+        if not isinstance(item, dict):
+            continue
+        subj = _clean(item.get("subject"), 20)
+        val = _clean(item.get("value"), 80)
+        if not subj or not val:
+            continue
+        mem.upsert(MemoryItem(
+            category="character_state",
+            subject=subj,
+            aspect=_clean(item.get("aspect"), 12) or "状态",
+            value=val,
+            source_chapter=chapter,
+            payload={"source": "llm"},
+        ))
+
+    for i, item in enumerate(data.get("open_loops") or [], 1):
+        val = _clean(item.get("value"), 60) if isinstance(item, dict) else _clean(item, 60)
+        if not val:
+            continue
+        # subject 含片段与序号，与正则通道同约定：同章多伏笔互不覆盖
+        mem.upsert(MemoryItem(
+            category="open_loops",
+            subject=f"第{chapter}章伏笔{i}·{val[:24]}",
+            aspect="悬念",
+            value=val,
+            source_chapter=chapter,
+            payload={"urgency": 0.6, "source": "llm"},
+        ))
+
+    for subj in data.get("resolved") or []:
+        if isinstance(subj, str) and subj.strip():
+            mem.close_loop(subj.strip()[:80], chapter)
+
+    for item in data.get("reader_promises") or []:
+        if not isinstance(item, dict):
+            continue
+        subj = _clean(item.get("subject"), 30)
+        val = _clean(item.get("value"), 80)
+        if not subj or not val:
+            continue
+        mem.upsert(MemoryItem(
+            category="reader_promises",
+            subject=subj,
+            aspect="承诺",
+            value=val,
+            source_chapter=chapter,
+            payload={"source": "llm"},
+        ))
+
+    for item in data.get("relationships") or []:
+        if not isinstance(item, dict):
+            continue
+        subj = _clean(item.get("subject"), 40)
+        val = _clean(item.get("value"), 80)
+        if not subj or not val:
+            continue
+        mem.upsert(MemoryItem(
+            category="relationships",
+            subject=subj,
+            aspect="关系",
+            value=val,
+            source_chapter=chapter,
+            payload={"source": "llm"},
+        ))
+
+    for item in data.get("world_rules") or []:
+        if not isinstance(item, dict):
+            continue
+        subj = _clean(item.get("subject"), 30)
+        val = _clean(item.get("value"), 80)
+        if not subj or not val:
+            continue
+        mem.upsert(MemoryItem(
+            category="world_rules",
+            subject=subj,
+            aspect="规则",
+            value=val,
+            source_chapter=chapter,
+            payload={"source": "llm"},
+        ))
+
+
+def _extract_state_changes(mem, chapter: int, content: str):
+    """正则兜底：状态变化提取（噪声大，仅 LLM 沉淀不可用时使用）。"""
+    state_patterns = [
+        (r"(\w+)(突破|晋升|升级|进阶)", "实力变化"),
+        (r"(\w+)(受伤|重伤|濒死|死亡|陨落)", "身体状态"),
+        (r"(\w+)(到达|来到|离开|前往|回到)", "位置变化"),
+    ]
+    for pat, field_name in state_patterns:
+        for m in re.finditer(pat, content):
+            subj = m.group(1)
+            if len(subj) >= 2 and len(subj) <= 6:
+                mem.upsert(MemoryItem(
+                    category="character_state",
+                    subject=subj,
+                    aspect=field_name,
+                    value=m.group(0),
+                    source_chapter=chapter,
+                ))
+
+
+def _extract_foreshadows(mem, chapter: int, content: str):
+    """正则兜底：伏笔关键词提取（噪声大，仅 LLM 沉淀不可用时使用）。"""
+    foreshadow_patterns = [
+        r"(?:竟然|居然|原来|没想到|殊不知)([^。，！？]{5,40})",
+        r"(?:如果|倘若|万一)([^。，！？]{5,40})",
+    ]
+    loop_seq = 0
+    for pat in foreshadow_patterns:
+        for m in re.finditer(pat, content):
+            val = m.group(0)[:60]
+            loop_seq += 1
+            # subject 含片段与序号，避免同章多伏笔在 open_loops 去重键下互相覆盖
+            mem.upsert(MemoryItem(
+                category="open_loops",
+                subject=f"第{chapter}章伏笔{loop_seq}·{val[:24]}",
+                aspect="悬念",
+                value=val,
+                source_chapter=chapter,
+                payload={"urgency": 0.6},
+            ))
 
 
 # 伏笔回收信号词：出现这些词暗示之前的悬念被揭开了

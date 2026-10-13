@@ -849,8 +849,22 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
+    def _embedding_config(self) -> dict | None:
+        """解析 embedding 配置：model 为空 = 不启用语义检索；base_url/key 留空回落当前供应商。"""
+        cfg = dict(self.config.get("embedding") or {})
+        if not cfg.get("model"):
+            return None
+        provider = self.config.get("current_provider") or {}
+        if not cfg.get("base_url"):
+            cfg["base_url"] = provider.get("base_url", "")
+        if not cfg.get("api_key"):
+            cfg["api_key"] = provider.get("api_key", "")
+        return cfg
+
     def _launch_workflow(self, wf_def, progress: dict):
         """创建工作流执行器与后台线程并启动。"""
+        from ..core.rag import configure_embedding
+        configure_embedding(self._embedding_config())
         max_context_tokens = self.config.get("max_context_tokens", 120_000)
         self._wf_runner = WorkflowRunner(
             agents=self.agents,

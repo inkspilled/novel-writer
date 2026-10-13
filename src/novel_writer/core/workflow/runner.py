@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import re
 import shutil
 from pathlib import Path
@@ -11,16 +12,19 @@ from typing import Callable, Iterator
 from .. import project_io
 from ..agents.base import BaseAgent
 from ..logger import get_logger
-from .builtin_steps import BUILTIN_STEP_HANDLERS
+from ..memory import MemoryScratchpad
+from .builtin_steps import BUILTIN_STEP_HANDLERS, _fallback_agent
 from .constants import (
     CHAPTER_CONTENT_STEP_IDS,
     PLANNING_UPDATE_STEP_PREFIX,
     POST_CHAPTER_PERIODIC_IDS,
     PRE_CHAPTER_PERIODIC_IDS,
+    SKILL_PROOFREAD,
+    SKILL_REVIEW,
 )
 from .context import ContextBuilder
 from .definition import WorkflowDef, WorkflowStep
-from .prompts import build_pacing_context, build_title_constraint
+from .prompts import build_memory_sediment_prompt, build_pacing_context, build_title_constraint
 from .sediment import extract_chapter_title, sediment_chapter
 
 logger = get_logger(__name__)
@@ -205,6 +209,9 @@ class WorkflowRunner:
                     if ps.id in self._post_ids and n % ps.every == 0:
                         if progress.get(f"{ps.id}_{n}") != "done":
                             await self._run_periodic(ps, project, n, progress)
+                # 写后沉淀：等全部章后步骤（含润色改写正文）跑完后，
+                # 从最终落盘正文提取记忆——草稿不是正典，润色前的文本不入账
+                await self._run_sediment(n, progress)
             errors = progress.get("_errors")
             if errors:
                 logger.warning("工作流循环完成，共 %d 章失败: %s", len(errors), "；".join(errors))
@@ -228,6 +235,61 @@ class WorkflowRunner:
             return
         progress[ps_key] = "done"
         self._save_progress(progress)
+
+    async def _run_sediment(self, n: int, progress: dict):
+        """写后沉淀：从第 n 章最终正文提取记忆项。
+
+        在该章全部章后步骤（含润色）完成后调用，读最终落盘文件而非 LLM 原始输出。
+        LLM 语义提取为主通道，失败/无 Agent 时正则兜底。
+        断点键 sediment_{n}：失败不标记，恢复时自动重试；失败不中断章节循环。
+        """
+        if progress.get(f"sediment_{n}") == "done":
+            return
+        chapter_file = self._find_chapter_file(n)
+        if not chapter_file:
+            return  # 章节写作失败或被跳过，无可沉淀
+        content = project_io.read_md(self.project_dir / "chapters" / chapter_file)
+        if not content:
+            return
+        llm_data = await self._llm_sediment(n, content)
+        try:
+            sediment_chapter(self.project_dir, n, content, llm_data=llm_data)
+            progress[f"sediment_{n}"] = "done"
+            self._save_progress(progress)
+            logger.debug("第%d章写后沉淀完成（%s）", n, "LLM" if llm_data else "正则兜底")
+        except Exception as e:
+            logger.error("第%d章写后沉淀失败（恢复时重试）: %s", n, e, exc_info=True)
+            if self.on_error:
+                self.on_error("sediment", f"第{n}章沉淀失败: {e}")
+
+    async def _llm_sediment(self, n: int, content: str) -> dict | None:
+        """LLM 记忆沉淀（主通道）。
+
+        Returns:
+            沉淀 JSON；无可用 Agent、返回非 JSON 或调用失败时返回 None
+            （sediment_chapter 据此回退正则，不抛异常）。
+        """
+        agent = _fallback_agent(self, (SKILL_REVIEW, SKILL_PROOFREAD))
+        if not agent:
+            return None
+        mem = MemoryScratchpad(self.project_dir)
+        active_loops = mem.get_open_loops(limit=15, current_chapter=n)
+        prompt = build_memory_sediment_prompt(n, active_loops, content)
+        try:
+            response = await agent.run(prompt)
+        except Exception as e:
+            logger.warning("第%d章 LLM 沉淀调用失败，回退正则提取: %s", n, e)
+            return None
+        m = re.search(r"\{[\s\S]+\}", response.content or "")
+        if not m:
+            logger.warning("第%d章 LLM 沉淀返回非 JSON，回退正则提取", n)
+            return None
+        try:
+            data = json.loads(m.group())
+        except json.JSONDecodeError:
+            logger.warning("第%d章 LLM 沉淀 JSON 解析失败，回退正则提取", n)
+            return None
+        return data if isinstance(data, dict) else None
 
     async def _run_single(self, step: WorkflowStep, project: dict, n: int, progress: dict):
         # ── 内置特殊步骤（不走标准 LLM 流程） ──
@@ -299,10 +361,6 @@ class WorkflowRunner:
             written = self._write_output(step, n, output, response.content, agent)
             if not written:
                 return
-
-        # 写后沉淀：章节写完后提取记忆项
-        if step.id == "chapter" and response:
-            sediment_chapter(self.project_dir, n, response.content)
 
         # 审稿后：提取反模式
         if step.id == "review" and response:

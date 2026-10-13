@@ -30,6 +30,39 @@ BUCKETS = [
     "resources", "emotional_arcs", "info_boundary", "subplots",
 ]
 
+# 伏笔紧急度达到该值时，上下文尾部标注「优先回收」（见 docs/因果相关性算法.md）
+LOOP_OVERDUE_URGENCY = 0.75
+
+
+def loop_urgency(item: dict, current_chapter: int = 0, total_chapters: int = 0) -> float:
+    """计算伏笔的动态紧急度（0-1）。
+
+    埋设时的 payload.urgency（固定 0.6）只是初值；真实紧急度随两件事增长：
+    1. 年龄：埋设后经过的章数越多越该收（每章 +0.03，20 章后饱和于 +0.6）；
+       刚埋 3 章内的伏笔处于低位，不应催收；15 章未收即到达超期线 0.75
+    2. 剧情阶段：进度 ≥60% 进入收束期整体抬升，≥90% 终章阶段必须解决
+
+    Args:
+        item: open_loops 记忆项（读 source_chapter 与 payload.urgency）
+        current_chapter: 当前写作章号；<=0 时退化为静态 urgency
+        total_chapters: 目标总章数；<=0 时不计阶段加成
+    """
+    if current_chapter <= 0:
+        try:
+            return min(1.0, max(0.0, float(item.get("payload", {}).get("urgency", 0.6))))
+        except (TypeError, ValueError):
+            return 0.6
+    planted = item.get("source_chapter", 0) or 0
+    age = max(0, current_chapter - planted)
+    urgency = 0.3 + min(0.6, age * 0.03)
+    if total_chapters > 0:
+        progress = current_chapter / total_chapters
+        if progress >= 0.9:
+            urgency += 0.3
+        elif progress >= 0.6:
+            urgency += 0.15
+    return min(1.0, urgency)
+
 
 @dataclass
 class MemoryItem:
@@ -112,11 +145,19 @@ class MemoryScratchpad:
         """获取指定桶的所有活跃项。"""
         return [i for i in self._data.get(category, []) if i.get("status") == "active"]
 
-    def get_open_loops(self, limit: int = 10) -> list[dict]:
-        """获取未解伏笔，按紧急度排序。"""
+    def get_open_loops(self, limit: int = 10, current_chapter: int = 0,
+                       total_chapters: int = 0) -> list[dict]:
+        """获取未解伏笔，按动态紧急度降序排序（公式见 docs/因果相关性算法.md）。
+
+        current_chapter=0 时退化为埋设时的静态 urgency 排序。
+        """
         loops = self.get_active("open_loops")
-        loops.sort(key=lambda x: x.get("payload", {}).get("urgency", 0.5), reverse=True)
-        return loops[:limit]
+        decorated = [
+            (loop_urgency(item, current_chapter, total_chapters), item)
+            for item in loops
+        ]
+        decorated.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in decorated[:limit]]
 
     def close_loop(self, subject: str, source_chapter: int):
         """关闭一个伏笔。"""
@@ -151,36 +192,3 @@ class MemoryScratchpad:
                         seen_keys[key] = len(keep)
                         keep.append(item)
             self._data[b] = keep
-
-    def build_memory_text(self, limit_per_bucket: int = 5) -> str:
-        """构建记忆文本，用于注入 LLM 上下文。"""
-        parts = []
-        labels = {
-            "character_state": "角色状态",
-            "story_facts": "剧情事实",
-            "world_rules": "世界规则",
-            "timeline": "时间线",
-            "open_loops": "未解伏笔",
-            "reader_promises": "读者期待",
-            "relationships": "人物关系",
-            "resources": "资源账本",
-            "emotional_arcs": "情感弧线",
-            "info_boundary": "信息边界",
-            "subplots": "支线进度",
-        }
-        for b in BUCKETS:
-            items = self.get_active(b)[:limit_per_bucket]
-            if not items:
-                continue
-            lines = [f"【{labels.get(b, b)}】"]
-            for item in items:
-                subj = item.get("subject", "")
-                val = item.get("value", "")
-                asp = item.get("aspect", "")
-                ch = item.get("source_chapter", 0)
-                if asp:
-                    lines.append(f"- [{subj}] {asp}: {val}（第{ch}章）")
-                else:
-                    lines.append(f"- [{subj}] {val}（第{ch}章）")
-            parts.append("\n".join(lines))
-        return "\n\n".join(parts)

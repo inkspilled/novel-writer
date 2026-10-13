@@ -14,7 +14,7 @@ from pathlib import Path
 from .. import project_io
 from ..anti_patterns import AntiPatternTracker
 from ..character_sim import load_sim_cache
-from ..memory import MemoryScratchpad
+from ..memory import LOOP_OVERDUE_URGENCY, MemoryScratchpad, loop_urgency
 from ..rag import BM25Index, Chunk, get_retriever
 from ..reading_power import ReadingPowerTracker
 from ..world_state import WorldState
@@ -39,14 +39,16 @@ MAX_CONTEXT_TOKENS = 120_000  # 120K，为 140K 模型预留 20K 给输出
 
 
 def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> list[str]:
-    """动态压缩上下文：按优先级裁剪，确保总 token 不超限。
+    """动态压缩上下文：两级策略，先块内缩量，仍超限再整段丢弃。
 
-    裁剪优先级（从先到后）：
-    1. RAG 检索结果（可重新检索）
-    2. 旧章节全文（有摘要替代）
-    3. 规划文档（有摘要替代）
-    4. 角色推演（非必需）
-    5. 章节概要（最后裁剪）
+    阶段一（缩量，保留信息骨架）：
+    - RAG 块：只留前 2 条，每条正文截 120 字
+    - 旧章全文：保留章号最大（最近）的一章完整，其余截 600 字
+    - 规划块：相关片段留前 2 条截 100 字；摘要块截 300 字
+    - 角色推演：截 600 字
+    阶段二（整段丢弃，从先到后）：
+    1. RAG（可重新检索） 2. 旧章全文（有摘要替代） 3. 规划文档（有摘要替代）
+    4. 角色推演（非必需） 5. 章节概要（最后裁剪）
     """
     total = sum(estimate_tokens(p) for p in parts)
     if total <= max_tokens:
@@ -70,7 +72,31 @@ def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> 
         else:
             tagged.append(("other", p))
 
-    # 按优先级裁剪
+    # ── 阶段一：块内缩量 ──
+    newest_ch = -1
+    newest_idx = -1
+    for i, (tag, p) in enumerate(tagged):
+        if tag == "chapter_full":
+            m = re.match(r"=== 第(\d+)章 ===", p)
+            ch_num = int(m.group(1)) if m else -1
+            if ch_num >= newest_ch:
+                newest_ch, newest_idx = ch_num, i
+    for i, (tag, p) in enumerate(tagged):
+        if tag == "rag":
+            tagged[i] = (tag, _shrink_rag_block(p, keep=2, text_cap=120))
+        elif tag == "chapter_full" and i != newest_idx:
+            tagged[i] = (tag, _truncate_block(p, cap=600))
+        elif tag == "planning":
+            tagged[i] = (tag, _shrink_planning_part(p))
+        elif tag == "sim":
+            tagged[i] = (tag, _truncate_block(p, cap=600))
+
+    total = sum(estimate_tokens(p) for _, p in tagged)
+    if total <= max_tokens:
+        logger.info("阶段一缩量完成: ≤%d tokens", total)
+        return [p for _, p in tagged]
+
+    # ── 阶段二：整段丢弃 ──
     priority_order = ["rag", "chapter_full", "planning", "sim", "summary"]
     removed_tokens = 0
 
@@ -93,6 +119,31 @@ def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> 
     logger.info("上下文压缩完成: %d → %d tokens (裁剪 %.1f%%)",
                 total, final_tokens, (1 - final_tokens / total) * 100 if total else 0)
     return result
+
+
+def _shrink_rag_block(part: str, keep: int, text_cap: int) -> str:
+    """RAG 块缩量：保留前 keep 条，每条正文截 text_cap 字。"""
+    lines = part.split("\n\n")
+    header = lines[0]
+    kept = []
+    for entry in lines[1:1 + keep]:
+        seg = entry.split("\n", 1)
+        body = seg[1][:text_cap] if len(seg) > 1 else ""
+        kept.append(f"{seg[0]}\n{body}")
+    return "\n\n".join([header] + kept)
+
+
+def _truncate_block(part: str, cap: int) -> str:
+    """通用块缩量：保留标题行，正文截 cap 字。"""
+    header, _, body = part.partition("\n")
+    return f"{header}\n{body[:cap]}\n…（超限截断）"
+
+
+def _shrink_planning_part(part: str) -> str:
+    """规划块缩量：相关片段块留前 2 条，摘要块截 300 字。"""
+    if part.startswith("=== 规划文档相关片段 ==="):
+        return _shrink_rag_block(part, keep=2, text_cap=100)
+    return _truncate_block(part, cap=300)
 
 
 # ── 上下文分层 ──
@@ -225,6 +276,9 @@ class ContextBuilder:
         char_states = build_merged_character_states(gs, mem)
         if char_states:
             middle.append(char_states)
+        rel_rules = self._build_rel_rules_block(mem)
+        if rel_rules:
+            middle.append(rel_rules)
 
         # 本章大纲段直注入：最关键的「本章写什么」确定性注入，不靠检索碰运气
         if step_id == "chapter":
@@ -290,6 +344,22 @@ class ContextBuilder:
             if w.get("power_system", {}).get("levels"):
                 world_brief += f" | 等级: {' → '.join(w['power_system']['levels'])}"
             parts.append(f"=== 世界设定 ===\n{world_brief}")
+
+    def _build_rel_rules_block(self, mem: MemoryScratchpad) -> str:
+        """章后沉淀的人物关系与世界规则（LLM 沉淀写入；空桶不出块）。
+
+        放中部参考区：是「防写崩」的背景约束，不是本章必须处理的活性信号。
+        """
+        lines: list[str] = []
+        for item in mem.get_active("relationships")[:4]:
+            lines.append(f"【关系】{item.get('subject', '')}：{item.get('value', '')}"
+                         f"（第{item.get('source_chapter', 0)}章）")
+        for item in mem.get_active("world_rules")[:4]:
+            lines.append(f"【规则】{item.get('subject', '')}：{item.get('value', '')}"
+                         f"（第{item.get('source_chapter', 0)}章）")
+        if not lines:
+            return ""
+        return "=== 关系与世界规则（近期沉淀） ===\n" + "\n".join(lines)
 
     def _resolve_input_files(self, f: str, n: int) -> list[tuple[Path, str]]:
         """解析单个 input_file 条目（支持通配符），返回 (路径, 内容) 列表。"""
@@ -543,20 +613,36 @@ class ContextBuilder:
         适合放必须处理的活性信号：未解伏笔、信息差、承接点、写作禁忌。
         """
         tail: list[str] = []
+        total_chapters = self.project_info.get("target_chapters", 0)
 
         # ── 未解伏笔（必须回收的钩子） ──
-        open_loops = mem.get_open_loops(limit=6)
+        open_loops = mem.get_open_loops(limit=6, current_chapter=n, total_chapters=total_chapters)
         if open_loops:
             loop_lines = ["⚠ 【未解伏笔 · 需要在近期章节处理】"]
             for item in open_loops:
                 subj = item.get("subject", "")
                 val = item.get("value", "")
                 ch = item.get("source_chapter", 0)
-                loop_lines.append(f"- [{subj}] {val}（第{ch}章埋设）")
+                age = max(0, n - ch)
+                overdue = "，**已超期，本章优先回收**" if loop_urgency(
+                    item, n, total_chapters) >= LOOP_OVERDUE_URGENCY else ""
+                loop_lines.append(f"- [{subj}] {val}（第{ch}章埋设，已经过{age}章{overdue}）")
             tail.append("\n".join(loop_lines))
 
         if minimal:
             return tail
+
+        # ── 近期已回收伏笔（防止重复回收 / 把已解开的谜再挖开） ──
+        closed = [
+            i for i in mem.query("story_facts")
+            if i.get("aspect") == "伏笔回收" and i.get("source_chapter", 0) >= n - 8
+        ]
+        if closed:
+            closed.sort(key=lambda x: x.get("source_chapter", 0), reverse=True)
+            c_lines = ["【近期已回收伏笔 · 不要重复回收】"]
+            for item in closed[:4]:
+                c_lines.append(f"- {item.get('subject', '')}（第{item.get('source_chapter', 0)}章已回收）")
+            tail.append("\n".join(c_lines))
 
         # ── 读者承诺（待兑现的期待） ──
         promises = mem.get_active("reader_promises")[:4]
@@ -629,7 +715,8 @@ class ContextBuilder:
         start = max(1, n - 2)
         for i in range(start, n):
             for ch_file in sorted(chapters_dir.glob(f"{i}_*.txt")):
-                if ch_file.name.endswith(".outline.md") or ch_file.name.endswith(".summary.md"):
+                if ch_file.name.endswith(".outline.md") or ch_file.name.endswith(".summary.md") \
+                        or ch_file.name.endswith(".bak.txt"):
                     continue
                 content = project_io.read_md(ch_file)
                 if content:

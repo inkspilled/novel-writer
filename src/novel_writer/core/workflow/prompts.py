@@ -126,11 +126,14 @@ def build_fix_titles_prompt(excerpts: list[str]) -> str:
 
 
 def build_world_state_prompt(n: int, gs_summary: str, content: str) -> str:
-    """大世界状态更新：LLM 输出人物状态变化 JSON。"""
+    """大世界状态更新：LLM 输出人物状态变化 JSON。
+
+    正文全文注入：状态变化可能发生在章节后半段（截断会漏采）。
+    """
     return (
         f"你是大世界状态追踪器。根据第{n}章正文，输出人物状态变化的 JSON。\n\n"
-        f"当前状态：\n{gs_summary[:1500]}\n\n"
-        f"第{n}章正文：\n{content[:2000]}\n\n"
+        f"当前状态：\n{gs_summary[:6000]}\n\n"
+        f"第{n}章正文：\n{content}\n\n"
         f"严格输出 JSON，不要输出其他内容：\n"
         f'{{\n'
         f'  "characters": {{"角色名": {{"gold": 数字, "cultivation": {{"level": "炼气", "sub_level": "三层"}}, "location": "地点", "hp": 数字, "sp": 数字, "inventory": [{{"name": "物品名", "type": "类型"}}]}}, ...}},\n'
@@ -139,6 +142,40 @@ def build_world_state_prompt(n: int, gs_summary: str, content: str) -> str:
         f'  "date": "时间"\n'
         f'}}\n\n'
         f"只输出本章发生变化的部分，没变化的字段不要输出。"
+    )
+
+
+def build_memory_sediment_prompt(n: int, active_loops: list[dict], content: str) -> str:
+    """写后记忆沉淀：LLM 从最终正文提取结构化事实（主通道，正则只作兜底）。
+
+    与 world_state_update 互补：那个管世界状态快照（境界/物品/位置），
+    这个管叙事记忆（状态变化/伏笔开关/读者承诺/关系/世界规则）。
+    """
+    loops_text = ""
+    if active_loops:
+        lines = [
+            f"- {item.get('subject', '')}：{str(item.get('value', ''))[:40]}"
+            for item in active_loops[:15]
+        ]
+        loops_text = (
+            "当前未解伏笔列表（若本章剧情已回收其中某条，把它的 subject "
+            "原样放进 resolved 数组；没回收的不要动）：\n" + "\n".join(lines) + "\n\n"
+        )
+    return (
+        f"你是小说记忆沉淀器。根据第{n}章正文，提取本章**真正发生**的事实变化，输出 JSON。\n"
+        "【铁律】只记录确定发生的事。假设、设想、心理活动、角色口头的「如果…就…」不是事实，不得记录。\n\n"
+        f"{loops_text}"
+        f"第{n}章正文：\n{content}\n\n"
+        "严格输出 JSON，不要输出其他内容：\n"
+        "{\n"
+        '  "character_state": [{"subject": "角色名", "aspect": "实力|身体|位置|身份", "value": "变化描述"}],\n'
+        '  "open_loops": [{"value": "本章新埋设的伏笔/悬念描述"}],\n'
+        '  "resolved": ["本章已回收的伏笔 subject（须与上面列表逐字一致）"],\n'
+        '  "reader_promises": [{"subject": "承诺主题", "value": "对读者许下的承诺（复仇誓言/目标宣言/重要约定）"}],\n'
+        '  "relationships": [{"subject": "角色A↔角色B", "value": "关系变化描述"}],\n'
+        '  "world_rules": [{"subject": "规则名", "value": "本章新揭示的世界规则/力量体系/禁忌"}]\n'
+        "}\n\n"
+        "只输出本章实际发生的部分，没有变化的数组输出空数组。value 要简短（40 字内）。"
     )
 
 
@@ -153,7 +190,7 @@ def build_chapter_summary_prompt(n: int, ch_title: str, content: str) -> str:
         f"- **伏笔/悬念**：埋设或回收的伏笔\n"
         f"- **情绪走向**：如 惊疑→震怒→决心\n"
         f"- **承接点**：本章结尾留给下一章的悬念（1句）\n\n"
-        f"正文：\n{content[:3000]}"
+        f"正文（全文）：\n{content}"
     )
 
 
