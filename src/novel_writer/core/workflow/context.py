@@ -15,7 +15,7 @@ from .. import project_io
 from ..anti_patterns import AntiPatternTracker
 from ..character_sim import load_sim_cache
 from ..memory import MemoryScratchpad
-from ..rag import BM25Index, Chunk, RAGRetriever
+from ..rag import BM25Index, Chunk, get_retriever
 from ..reading_power import ReadingPowerTracker
 from ..world_state import WorldState
 from ..logger import get_logger
@@ -157,6 +157,9 @@ class ContextBuilder:
         self.project_dir = project_dir
         self.project_info = project_info
         self.max_context_tokens = max_context_tokens
+        # 规划文档索引缓存（按文件 mtime 失效，避免每次调用重新分块）
+        self._planning_cache_key: tuple | None = None
+        self._planning_cache: BM25Index | None = None
 
     def build(self, input_files: list[str], n: int, step_id: str = "") -> str:
         """组装上下文 — 注意力优化布局。
@@ -196,7 +199,7 @@ class ContextBuilder:
 
         # 角色锚定硬约束 — 放最前面，确保模型最先看到
         char_file_content = ""
-        planning_docs_for_rag: list[tuple[str, str]] = []
+        planning_docs_for_rag: list[tuple[Path, str]] = []
         for f in input_files:
             if f == "prev_chapters":
                 continue
@@ -204,7 +207,7 @@ class ContextBuilder:
                 if p.name.endswith("人物设定.md"):
                     char_file_content = content
                 else:
-                    planning_docs_for_rag.append((p.name, content))
+                    planning_docs_for_rag.append((p, content))
 
         if char_file_content:
             constraint = build_character_constraint(char_file_content)
@@ -223,12 +226,20 @@ class ContextBuilder:
         if char_states:
             middle.append(char_states)
 
+        # 本章大纲段直注入：最关键的「本章写什么」确定性注入，不靠检索碰运气
+        if step_id == "chapter":
+            outline_path = self.project_dir / "planning" / "大纲.md"
+            outline_text = project_io.read_md(outline_path) if outline_path.exists() else ""
+            section = extract_chapter_section(outline_text, n) if outline_text else ""
+            if section:
+                middle.append(f"=== 本章大纲 ===\n{section}")
+
         # 规划文档：RAG 片段
         if planning_docs_for_rag:
             rag_parts = self._rag_planning_fragments(planning_docs_for_rag, step_id, n)
             if rag_parts is None:
-                for fname, content in planning_docs_for_rag:
-                    middle.append(f"=== {fname}（摘要）===\n{content[:500]}")
+                for p, content in planning_docs_for_rag:
+                    middle.append(f"=== {p.name}（摘要）===\n{content[:500]}")
             elif rag_parts:
                 middle.append(rag_parts)
 
@@ -280,38 +291,6 @@ class ContextBuilder:
                 world_brief += f" | 等级: {' → '.join(w['power_system']['levels'])}"
             parts.append(f"=== 世界设定 ===\n{world_brief}")
 
-    def _add_planning_docs(self, parts: list[str], input_files: list[str], n: int, step_id: str) -> str:
-        """读取 planning/ 下的文件，非人物设定走 RAG 检索只注入相关片段。
-
-        Returns:
-            人物设定文件内容（用于生成角色约束），没有则为空串。
-        """
-        char_file_content = ""
-        planning_docs_for_rag: list[tuple[str, str]] = []
-
-        for f in input_files:
-            if f == "prev_chapters":
-                continue
-            contents = self._resolve_input_files(f, n)
-            for p, content in contents:
-                if p.name.endswith("人物设定.md"):
-                    char_file_content = content
-                    parts.append(content)
-                else:
-                    planning_docs_for_rag.append((p.name, content))
-
-        # 规划文档：用 RAG 检索相关片段，不灌全文
-        if planning_docs_for_rag:
-            rag_parts = self._rag_planning_fragments(planning_docs_for_rag, step_id, n)
-            if rag_parts is None:
-                # RAG 失败时回退：每个文档取前 500 字
-                for fname, content in planning_docs_for_rag:
-                    parts.append(f"=== {fname}（摘要）===\n{content[:500]}")
-            elif rag_parts:
-                parts.append(rag_parts)
-
-        return char_file_content
-
     def _resolve_input_files(self, f: str, n: int) -> list[tuple[Path, str]]:
         """解析单个 input_file 条目（支持通配符），返回 (路径, 内容) 列表。"""
         results: list[tuple[Path, str]] = []
@@ -345,34 +324,61 @@ class ContextBuilder:
                     results.append((p, content))
         return results
 
-    def _rag_planning_fragments(self, docs: list[tuple[str, str]], step_id: str, n: int) -> str | None:
-        """对规划文档做 BM25 检索，返回相关片段文本。
+    def _planning_index(self, docs: list[tuple[Path, str]]) -> BM25Index | None:
+        """规划文档索引 — 实例级缓存，按文件 mtime 失效。
 
         Returns:
-            片段文本；检索成功但无结果返回空串；检索异常返回 None（调用方回退到摘要）。
+            索引；文件状态读取异常返回 None（调用方回退到摘要模式）。
         """
         try:
-            plan_index = BM25Index()
-            for fname, content in docs:
-                sections = re.split(r"\n(?=#)|\n\n+", content)
-                for i, section in enumerate(sections):
-                    section = section.strip()
-                    if len(section) < 20:
-                        continue
-                    plan_index.add_chunk(Chunk(
-                        id=f"plan_{fname}_s{i}",
-                        chapter=0,
-                        text=section,
-                    ))
-            plan_index.build()
-            # 构建查询：用当前步骤类型 + 章节号
-            query_parts = [step_id]
-            if n > 1:
-                query_parts.append(f"第{n}章")
-            if self.project_info.get("title"):
-                query_parts.append(self.project_info["title"])
-            query = " ".join(query_parts)
-            results = plan_index.search(query, top_k=5)
+            key = tuple((p.name, p.stat().st_mtime) for p, _ in docs)
+        except OSError:
+            return None
+        if self._planning_cache_key == key and self._planning_cache is not None:
+            return self._planning_cache
+        index = BM25Index()
+        for p, content in docs:
+            sections = re.split(r"\n(?=#)|\n\n+", content)
+            for i, section in enumerate(sections):
+                section = section.strip()
+                if len(section) < 20:
+                    continue
+                index.add_chunk(Chunk(
+                    id=f"plan_{p.name}_s{i}",
+                    chapter=0,
+                    text=section,
+                ))
+        index.build()
+        self._planning_cache_key = key
+        self._planning_cache = index
+        return index
+
+    def _rag_planning_fragments(self, docs: list[tuple[Path, str]], step_id: str, n: int) -> str | None:
+        """对规划文档做 BM25 检索，返回相关片段文本。
+
+        查询优先用大纲中本章的描述段（与历史章节 RAG 同源、质量更高），
+        大纲不在输入中时退化为「步骤 + 章号 + 书名」。
+
+        Returns:
+            片段文本；检索成功但无结果返回空串；索引构建异常返回 None（调用方回退到摘要）。
+        """
+        try:
+            index = self._planning_index(docs)
+            if index is None:
+                return None
+            query = ""
+            for p, content in docs:
+                if p.name == "大纲.md":
+                    query = extract_chapter_query(content, n)
+                    break
+            if not query:
+                parts = [step_id]
+                if n > 1:
+                    parts.append(f"第{n}章")
+                if self.project_info.get("title"):
+                    parts.append(self.project_info["title"])
+                query = " ".join(parts)
+            results = index.search(query, top_k=5)
             if not results:
                 return ""
             rag_parts = ["=== 规划文档相关片段 ==="]
@@ -382,35 +388,6 @@ class ContextBuilder:
         except Exception as e:
             logger.warning("规划文档 RAG 检索失败，回退到摘要模式: %s", e)
             return None
-
-    def _add_narrative_memory(self, parts: list[str], mem: MemoryScratchpad, n: int):
-        # 剧情摘要（最新，替代 memory.story_facts 减少重复）
-        summary = project_io.latest_summary(self.project_dir)
-        if summary:
-            parts.append(f"=== 剧情摘要 ===\n{summary}")
-
-        # 未解伏笔（从 memory 提取，替代全量 memory dump）
-        open_loops = mem.get_open_loops(limit=8)
-        if open_loops:
-            loop_lines = ["【未解伏笔】"]
-            for item in open_loops:
-                subj = item.get("subject", "")
-                val = item.get("value", "")
-                ch = item.get("source_chapter", 0)
-                loop_lines.append(f"- [{subj}] {val}（第{ch}章）")
-            parts.append("\n".join(loop_lines))
-
-        # 反模式约束
-        tracker = AntiPatternTracker(self.project_dir)
-        constraint_text = tracker.get_constraint_text()
-        if constraint_text:
-            parts.append(constraint_text)
-
-        # 追读力指导
-        rp_tracker = ReadingPowerTracker(self.project_dir)
-        rp_guidance = rp_tracker.build_guidance(n)
-        if rp_guidance:
-            parts.append(rp_guidance)
 
     def _add_working_memory(self, parts: list[str], input_files: list[str], n: int, step_id: str):
         # 上章回顾机制 - 提升章节连贯性
@@ -661,7 +638,7 @@ class ContextBuilder:
     def _add_chapter_rag(self, parts: list[str], n: int):
         """RAG 检索历史章节（基于大纲中本章描述作为查询）。"""
         try:
-            rag = RAGRetriever(self.project_dir)
+            rag = get_retriever(self.project_dir)
             rag.load_chapters(up_to_chapter=max(1, n - 2))
             outline_path = self.project_dir / "planning" / "大纲.md"
             if outline_path.exists():
@@ -730,19 +707,30 @@ def build_merged_character_states(gs: WorldState, mem: MemoryScratchpad) -> str:
     return "=== 角色状态 ===\n" + "\n".join(lines)
 
 
-def extract_chapter_query(outline: str, n: int) -> str:
-    """从大纲中提取第 n 章的描述作为 RAG 查询。"""
+def extract_chapter_section(outline: str, n: int) -> str:
+    """从大纲中提取第 n 章的完整描述段（标题行到下一个标题行前）。
+
+    用于章节写作时的确定性直注入——「本章写什么」不应依赖检索命中。
+    """
     lines = outline.split("\n")
     capture = False
-    query_lines = []
+    out: list[str] = []
     for line in lines:
         if re.match(rf"^#.*第\s*{n}\s*章", line) or re.match(rf"^#.*{n}\.", line):
             capture = True
+            out.append(line.rstrip())
             continue
         if capture:
-            if re.match(r"^#", line) and "第" not in line:
+            if re.match(r"^#", line):
                 break
-            query_lines.append(line)
-            if len(query_lines) >= 5:
+            out.append(line)
+            if len(out) >= 40:  # 防异常大纲单段过长
                 break
-    return " ".join(query_lines).strip()[:200]
+    return "\n".join(out).strip()[:2000]
+
+
+def extract_chapter_query(outline: str, n: int) -> str:
+    """从大纲中提取第 n 章的描述作为 RAG 查询。"""
+    section = extract_chapter_section(outline, n)
+    lines = [line for line in section.split("\n") if line.strip()]
+    return " ".join(lines[:5]).strip()[:200]

@@ -123,6 +123,7 @@ class WorkflowThread(QThread):
         self.workflow = workflow
         self.progress = progress
         self._loop = None
+        self._task = None
 
     def run(self):
         logger.info("WorkflowThread 开始执行")
@@ -135,9 +136,10 @@ class WorkflowThread(QThread):
 
         try:
             self.log_message.emit("工作流开始执行...")
-            result = self._loop.run_until_complete(
+            self._task = self._loop.create_task(
                 self.runner.run(self.workflow, self.progress)
             )
+            result = self._loop.run_until_complete(self._task)
             self.progress = result
             if self.runner._stop:
                 logger.info("工作流已被用户停止")
@@ -145,6 +147,9 @@ class WorkflowThread(QThread):
             else:
                 logger.info("工作流执行完成")
                 self.workflow_done.emit()
+        except asyncio.CancelledError:
+            logger.info("工作流被用户取消（进行中的 LLM 调用已中断）")
+            self.workflow_stopped.emit()
         except Exception as e:
             import traceback
             logger.error("工作流执行异常: %s", e, exc_info=True)
@@ -167,7 +172,12 @@ class WorkflowThread(QThread):
         self.log_message.emit(f"✗ {step_id}: {error}")
 
     def request_stop(self):
+        """请求停止：置优雅停止标志，并取消进行中的 LLM 调用（秒级生效）。"""
         self.runner.stop()
+        loop, task = self._loop, self._task
+        if loop is not None and task is not None and not loop.is_closed():
+            if not task.done():
+                loop.call_soon_threadsafe(task.cancel)
 
 
 # ── 工作流面板主体 ──
@@ -311,39 +321,56 @@ class WorkflowPanel(QWidget):
     # ── 进度更新 ──
 
     def _update_progress_display(self):
-        """根据进度字典更新所有步骤卡片状态。"""
+        """根据进度字典更新所有步骤卡片状态与总进度。
+
+        总进度按章数加权：循环步骤权重 = repeat（章数），其余步骤权重 1；
+        周期步骤（every>0）随章节执行，不计权重，按 {id}_{n} 键判断状态，
+        避免运行完被打回 pending 的闪烁。
+        """
         if not self._workflow:
             return
 
-        total = len(self._workflow.steps)
-        done_count = 0
+        total_weight = 0
+        done_weight = 0
 
         for step in self._workflow.steps:
             card = self._step_cards.get(step.id)
             if not card:
                 continue
 
+            if step.every > 0:
+                # 周期步骤：进度键是 {id}_{n}
+                keys = [k for k in self._progress if k.startswith(f"{step.id}_")]
+                if any(self._progress.get(k) == "done" for k in keys):
+                    card.set_status(STEP_DONE)
+                elif keys:
+                    card.set_status(STEP_RUNNING)
+                else:
+                    card.set_status(STEP_PENDING)
+                continue
+
+            weight = step.repeat if step.repeat > 0 else 1
+            total_weight += weight
+
             step_prog = self._progress.get(step.id, "pending")
             if step_prog == "done":
                 card.set_status(STEP_DONE)
-                done_count += 1
+                done_weight += weight
             elif isinstance(step_prog, dict):
                 # 循环步骤
                 current = step_prog.get("current", 0)
                 total_ch = step_prog.get("total", step.repeat)
                 card.set_chapter_progress(current, total_ch)
+                done_weight += min(current, total_ch)
                 if current >= total_ch:
                     card.set_status(STEP_DONE)
-                    done_count += 1
                 else:
                     card.set_status(STEP_PENDING)
-            elif step_prog == "pending":
-                card.set_status(STEP_PENDING)
             else:
                 card.set_status(STEP_PENDING)
 
         # 更新进度条
-        pct = int(done_count / total * 100) if total > 0 else 0
+        pct = int(done_weight / total_weight * 100) if total_weight > 0 else 0
         self._progress_bar.setValue(pct)
         self._progress_label.setText(f"{pct}%")
 
