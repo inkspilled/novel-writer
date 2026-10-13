@@ -857,6 +857,7 @@ class MainWindow(QMainWindow):
             project_dir=self.project.project_dir,
             project_info=wf_def.project,
             max_context_tokens=max_context_tokens,
+            rotate_agents=self.config.get("rotate_agents", False),
         )
 
         self._wf_thread = WorkflowThread(

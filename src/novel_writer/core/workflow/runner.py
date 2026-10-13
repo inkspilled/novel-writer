@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import re
 import shutil
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from .. import project_io
 from ..agents.base import BaseAgent
@@ -38,14 +39,20 @@ class WorkflowRunner:
         project_dir: Path,
         project_info: dict,
         max_context_tokens: int = 120_000,
+        rotate_agents: bool = False,
     ):
         self.agents = agents
         self.project_dir = project_dir
         self.project_info = project_info
         self.max_context_tokens = max_context_tokens
+        # 同技能多 Agent 轮换开关：默认关闭。规划链（大纲→人物→世界观）
+        # 依赖同一 Agent 实例的对话历史传递，轮换会打断该机制，故需显式开启
+        self.rotate_agents = rotate_agents
         self._agent_by_skill: dict[str, list[BaseAgent]] = {}
+        self._skill_cycles: dict[str, Iterator[BaseAgent]] = {}
         self._build_skill_index()
         self._stop = False
+        self.total_usage: dict[str, int] = {}  # 本次运行累计 token 用量
         self._context_builder = ContextBuilder(project_dir, project_info, max_context_tokens)
         # 周期步骤触发时机（章前/章后）；未声明的自定义周期步骤默认按章后执行
         self._pre_ids = set(PRE_CHAPTER_PERIODIC_IDS)
@@ -59,10 +66,15 @@ class WorkflowRunner:
         for agent in self.agents.values():
             for skill in agent.config.skills:
                 self._agent_by_skill.setdefault(skill, []).append(agent)
+        self._skill_cycles = {skill: itertools.cycle(items) for skill, items in self._agent_by_skill.items()}
 
     def find_agent(self, skill: str) -> BaseAgent | None:
         candidates = self._agent_by_skill.get(skill, [])
-        return candidates[0] if candidates else None
+        if not candidates:
+            return None
+        if self.rotate_agents and len(candidates) > 1:
+            return next(self._skill_cycles[skill])
+        return candidates[0]
 
     def stop(self):
         logger.info("工作流收到停止信号")
@@ -126,7 +138,11 @@ class WorkflowRunner:
                         progress[s.id] = "done"
                         self._save_progress(progress)
 
-        logger.info("工作流执行完成: %s", workflow.name)
+        logger.info(
+            "工作流执行完成: %s (累计 token 用量: %s)",
+            workflow.name,
+            self.total_usage or "未上报",
+        )
         return progress
 
     @staticmethod
@@ -267,6 +283,9 @@ class WorkflowRunner:
 
         try:
             response = await agent.run(prompt, context=context)
+            for k, v in (response.usage or {}).items():
+                if isinstance(v, (int, float)):
+                    self.total_usage[k] = int(self.total_usage.get(k, 0) + v)
             logger.info("步骤完成: %s (第%d章)", step.id, n)
         except Exception as e:
             logger.error("步骤执行失败: %s (第%d章) - %s", step.id, n, e, exc_info=True)
@@ -386,5 +405,6 @@ class WorkflowRunner:
         )
 
     def _save_progress(self, progress: dict):
-        """保存工作流进度到文件。"""
+        """保存工作流进度到文件（附带累计 token 用量）。"""
+        progress["_usage"] = dict(self.total_usage)
         project_io.save_workflow(self.project_dir, {"progress": progress})
