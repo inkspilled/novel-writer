@@ -106,27 +106,50 @@ novel-writer/
     │   └── character.py            # Character
     ├── storage/                    # 存储抽象层（占位，实际 IO 在 project_io）
     ├── assets/                     # 图标资源
-    └── ui/
-        ├── styles.py               # 4 套主题（深夜墨/晨雾白/远山蓝/苍山绿）
-        ├── main_window.py          # 主窗口（三栏布局，纯 UI 编排）
-        ├── workers.py              # 后台线程（AgentWorker / TestConnectionWorker）
-        ├── project_dialogs.py      # 打开项目 / 工作流模式对话框
-        ├── appearance_dialog.py    # 外观设置（含 ColorPicker）
-        ├── model_dialog.py         # 模型设置
-        ├── agent_dialog.py         # 智能体管理
-        ├── sidebar.py              # 侧边栏
-        ├── editor_panel.py         # 编辑区（正文 + 8个规划文档标签页）
-        ├── agent_panel.py          # 智能体面板（办公室+工作流+对话）
-        ├── splash.py               # 启动画面（品牌渐变 + 进度条缓动动画）
-        ├── chat_rendering.py       # 聊天 Markdown 渲染 + 颜色池
-        ├── chat_widgets.py         # 消息气泡 / 输入框控件
-        ├── office_scene.py         # 办公室场景（QPainter + Agent 动画）
-        ├── workflow_bar.py         # 工作流迷你进度条
-        ├── workflow_panel.py       # WorkflowThread（后台执行）
-        └── agent_animation.py      # Agent 指示器动画
+    ├── designsystem/               # 设计 token（主题色唯一来源）
+    │   └── tokens.py               # 四套主题色板 + get_theme_colors
+    └── ui/                         # GUI 壳（依赖方向：ui → core/models，反向禁止）
+        ├── main_window.py          # 主窗口骨架（状态/信号/生命周期）
+        ├── app_shell/              # 主窗口行为 Mixin（按关注点拆）
+        │   ├── theme_mixin.py      # 主题/菜单/Toast/关于
+        │   ├── llm_mixin.py        # LLM 与 Agent 初始化
+        │   ├── project_mixin.py    # 项目/章节/规划/导出
+        │   ├── chat_mixin.py       # Agent 对话与流式
+        │   ├── settings_mixin.py   # 设置对话框入口
+        │   └── workflow_mixin.py   # 工作流启动/进度/停止
+        ├── common/                 # 共享基建
+        │   ├── styles.py           # Qt 样式表生成（色值读 designsystem）
+        │   ├── workers.py          # AgentWorker / 连接测试线程
+        │   ├── chat_rendering.py   # Markdown 渲染 + 颜色池
+        │   └── chat_widgets.py     # 消息气泡 / 输入框
+        ├── agent/                  # 智能体
+        │   ├── agent_panel.py      # 办公室 + 工作流条 + 对话
+        │   ├── agent_dialog.py     # 智能体管理
+        │   ├── agent_animation.py  # 指示器动画
+        │   └── office_scene.py     # 办公室场景（QPainter）
+        ├── editor/                 # 写作区
+        │   ├── editor_panel.py     # 正文 + 规划文档标签页
+        │   └── sidebar.py          # 章节列表
+        ├── workflow/               # 工作流
+        │   ├── workflow_panel.py   # WorkflowThread
+        │   └── workflow_bar.py     # 迷你进度条
+        ├── project/                # 项目
+        │   ├── project_dialogs.py  # 打开项目 / 模式选择
+        │   └── new_project_dialog.py
+        ├── settings/               # 设置
+        │   ├── model_dialog.py
+        │   └── appearance_dialog.py
+        └── shell/                  # 启动壳
+            └── splash.py
 ```
 
-## 架构速览
+## 架构约定（守护测试 `tests/test_arch_guard.py`）
+
+1. **`core/` / `models/` 禁止 import Qt** — 纯 Python，可脱离 GUI 测试
+2. **`core/` 不得 import `ui/`** — 依赖单向：`ui → core/models`
+3. **`ui/` 根只允许 `main_window.py`** — 功能页进子包（common/agent/editor/workflow/project/settings/shell）
+4. **色值只来自 `designsystem/tokens.py`** — 样式表生成在 `ui/common/styles.py`
+5. **主窗口行为拆进 `ui/app_shell/`** — Mixin 按关注点分文件，`main_window.py` 只留骨架
 
 > 各子系统的**原理、口径、公式、边界**见 `docs/` 对应文档；本节只留入口与一句话职责。
 

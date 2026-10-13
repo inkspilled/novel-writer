@@ -5,8 +5,8 @@ import asyncio
 
 from PySide6.QtCore import QThread, Signal
 
-from ..core.agents.base import BaseAgent
-from ..core.logger import get_logger
+from ...core.agents.base import BaseAgent
+from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QTimer
 
-from .workers import TestConnectionWorker, FetchModelsWorker
-from ..locales import t
-from ..core.logger import get_logger
+from ..common.workers import TestConnectionWorker, FetchModelsWorker
+from ...locales import t
+from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 

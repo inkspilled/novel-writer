@@ -9,8 +9,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
-from .styles import THEMES, get_theme_colors
-from ..locales import t, get_languages
+from ..common.styles import THEMES, get_theme_colors
+from ...locales import t, get_languages
 
 
 class ColorPicker(QWidget):

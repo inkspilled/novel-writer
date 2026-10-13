@@ -9,10 +9,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from ..core import project_io
-from ..core.workflow import WorkflowMode
-from ..core.logger import get_logger
-from ..locales import t
+from ...core import project_io
+from ...core.workflow import WorkflowMode
+from ...core.logger import get_logger
+from ...locales import t
 
 logger = get_logger(__name__)
 

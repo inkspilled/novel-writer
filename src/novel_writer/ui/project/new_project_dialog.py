@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QPixmap
 
-from ..locales import t
+from ...locales import t
 
 GENRES = [
     "玄幻", "仙侠", "都市", "科幻", "历史", "武侠",

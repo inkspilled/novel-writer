@@ -56,7 +56,7 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "novel_writer"
 
 from novel_writer.core.logger import get_logger
-from novel_writer.ui.splash import SplashScreen, STARTUP_STAGES
+from novel_writer.ui.shell.splash import SplashScreen, STARTUP_STAGES
 from novel_writer.ui.main_window import MainWindow
 
 logger = get_logger(__name__)

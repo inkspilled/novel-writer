@@ -9,12 +9,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer
 
 from .agent_animation import AgentIndicator
-from .chat_rendering import COLOR_POOL, AGENT_PANEL_GLOBALS, get_color
-from .chat_widgets import ChatMessage, ChatTextEdit
-from ..core.chat_history import ChatHistory
-from ..locales import t
-from ..core.logger import get_logger
-from .styles import get_theme_colors
+from ..common.chat_rendering import COLOR_POOL, AGENT_PANEL_GLOBALS, get_color
+from ..common.chat_widgets import ChatMessage, ChatTextEdit
+from ...core.chat_history import ChatHistory
+from ...locales import t
+from ...core.logger import get_logger
+from ..common.styles import get_theme_colors
 
 logger = get_logger(__name__)
 
@@ -72,7 +72,7 @@ class AgentPanel(QWidget):
         layout.addWidget(self.office, 35)
 
         # ── 工作流迷你进度条（含日志） ──
-        from .workflow_bar import WorkflowMiniBar
+        from ..workflow.workflow_bar import WorkflowMiniBar
         self.workflow_bar = WorkflowMiniBar()
         self.workflow_bar.setMaximumHeight(220)
         layout.addWidget(self.workflow_bar, 0)

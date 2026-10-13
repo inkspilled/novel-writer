@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 
-from ..locales import t
+from ...locales import t
 
 
 class Sidebar(QWidget):

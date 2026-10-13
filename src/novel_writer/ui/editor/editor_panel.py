@@ -9,8 +9,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QTextOption
 
-from ..locales import t
-from ..core import project_io
+from ...locales import t
+from ...core import project_io
 
 
 # planning/ 下的 8 个文档（按依赖顺序）

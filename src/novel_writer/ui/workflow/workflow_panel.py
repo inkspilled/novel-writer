@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QThread
 
-from ..locales import t
-from ..core.logger import get_logger
+from ...locales import t
+from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
     QInputDialog, QTextEdit,
 )
 
-from ..locales import t
-from ..core.agents import load_agents, save_agents, reset_agents
+from ...locales import t
+from ...core.agents import load_agents, save_agents, reset_agents
 
 
 class AgentDialog(QDialog):

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
-from ..locales import t
+from ...locales import t
 
 
 class WorkflowMiniBar(QWidget):
