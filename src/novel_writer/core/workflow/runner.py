@@ -126,14 +126,16 @@ class WorkflowRunner:
             else:
                 # 并发执行独立步骤（如规划阶段的人物/世界观/时间线/主线/支线/伏笔）
                 logger.info("并发执行 %d 个独立步骤: %s", len(group), [s.id for s in group])
+                # 固定「步骤 ↔ 任务」映射：任务完成后 progress 可能已写成 done，
+                # 不能再按 progress 过滤后 zip results，否则会错位（失败被标成 done）
+                pending_steps = [s for s in group if progress.get(s.id, "pending") != "done"]
                 tasks = [
                     self._run_step_or_repeat(s, workflow.project, progress, periodic_steps)
-                    for s in group
-                    if progress.get(s.id, "pending") != "done"
+                    for s in pending_steps
                 ]
                 if tasks:
                     results = await asyncio.gather(*tasks, return_exceptions=True)
-                    for s, r in zip([s for s in group if progress.get(s.id, "pending") != "done"], results):
+                    for s, r in zip(pending_steps, results):
                         if isinstance(r, Exception):
                             logger.error("并发步骤失败: %s - %s", s.id, r)
                             if self.on_error:
@@ -169,10 +171,13 @@ class WorkflowRunner:
         """执行单个步骤（含 repeat 循环逻辑）。"""
         if step.repeat > 0:
             default_start = project.get("_start_chapter", 1)
-            start = default_start
+            # current 记录的是「已完成的最后一章」，恢复时从下一章继续
             step_progress = progress.get(step.id, "pending")
             if isinstance(step_progress, dict):
-                start = max(step_progress.get("current", default_start), default_start)
+                last_done = int(step_progress.get("current", default_start - 1) or 0)
+                start = max(last_done + 1, default_start)
+            else:
+                start = default_start
             gaps = project.get("_gaps", [])
             chapters_to_write = gaps if gaps else list(range(start, step.repeat + 1))
             for n in chapters_to_write:

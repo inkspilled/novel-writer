@@ -54,7 +54,10 @@ Agent 层只依赖 `BaseLLM`，不感知后端差异。
 | 约定 | 值 | 原因 |
 |------|-----|------|
 | 全局限流器间隔 | **0.3s** | 曾为 5s，8 步规划纯等 40s+ |
+| 限流器锁 | `threading.Lock` | 调用方各自 `new_event_loop()`，`asyncio.Lock` 跨 loop 竞争即死锁 |
 | httpx 超时 | **300s**（连接 15s） | 曾为 5s，LLM 生成必超时→重试 |
+| HTTP 客户端 loop 绑定 | 每次调用 `_sync_loop()` | AgentWorker/WorkflowThread 各建 loop，httpx 客户端绑定创建时 loop，换 loop 须重建 |
+| 流式重试 | **仅在尚未产出内容时** | 已 yield 后再从头重试会把重复文本拼进正文 |
 | `max_retries` | **3** | 曾为 8，一次抖动最多等 2 分钟 |
 | 退避封顶 | **15s** | 防止指数退避爆炸 |
 | 懒加载 SDK | 是 | PySide6 shiboken 导入链冲突 |

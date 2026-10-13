@@ -32,6 +32,7 @@ from ..core.app_config import (
     ASSETS_DIR, LOGO_PATH, PROJECTS_DIR,
     load_config as _load_app_config,
     save_config as _save_app_config,
+    safe_project_dirname,
 )
 from ..core.workflow import (
     WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, WorkflowMode, build_workflow,
@@ -323,9 +324,13 @@ class MainWindow(QMainWindow):
         data = dialog.get_data()
         title = data["title"]
 
-        # 创建项目目录
-        safe_name = title.replace(" ", "_").replace("/", "_")
+        # 创建项目目录（安全目录名 + 重名自动加后缀，避免覆盖已有项目）
+        safe_name = safe_project_dirname(title)
         project_dir = PROJECTS_DIR / safe_name
+        suffix = 2
+        while project_dir.exists() and (project_dir / "meta.json").exists():
+            project_dir = PROJECTS_DIR / f"{safe_name}_{suffix}"
+            suffix += 1
         project_dir.mkdir(parents=True, exist_ok=True)
 
         # 复制封面到项目目录
@@ -431,9 +436,9 @@ class MainWindow(QMainWindow):
             self.editor.load_chapter(self.project.chapters[index])
 
     def _on_content_changed(self):
-        idx = self.editor._current_chapter_idx
-        if 0 <= idx < len(self.project.chapters):
-            self.project.chapters[idx].content = self.editor.get_content()
+        chapter = getattr(self.editor, "_current_chapter", None)
+        if chapter is not None:
+            chapter.content = self.editor.get_content()
             self.sidebar.update_stats(
                 self.project.total_words(),
                 self.project.target_words,
@@ -445,7 +450,7 @@ class MainWindow(QMainWindow):
             return
         # 如果还没有项目目录（兼容旧流程），创建一个
         if not self.project.project_dir:
-            safe_name = self.project.title.replace(" ", "_").replace("/", "_")
+            safe_name = safe_project_dirname(self.project.title)
             project_dir = PROJECTS_DIR / safe_name
             project_dir.mkdir(parents=True, exist_ok=True)
             self.project.set_project_dir(project_dir)
@@ -522,16 +527,17 @@ class MainWindow(QMainWindow):
         self.agent_panel.set_working(True, agent_name)
         self._worker = AgentWorker(agent, user_input, context)
         self._worker.chunk_received.connect(partial(self._on_agent_stream, agent_name))
-        self._worker.finished.connect(partial(self._on_agent_finished, agent_name))
+        self._worker.completed.connect(partial(self._on_agent_finished, agent_name))
         self._worker.error.connect(self._on_agent_error)
         self._worker.start()
 
     def _stop_worker(self):
-        """安全停止后台工作线程，取消进行中的请求。"""
+        """安全停止后台工作线程，取消进行中的请求。不无限阻塞 GUI。"""
         if self._worker is not None:
             if self._worker.isRunning():
                 self._worker.cancel()
-                self._worker.wait(5000)
+                if not self._worker.wait(2000):
+                    logger.debug("AgentWorker 2s 内未退出，转入后台收尾")
             self._old_workers.append(self._worker)
             self._worker = None
         self._cleanup_workers()
@@ -601,15 +607,15 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{t('dialog_error')}: {error}")
         try:
             QMessageBox.critical(self, t("dialog_error"), error)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("弹错误框失败（忽略）: %s", e)
 
     def _on_agent_stream(self, agent_name: str, chunk: str):
         """接收流式文本块，更新UI"""
         try:
             self.agent_panel.append_stream_chunk(chunk, agent_name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("流式 UI 更新失败: %s", e)
 
     # ── 设置对话框 ──
 
@@ -927,7 +933,7 @@ class MainWindow(QMainWindow):
         self.agent_panel.on_workflow_progress(int(done / total * 100))
 
     def _on_wf_done(self):
-        self._wf_thread = None
+        self._park_wf_thread()
         self.agent_panel.on_workflow_finished()
         self.agent_panel.workflow_bar.set_progress(100)
         self._refresh_chapters()
@@ -935,10 +941,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(t("workflow_finished"))
 
     def _on_wf_stopped(self):
-        self._wf_thread = None
+        self._park_wf_thread()
         self.agent_panel.workflow_bar.set_running(False)
         self._refresh_chapters()
         self.statusBar().showMessage(t("workflow_stopped"))
+
+    def _park_wf_thread(self):
+        """把即将结束的 WorkflowThread 挂到 _old_workers，避免 GC 销毁仍在 run() 里的 QThread。"""
+        t = self._wf_thread
+        self._wf_thread = None
+        if t is not None:
+            self._old_workers.append(t)
+        self._cleanup_workers()
 
     def _open_workflow_panel(self):
         """打开工作流面板（保留兼容，实际通过 workflow_bar 操作）。"""
@@ -961,25 +975,39 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._stop_worker()
-        # 使用单个事件循环关闭所有连接，避免阻塞
-        all_llms = [agent.llm for agent in self.agents.values()]
-        if self.llm:
-            all_llms.append(self.llm)
+        # 工作流线程必须先停并等它退出，否则 QThread: Destroyed while running
+        if self._wf_thread is not None and self._wf_thread.isRunning():
+            self._wf_thread.request_stop()
+            if not self._wf_thread.wait(8000):
+                logger.warning("工作流线程 8s 内未退出，继续关闭")
+        if self._wf_thread is not None:
+            self._old_workers.append(self._wf_thread)
+            self._wf_thread = None
+
+        # 去重后关闭所有 LLM 连接（同一 llm 实例可能被多个 agent 共享）
+        all_llms: list = []
+        seen: set[int] = set()
+        for llm in [agent.llm for agent in self.agents.values()] + ([self.llm] if self.llm else []):
+            if id(llm) not in seen:
+                seen.add(id(llm))
+                all_llms.append(llm)
 
         async def close_all_llms():
             for llm in all_llms:
                 try:
-                    if hasattr(llm, 'client') and hasattr(llm.client, 'close'):
+                    if hasattr(llm, "close"):
+                        await llm.close()
+                    elif hasattr(llm, "client") and hasattr(llm.client, "close"):
                         await llm.client.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("关闭 LLM 连接失败（忽略）: %s", e)
 
         try:
             loop = asyncio.new_event_loop()
             loop.run_until_complete(close_all_llms())
             loop.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("关闭 LLM 事件循环异常（忽略）: %s", e)
 
         # 保存聊天记录和项目
         self.agent_panel.save_history()

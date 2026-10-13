@@ -167,6 +167,7 @@ STRINGS = {
     "msg_no_projects_saved": {"zh": "暂无已保存的项目", "en": "No saved projects"},
     "msg_agent_not_init": {"zh": "智能体 '{}' 未初始化，请先在设置中配置模型。", "en": "Agent '{}' not initialized. Please configure model in settings."},
     "msg_delete_project": {"zh": "确定删除项目 '{}'？\n此操作不可撤销。", "en": "Delete project '{}'?\nThis cannot be undone."},
+    "msg_delete_failed": {"zh": "删除项目 '{}' 失败，文件可能被占用，请关闭相关程序后重试。", "en": "Failed to delete project '{}'. Files may be in use; close other programs and retry."},
     "msg_reset_agents": {"zh": "确定重置所有智能体为默认配置？\n自定义智能体将被覆盖。", "en": "Reset all agents to default?\nCustom agents will be overwritten."},
     "msg_builtin_no_delete": {"zh": "内置智能体不能删除", "en": "Built-in agents cannot be deleted"},
     "msg_delete_agent": {"zh": "删除 '{}'？", "en": "Delete '{}'?"},

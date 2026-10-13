@@ -12,6 +12,7 @@
 """
 import logging
 import logging.handlers
+import os
 import sys
 import threading
 from pathlib import Path
@@ -20,13 +21,23 @@ from pathlib import Path
 # ─── 日志目录 ───
 
 def _get_log_dir() -> Path:
-    """获取日志输出目录，兼容 PyInstaller 打包"""
+    """获取日志输出目录，兼容 PyInstaller 打包。
+
+    打包后写到用户数据目录，避免安装在 Program Files 时无权限在 exe 旁建 logs/。
+    """
     if getattr(sys, 'frozen', False):
-        base = Path(sys.executable).parent
+        if sys.platform == "win32":
+            base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+            log_dir = Path(base) / "NovelWriter" / "logs"
+        elif sys.platform == "darwin":
+            log_dir = Path.home() / "Library" / "Application Support" / "NovelWriter" / "logs"
+        else:
+            base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+            log_dir = Path(base) / "novel-writer" / "logs"
     else:
         base = Path(__file__).resolve().parent.parent.parent.parent
-    log_dir = base / "logs"
-    log_dir.mkdir(exist_ok=True)
+        log_dir = base / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
 

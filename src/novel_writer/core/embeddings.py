@@ -50,6 +50,13 @@ class EmbeddingClient:
         )
         logger.info("Embedding 客户端初始化: model=%s, base_url=%s", model, base_url)
 
+    def close(self) -> None:
+        """关闭底层 HTTP 连接（配置变更重建客户端时必须调用，否则泄漏）。"""
+        try:
+            self._client.close()
+        except Exception as e:
+            logger.debug("Embedding 客户端 close 异常（忽略）: %s", e)
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         """批量向量化。单次调用不宜超过 ~64 条（多数网关的批量上限）。"""
         resp = self._client.embeddings.create(model=self.model, input=texts)

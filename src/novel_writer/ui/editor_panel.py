@@ -48,7 +48,7 @@ class EditorPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._current_chapter_idx = -1
+        self._current_chapter = None  # 当前编辑的 Chapter 对象（勿用 number-1 当列表下标）
         self._project_dir: Path | None = None
         self._planning_edits: dict[str, QTextEdit] = {}
         self._planning_loaded: set[str] = set()
@@ -228,7 +228,7 @@ class EditorPanel(QWidget):
             self._planning_loaded.add(doc_name)
 
     def load_chapter(self, chapter):
-        self._current_chapter_idx = chapter.number - 1 if hasattr(chapter, 'number') else -1
+        self._current_chapter = chapter
         self.chapter_title.setText(f"第{chapter.number}章 {chapter.title}" if hasattr(chapter, 'number') else "")
         self.content_edit.blockSignals(True)
         self.content_edit.setPlainText(chapter.content or "")

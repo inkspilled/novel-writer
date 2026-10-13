@@ -83,8 +83,10 @@ def parse_characters(char_content: str) -> list[CharacterProfile]:
         if m:
             name = m.group(1).strip()
             if re.match(r"^[一二三四五六七八九十]", name):
+                _flush(i)  # 章节序号标题：结束当前角色，避免后续行串档
                 continue
             if name in CHARACTER_SKIP_TITLES:
+                _flush(i)  # 跳过名单标题：同上
                 continue
             _flush(i)
             current = CharacterProfile(name=name)
@@ -168,8 +170,10 @@ def parse_sim_response(response: str) -> PlotSimulation:
         return sim
 
     try:
-        data = json.loads(json_match.group(1) if json_match.group(1) else json_match.group(0))
-    except json.JSONDecodeError:
+        # ```json 块用 group(1)；回退的 \{.*\} 无捕获组，用 group(0)
+        raw = json_match.group(1) if json_match.lastindex else json_match.group(0)
+        data = json.loads(raw)
+    except (json.JSONDecodeError, IndexError):
         return sim
 
     for r in data.get("reactions", []):

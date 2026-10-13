@@ -14,14 +14,14 @@ def project_dir(tmp_path):
     (project_dir / "planning").mkdir()
     (project_dir / "export").mkdir()
 
-    # 创建项目信息
+    # 创建项目信息（与真实存储一致：元数据在 meta.json）
     project_info = {
         "title": "测试小说",
         "genre": "玄幻",
         "style": "轻松幽默",
         "author": "测试作者"
     }
-    (project_dir / "project.json").write_text(
+    (project_dir / "meta.json").write_text(
         json.dumps(project_info, ensure_ascii=False),
         encoding="utf-8"
     )
@@ -90,7 +90,7 @@ class TestExporter:
         project_dir = tmp_path / "empty_project"
         project_dir.mkdir()
         (project_dir / "chapters").mkdir()
-        (project_dir / "project.json").write_text('{}', encoding="utf-8")
+        (project_dir / "meta.json").write_text('{}', encoding="utf-8")
         exporter = Exporter(project_dir)
         with pytest.raises(ValueError, match="没有找到任何章节"):
             exporter.export_txt()

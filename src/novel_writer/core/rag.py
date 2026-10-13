@@ -143,7 +143,9 @@ class BM25Index:
                 tf = tf_counter[qt]
                 df = self.df.get(qt, 0)
                 idf = math.log((self.N - df + 0.5) / (df + 0.5) + 1)
-                tf_norm = (tf * (self.k1 + 1)) / (tf + self.k1 * (1 - self.b + self.b * dl / self.avg_dl))
+                # avg_dl 为 0（空索引）时退化为标准 TF，避免除零
+                denom = tf + self.k1 * (1 - self.b + self.b * dl / self.avg_dl) if self.avg_dl else tf + self.k1
+                tf_norm = (tf * (self.k1 + 1)) / denom
                 score += idf * tf_norm
 
             if score > 0:
@@ -199,7 +201,8 @@ class RAGRetriever:
                 "dim": self._vec_dim,
                 "vectors": self._vectors,
             }
-            self._vectors_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            from .project_io import write_json
+            write_json(self._vectors_file, data, indent=0)
         except OSError as e:
             logger.debug("rag_vectors.json 写盘失败（不影响检索）: %s", e)
 
@@ -213,6 +216,9 @@ class RAGRetriever:
             return self._embed_client
         try:
             from .embeddings import EmbeddingClient
+            # 重建前关掉旧客户端，避免 httpx 连接泄漏
+            if self._embed_client is not None:
+                self._embed_client.close()
             self._embed_client = EmbeddingClient(key[0], key[1], key[2])
             self._embed_cfg_used = key
         except Exception as e:
@@ -232,9 +238,11 @@ class RAGRetriever:
 
     @staticmethod
     def _top_k_by_cosine(query: list[float], vectors: dict[str, str], top_k: int):
-        """余弦相似度 top-k（向量已归一化，点积即余弦）。"""
+        """余弦相似度 top-k（库内向量已归一化；query 也归一化后点积即余弦）。"""
         if _np is not None:
             q = _np.asarray(query, dtype=_np.float32)
+            qnorm = float(_np.linalg.norm(q)) or 1.0
+            q = q / qnorm
             ids = list(vectors.keys())
             mat = _np.stack([
                 _np.frombuffer(base64.b64decode(vectors[i]), dtype=_np.float32) for i in ids
@@ -354,7 +362,8 @@ class RAGRetriever:
                 ],
                 "chapter_mtimes": {str(k): v for k, v in self._chapter_mtimes.items()},
             }
-            self._index_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            from .project_io import write_json
+            write_json(self._index_file, data, indent=0)
         except OSError as e:
             logger.debug("rag_index.json 写盘失败（不影响检索）: %s", e)
 

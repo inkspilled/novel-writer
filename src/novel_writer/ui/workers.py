@@ -14,7 +14,8 @@ logger = get_logger(__name__)
 class AgentWorker(QThread):
     """后台线程执行 Agent 调用，支持流式输出。"""
     chunk_received = Signal(str)  # 流式文本块
-    finished = Signal(str)  # 完成时的完整响应
+    # 不用 QThread 内建的 finished（无参），自定义带载荷的完成信号
+    completed = Signal(str)  # 完成时的完整响应
     error = Signal(str)
 
     def __init__(self, agent: BaseAgent, user_input: str, context: str = ""):
@@ -56,7 +57,7 @@ class AgentWorker(QThread):
             self._task = self._loop.create_task(collect_stream())
             self._loop.run_until_complete(self._task)
             if not self._cancelled:
-                self.finished.emit(full_response)
+                self.completed.emit(full_response)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -88,6 +89,7 @@ class TestConnectionWorker(QThread):
         try:
             base_url = self.base_url.rstrip("/")
             from openai import OpenAI as _OpenAI
+            from openai import APIConnectionError, AuthenticationError, APITimeoutError
             client = _OpenAI(api_key=self.api_key or "test", base_url=base_url, timeout=15.0)
             resp = client.chat.completions.create(
                 model=self.model,
@@ -98,11 +100,11 @@ class TestConnectionWorker(QThread):
             self.success.emit(resp.model)
         except Exception as e:
             error_msg = str(e)
-            if "APIConnectionError" in error_msg:
+            if isinstance(e, APIConnectionError):
                 error_msg = "无法连接到服务器，请检查 URL"
-            elif "AuthenticationError" in error_msg:
+            elif isinstance(e, AuthenticationError):
                 error_msg = "API Key 无效"
-            elif "timeout" in error_msg.lower():
+            elif isinstance(e, APITimeoutError) or "timeout" in error_msg.lower():
                 error_msg = "连接超时，请检查网络"
             self.error.emit(error_msg)
 
@@ -121,6 +123,7 @@ class FetchModelsWorker(QThread):
         try:
             base_url = self.base_url.rstrip("/")
             from openai import OpenAI as _OpenAI
+            from openai import APIConnectionError, AuthenticationError, APITimeoutError
             client = _OpenAI(api_key=self.api_key or "fetch", base_url=base_url, timeout=10.0)
             resp = client.models.list()
             models = [{"id": m.id} for m in resp.data]
@@ -128,10 +131,10 @@ class FetchModelsWorker(QThread):
             self.success.emit(models)
         except Exception as e:
             error_msg = str(e)
-            if "APIConnectionError" in error_msg:
+            if isinstance(e, APIConnectionError):
                 error_msg = "无法连接到服务器，请检查 URL"
-            elif "AuthenticationError" in error_msg:
+            elif isinstance(e, AuthenticationError):
                 error_msg = "API Key 无效（本地服务通常无需 Key）"
-            elif "timeout" in error_msg.lower():
+            elif isinstance(e, APITimeoutError) or "timeout" in error_msg.lower():
                 error_msg = "连接超时，请检查服务是否启动"
             self.error.emit(error_msg)

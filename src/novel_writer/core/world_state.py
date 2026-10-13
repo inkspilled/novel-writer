@@ -44,12 +44,9 @@ class WorldState:
         return self._data
 
     def save(self) -> None:
-        """保存大世界状态到文件。"""
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(self._data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        """保存大世界状态到文件（原子写）。"""
+        from .project_io import write_json
+        write_json(self._path, self._data)
         logger.debug("大世界状态已保存: %s", self._path)
 
     def _default_state(self) -> dict:
@@ -238,34 +235,46 @@ class WorldState:
         logs = []
 
         # 更新角色
-        for name, updates in update_json.get("characters", {}).items():
-            if name in self.characters:
-                self.update_character(name, updates)
-                logs.append(f"更新角色 {name}")
-            else:
-                self.add_character(name, updates)
-                logs.append(f"新增角色 {name}")
+        characters = update_json.get("characters") or {}
+        if isinstance(characters, dict):
+            for name, updates in characters.items():
+                if not isinstance(updates, dict):
+                    continue
+                if name in self.characters:
+                    self.update_character(name, updates)
+                    logs.append(f"更新角色 {name}")
+                else:
+                    self.add_character(name, updates)
+                    logs.append(f"新增角色 {name}")
 
-        # 物品操作
-        items = update_json.get("items", {})
-        for item in items.get("new", []):
+        # 物品操作（LLM 输出不可信，逐键取缺省）
+        items = update_json.get("items") or {}
+        for item in items.get("new") or []:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
             self.add_item(item["name"], item)
             logs.append(f"新物品: {item['name']}")
-        for op in items.get("give", []):
+        for op in items.get("give") or []:
+            if not isinstance(op, dict) or not op.get("character") or not op.get("item"):
+                continue
             item_info = self.get_item(op["item"])
             self.give_item(op["character"], op["item"], item_info)
             logs.append(f"给予 {op['character']}: {op['item']}")
-        for op in items.get("remove", []):
+        for op in items.get("remove") or []:
+            if not isinstance(op, dict) or not op.get("character") or not op.get("item"):
+                continue
             if self.remove_item(op["character"], op["item"]):
                 logs.append(f"移除 {op['character']}: {op['item']}")
 
         # 新地点
-        for loc_name, loc_info in update_json.get("locations", {}).items():
-            self.add_location(loc_name, loc_info)
+        for loc_name, loc_info in (update_json.get("locations") or {}).items():
+            self.add_location(loc_name, loc_info if isinstance(loc_info, dict) else {})
             logs.append(f"新地点: {loc_name}")
 
         # 时间线
-        for event in update_json.get("timeline", []):
+        for event in update_json.get("timeline") or []:
+            if not isinstance(event, dict) or not event.get("event"):
+                continue
             self.add_timeline_event(
                 event.get("chapter", 0),
                 event["event"],

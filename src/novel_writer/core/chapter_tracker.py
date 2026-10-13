@@ -105,27 +105,46 @@ def track_emotions(mem: MemoryScratchpad, chapter: int, content: str):
 
 def track_info_boundary(mem: MemoryScratchpad, chapter: int, content: str):
     """追踪信息边界 — 谁知道了什么。"""
-    # 知道/了解模式
+    # 「A 得知/知道 X」→ A 已知 X
     know_patterns = [
-        (r"(\w{2,6})(得知|知道|了解|发现|明白|意识到|领悟到)(了?)([^。，！？]{5,40})"),
-        (r"(\w{2,6})(告诉|告知|透露|坦白|解释)(了?)(\w{2,6})([^。，！？]{5,40})"),
+        r"([一-鿿]{2,4})(得知|知道|了解|发现|明白|意识到|领悟到)(了?)([^。，！？]{5,40})",
     ]
-
     for pat in know_patterns:
         for m in re.finditer(pat, content):
             groups = m.groups()
-            if len(groups) >= 3:
-                knower = groups[0]
-                info = groups[-1].strip("了的")
-                if 5 <= len(info) <= 60:
-                    mem.upsert(MemoryItem(
-                        category="info_boundary",
-                        subject=knower,
-                        aspect="已知信息",
-                        value=info[:60],
-                        source_chapter=chapter,
-                        payload={"info": info[:60]},
-                    ))
+            knower = groups[0]
+            info = groups[-1].strip("了的")
+            if 5 <= len(info) <= 60:
+                mem.upsert(MemoryItem(
+                    category="info_boundary",
+                    subject=knower,
+                    aspect="已知信息",
+                    value=info[:60],
+                    source_chapter=chapter,
+                    payload={"info": info[:60]},
+                ))
+
+    # 「A 告诉 B X」→ 信息边界记在被告知者 B 头上（穿帮看的是「谁知道」）
+    # 被告知者用 2-3 字 + 常见后续词定界，避免「李四关于玄铁」整段被当成名字
+    tell_patterns = [
+        r"([一-鿿]{2,3})(告诉|告知|透露|坦白|解释)(了?)"
+        r"([一-鿿]{2,3}?)(?=关于|了|的|，|。|！|？|说|道|是|在|把|将|被|和|与|跟|到|向|对|听|看|才|就|也|都)"
+        r"([^。，！？]{5,40})",
+    ]
+    for pat in tell_patterns:
+        for m in re.finditer(pat, content):
+            groups = m.groups()
+            teller, receiver = groups[0], groups[3]
+            info = groups[-1].strip("了的")
+            if 5 <= len(info) <= 60:
+                mem.upsert(MemoryItem(
+                    category="info_boundary",
+                    subject=receiver,
+                    aspect="已知信息",
+                    value=info[:60],
+                    source_chapter=chapter,
+                    payload={"info": info[:60], "from": teller},
+                ))
 
     # 不知道/隐瞒模式
     hide_patterns = [

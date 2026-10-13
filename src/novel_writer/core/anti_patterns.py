@@ -52,10 +52,8 @@ class AntiPatternTracker:
                 self._patterns = []
 
     def save(self):
-        self._path.write_text(
-            json.dumps(self._patterns, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        from .project_io import write_json
+        write_json(self._path, self._patterns)
 
     def add(self, pattern: AntiPattern):
         """添加反模式，去重。"""
@@ -88,7 +86,16 @@ class AntiPatternTracker:
                 continue
             # 匹配审稿报告中的问题描述
             if any(kw in line for kw in ["AI感", "ai_flavor", "AI味", "模板化", "机械化", "不自然"]):
-                current_issue = line.lstrip("- •·0123456789.、）)")
+                # 连续问题行：先把上一条入库，避免互相覆盖
+                if current_issue:
+                    self.add(AntiPattern(
+                        pattern=current_issue,
+                        severity="medium",
+                        source_chapter=chapter,
+                        category="ai_flavor",
+                    ))
+                # 只剥列表符号，不剥正文中可能开头的数字/括号
+                current_issue = re.sub(r"^[-•·、）)\s]+", "", line)
         if current_issue:
             self.add(AntiPattern(
                 pattern=current_issue,

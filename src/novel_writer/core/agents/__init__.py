@@ -32,9 +32,9 @@ def load_agents() -> dict:
 
 
 def save_agents(agents_cfg: dict):
-    """保存智能体配置到 agents.json。"""
-    AGENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    AGENTS_PATH.write_text(json.dumps(agents_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    """保存智能体配置到 agents.json（原子写）。"""
+    from ..project_io import write_json
+    write_json(AGENTS_PATH, agents_cfg)
     logger.info("保存智能体配置: %d 个智能体", len(agents_cfg))
 
 

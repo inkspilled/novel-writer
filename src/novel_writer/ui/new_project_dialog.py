@@ -31,7 +31,8 @@ STYLES = [
 
 class _AIWorker(QThread):
     """后台线程调用 Agent，带超时保护。"""
-    finished = Signal(str)
+    # 遮蔽 QThread 内建 finished（无参），用带载荷的 completed
+    completed = Signal(str)
     error = Signal(str)
 
     # API 模型 2 分钟，本地模型 10 分钟
@@ -43,6 +44,8 @@ class _AIWorker(QThread):
         self.agent = agent
         self.prompt = prompt
         self._cancelled = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task | None = None
         # 本地模型（base_url 含 127.0.0.1/localhost 或 OllamaLLM）给更长超时
         base_url = getattr(agent.llm, 'base_url', '') or ''
         is_local = any(h in base_url for h in ('127.0.0.1', 'localhost', '0.0.0.0'))
@@ -50,12 +53,19 @@ class _AIWorker(QThread):
 
     def cancel(self):
         self._cancelled = True
+        loop, task = self._loop, self._task
+        if loop is not None and task is not None and not loop.is_closed() and not task.done():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass
 
     def run(self):
         loop = None
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            self._loop = loop
 
             async def _call():
                 return await asyncio.wait_for(
@@ -63,16 +73,19 @@ class _AIWorker(QThread):
                     timeout=self._timeout,
                 )
 
-            resp = loop.run_until_complete(_call())
+            self._task = loop.create_task(_call())
+            resp = loop.run_until_complete(self._task)
             if not self._cancelled:
-                self.finished.emit(resp.content)
-        except asyncio.TimeoutError:
+                self.completed.emit(resp.content)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
             if not self._cancelled:
                 self.error.emit(f"AI 生成超时（{self._timeout}秒），本地模型较慢请耐心等待或换用更快的模型")
         except Exception as e:
             if not self._cancelled:
                 self.error.emit(str(e)[:300])
         finally:
+            self._task = None
+            self._loop = None
             if loop:
                 loop.close()
 
@@ -347,8 +360,9 @@ class NewProjectDialog(QDialog):
 不要有任何多余解释。"""
 
         self._set_generating(True, field)
-        worker = _AIWorker(agent, prompt, self)
-        worker.finished.connect(lambda text: self._on_ai_done(field, text))
+        # 不设 parent：对话框关闭时由 closeEvent 等待线程结束后再销毁
+        worker = _AIWorker(agent, prompt, None)
+        worker.completed.connect(lambda text: self._on_ai_done(field, text))
         worker.error.connect(lambda err: self._on_ai_error(err, field))
         self._workers[field] = worker
         worker.start()
@@ -487,10 +501,13 @@ class NewProjectDialog(QDialog):
         }
 
     def closeEvent(self, event):
-        """关闭对话框时清理所有 worker。"""
-        for w in self._workers.values():
-            if w.isRunning():
-                w.cancel()
-                w.wait(3000)
+        """关闭对话框时清理所有 worker：先取消并等待结束，避免销毁运行中的 QThread。"""
+        for w in list(self._workers.values()):
+            w.cancel()
+        for w in list(self._workers.values()):
+            if w.isRunning() and not w.wait(5000):
+                # 仍未结束则脱离父子关系并自行回收，不能阻塞 UI 更久
+                w.setParent(None)
+                w.finished.connect(w.deleteLater)
         self._workers.clear()
         super().closeEvent(event)

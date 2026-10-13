@@ -73,8 +73,10 @@ class OpenProjectDialog(QDialog):
         path = Path(item.data(Qt.ItemDataRole.UserRole))
         title = item.text().split("  (")[0]
         if QMessageBox.question(self, t("dialog_confirm_delete"), t("msg_delete_project", title)) == QMessageBox.StandardButton.Yes:
-            project_io.delete_project(path)
-            self._list.takeItem(self._list.row(item))
+            if project_io.delete_project(path):
+                self._list.takeItem(self._list.row(item))
+            else:
+                QMessageBox.warning(self, t("dialog_error"), t("msg_delete_failed", title))
 
 
 class WorkflowModeDialog(QDialog):

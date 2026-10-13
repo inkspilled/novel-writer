@@ -26,6 +26,10 @@ import json
 import re
 from pathlib import Path
 
+from .logger import get_logger
+
+logger = get_logger(__name__)
+
 
 # ── 固定目录名 ──
 
@@ -96,6 +100,8 @@ def rename_chapter(project_dir: Path, chapter_number: int, new_title: str) -> st
             old_title = ch["title"]
             if old_title == new_title:
                 return old_title
+
+            old_path = ch["content_path"]
 
             # 1. 读取原始内容（在重命名之前）
             content = read_md(old_path)
@@ -196,15 +202,19 @@ def load_chapter_summaries(project_dir: Path, up_to_chapter: int = 9999, window:
 # ── meta.json 读写 ──
 
 def save_meta(project_dir: Path, meta: dict) -> None:
-    path = project_dir / META_FILE
-    path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(project_dir / META_FILE, meta)
 
 
 def load_meta(project_dir: Path) -> dict:
     path = project_dir / META_FILE
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("meta.json 损坏或不可读 (%s): %s", path, e)
+        return {}
 
 
 # ── MD 文件读写 ──
@@ -214,6 +224,22 @@ def read_md(path: Path) -> str:
     if path.exists():
         return path.read_text(encoding="utf-8")
     return ""
+
+
+def write_json(path: Path, data, indent: int = 2) -> None:
+    """原子写入 JSON：先写临时文件再 rename，防止崩溃留下半截文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=indent), encoding="utf-8")
+        tmp_path.replace(path)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def write_md(path: Path, content: str) -> None:
@@ -448,14 +474,20 @@ def summary_filename(n: int) -> str:
 
 
 def latest_summary(project_dir: Path) -> str:
-    """读取 summary/ 目录下最新的摘要文件内容。"""
+    """读取 summary/ 目录下最新的摘要文件内容（按覆盖到的最大章号排序，而非文件名字典序）。"""
     sum_dir = project_dir / SUMMARY_DIR
     if not sum_dir.exists():
         return ""
-    files = sorted(sum_dir.glob("第*章摘要.md"), reverse=True)
-    if files:
-        return read_md(files[0])
-    return ""
+    files = list(sum_dir.glob("第*章摘要.md"))
+    if not files:
+        return ""
+
+    def _end_chapter(path: Path) -> int:
+        m = re.search(r"第1-(\d+)章", path.name)
+        return int(m.group(1)) if m else -1
+
+    files.sort(key=_end_chapter, reverse=True)
+    return read_md(files[0])
 
 
 # ── Review 文件 ──
@@ -478,7 +510,12 @@ def load_workflow(project_dir: Path) -> dict:
     path = project_dir / WORKFLOW_FILE
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("workflow.json 损坏或不可读: %s", e)
+        return {}
 
 
 def save_workflow(project_dir: Path, data: dict) -> None:
@@ -493,7 +530,7 @@ def save_workflow(project_dir: Path, data: dict) -> None:
         except (json.JSONDecodeError, OSError):
             merged = {}
     merged.update(data)
-    path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(path, merged)
 
 
 # ── 项目目录扫描 ──
@@ -503,7 +540,14 @@ def list_projects(projects_root: Path) -> list[dict]:
     if not projects_root.exists():
         return []
     result = []
-    for d in sorted(projects_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    for d in sorted(projects_root.iterdir(), key=_mtime, reverse=True):
         if not d.is_dir():
             continue
         meta = load_meta(d)
@@ -524,14 +568,24 @@ def list_projects(projects_root: Path) -> list[dict]:
     return result
 
 
-def delete_project(project_dir: Path) -> None:
-    """删除整个项目目录。"""
+def delete_project(project_dir: Path) -> bool:
+    """删除整个项目目录。成功返回 True；权限冲突重试一次后仍失败返回 False。"""
     import shutil
     import time
-    if project_dir.exists():
+    if not project_dir.exists():
+        return True
+    try:
+        shutil.rmtree(project_dir)
+        return True
+    except PermissionError:
+        # 文件被锁定，等待后重试
+        time.sleep(0.5)
         try:
             shutil.rmtree(project_dir)
-        except PermissionError:
-            # 文件被锁定，等待后重试
-            time.sleep(0.5)
-            shutil.rmtree(project_dir, ignore_errors=True)
+            return True
+        except OSError as e:
+            logger.error("删除项目失败 %s: %s", project_dir, e)
+            return False
+    except OSError as e:
+        logger.error("删除项目失败 %s: %s", project_dir, e)
+        return False

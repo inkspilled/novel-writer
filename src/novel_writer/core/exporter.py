@@ -26,14 +26,8 @@ class Exporter:
         self.project_info = self._load_project_info()
 
     def _load_project_info(self) -> dict:
-        """加载项目信息。"""
-        info_path = self.project_dir / "project.json"
-        if info_path.exists():
-            try:
-                return json.loads(info_path.read_text(encoding="utf-8"))
-            except Exception:
-                return {}
-        return {}
+        """加载项目信息（元数据在 meta.json）。"""
+        return project_io.load_meta(self.project_dir)
 
     def export_txt(self, output_path: Optional[Path] = None) -> Path:
         """导出为 TXT 格式。"""
@@ -133,7 +127,7 @@ class Exporter:
             content = project_io.read_md(ch["content_path"])
             if not content:
                 continue
-            body = self._markdown_to_html(content, ch["title"])
+            body = self._markdown_to_html(content, f"第{ch['number']}章 {ch['title']}")
             xhtml = self._wrap_xhtml(f"第{ch['number']}章 {ch['title']}", body)
             fname = f"chapter_{ch['number']}.xhtml"
             chapter_files.append((fname, f"第{ch['number']}章 {ch['title']}", xhtml))
@@ -222,6 +216,41 @@ class Exporter:
             f'<body>\n{body}\n</body>\n</html>'
         )
 
+    @staticmethod
+    def _register_cjk_font(pdfmetrics, TTFont) -> str:
+        """注册可用的中文字体：内置 CID → 各平台常见 TTF/TTC。返回字体名。"""
+        # reportlab 内置中文 CID 字体，无需外部字体文件
+        try:
+            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+            pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+            return "STSong-Light"
+        except Exception:
+            pass
+
+        candidates = [
+            # Windows
+            "C:/Windows/Fonts/simsun.ttc",
+            "C:/Windows/Fonts/simhei.ttf",
+            "C:/Windows/Fonts/msyh.ttc",
+            # macOS
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/System/Library/Fonts/Supplemental/Songti.ttc",
+            # Linux
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        ]
+        for path in candidates:
+            try:
+                pdfmetrics.registerFont(TTFont("CJKFont", path))
+                return "CJKFont"
+            except Exception:
+                continue
+        logger.warning("未找到中文字体，PDF 中文可能显示为方块")
+        return "Helvetica"
+
     def export_pdf(self, output_path: Optional[Path] = None) -> Path:
         """导出为 PDF 格式。"""
         try:
@@ -245,17 +274,8 @@ class Exporter:
         if not chapters:
             raise ValueError("没有找到任何章节")
         
-        # 注册中文字体
-        try:
-            pdfmetrics.registerFont(TTFont("SimSun", "simsun.ttc"))
-            font_name = "SimSun"
-        except Exception:
-            try:
-                pdfmetrics.registerFont(TTFont("SimSun", "C:/Windows/Fonts/simsun.ttc"))
-                font_name = "SimSun"
-            except Exception:
-                font_name = "Helvetica"
-                logger.warning("未找到中文字体，使用默认字体")
+        # 注册中文字体：优先 reportlab 内置 CID 字体（跨平台），再尝试系统 TTF
+        font_name = self._register_cjk_font(pdfmetrics, TTFont)
         
         # 创建 PDF 文档
         doc = SimpleDocTemplate(
@@ -343,8 +363,8 @@ class Exporter:
         return output_path
 
     def _markdown_to_html(self, content: str, title: str) -> str:
-        """将 Markdown 转换为 HTML。"""
-        html_parts = [f"<h1>第{title}章</h1>"]
+        """将 Markdown 转换为 HTML。title 为完整章节标题（勿再包一层「第…章」）。"""
+        html_parts = [f"<h1>{html.escape(title)}</h1>"]
         
         paragraphs = content.split("\n\n")
         for para in paragraphs:

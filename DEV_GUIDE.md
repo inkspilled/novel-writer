@@ -60,7 +60,10 @@ novel-writer/
 │   ├── test_reading_power.py
 │   ├── test_workflow.py
 │   ├── test_workflow_package.py
-│   └── test_exporter.py
+│   ├── test_workflow_runner.py
+│   ├── test_rag.py
+│   ├── test_exporter.py
+│   └── test_bugfixes.py            # 关键 BUG 修复回归
 └── src/novel_writer/
     ├── __main__.py                 # python -m novel_writer 入口
     ├── app.py                      # QApplication 启动

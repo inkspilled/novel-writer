@@ -37,10 +37,13 @@ LOOP_OVERDUE_URGENCY = 0.75
 def loop_urgency(item: dict, current_chapter: int = 0, total_chapters: int = 0) -> float:
     """计算伏笔的动态紧急度（0-1）。
 
-    埋设时的 payload.urgency（固定 0.6）只是初值；真实紧急度随两件事增长：
-    1. 年龄：埋设后经过的章数越多越该收（每章 +0.03，20 章后饱和于 +0.6）；
-       刚埋 3 章内的伏笔处于低位，不应催收；15 章未收即到达超期线 0.75
-    2. 剧情阶段：进度 ≥60% 进入收束期整体抬升，≥90% 终章阶段必须解决
+    在途计算（知道当前章号）以「年龄」为主，不采用 payload.urgency：
+    刚埋的伏笔不应催收，15 章未收即到达超期线 0.75。
+    - 年龄：每章 +0.03，20 章后饱和于 +0.6（基准 0.3）
+    - 剧情阶段：进度 ≥60% 加成 +0.15，≥90% 加成 +0.3
+
+    静态回退（current_chapter<=0，如仅展示、未进入写作循环）才读
+    payload.urgency（缺省/脏数据回退 0.6）。
 
     Args:
         item: open_loops 记忆项（读 source_chapter 与 payload.urgency）
@@ -106,10 +109,8 @@ class MemoryScratchpad:
                 pass
 
     def save(self):
-        self._path.write_text(
-            json.dumps(self._data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        from .project_io import write_json
+        write_json(self._path, self._data)
 
     def upsert(self, item: MemoryItem):
         """插入或更新记忆项。同键旧值标记 outdated。"""
@@ -175,20 +176,24 @@ class MemoryScratchpad:
         ))
 
     def compact(self):
-        """压缩：清理过时项，保留每个同键最新一条 outdated。"""
+        """压缩：清理过时项，保留每个同键最新一条 outdated。
+
+        去重键与 MemoryItem.dedup_key 一致（open_loops/reader_promises 忽略 aspect）。
+        """
+        def _key(item: dict) -> str:
+            cat = item.get("category", "")
+            subj = item.get("subject", "")
+            asp = item.get("aspect", "")
+            if cat in ("open_loops", "reader_promises"):
+                return f"{cat}:{subj}"
+            return f"{cat}:{subj}:{asp}"
+
         for b in BUCKETS:
             items = self._data.get(b, [])
-            seen_keys: dict[str, int] = {}
-            keep = []
-            # 先保留所有 active
-            for item in items:
-                if item.get("status") == "active":
-                    keep.append(item)
-            # 再保留每个同键最新的一条 outdated
+            keep_active = [item for item in items if item.get("status") == "active"]
+            # 同键只保留最新一条 outdated：后出现的覆盖先出现的
+            latest_outdated: dict[str, dict] = {}
             for item in items:
                 if item.get("status") == "outdated":
-                    key = f"{item.get('subject', '')}:{item.get('aspect', '')}"
-                    if key not in seen_keys:
-                        seen_keys[key] = len(keep)
-                        keep.append(item)
-            self._data[b] = keep
+                    latest_outdated[_key(item)] = item
+            self._data[b] = keep_active + list(latest_outdated.values())

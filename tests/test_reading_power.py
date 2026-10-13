@@ -114,12 +114,12 @@ class TestReadingPowerTracker:
         assert stats["打脸反转"] == 1
 
     def test_get_debt_total(self, tracker):
-        """测试债务总计。"""
+        """测试债务余额：取最新一章的余额（debt_balance 是当前余额，不是各章增量之和）。"""
         rp1 = ChapterReadingPower(chapter=1, debt_balance=2.5)
         rp2 = ChapterReadingPower(chapter=2, debt_balance=3.0)
         tracker.record(rp1)
         tracker.record(rp2)
-        assert tracker.get_debt_total() == 5.5
+        assert tracker.get_debt_total() == 3.0
 
     def test_build_guidance_empty(self, tracker):
         """测试空数据时的指导。"""

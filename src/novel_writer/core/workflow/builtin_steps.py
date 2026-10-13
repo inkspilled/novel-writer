@@ -111,11 +111,13 @@ async def _run_fix_titles(runner: "WorkflowRunner", step: "WorkflowStep", n: int
     prompt = build_fix_titles_prompt(excerpts)
     try:
         resp = await agent.run(prompt)
-        # 提取 JSON（兼容 ```json ``` 包裹）
+        # 提取 JSON（兼容 ```json ``` 包裹；允许嵌套对象）
         text = resp.content.strip()
-        m = re.search(r'\{[^{}]+\}', text)
+        m = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if not m:
+            m = re.search(r'(\{.*\})', text, re.DOTALL)
         if m:
-            title_map = json.loads(m.group())
+            title_map = json.loads(m.group(1))
             logs = []
             for ch_num_str, new_title in title_map.items():
                 ch_num = int(ch_num_str)

@@ -19,6 +19,27 @@ from .styles import get_theme_colors
 logger = get_logger(__name__)
 
 
+def _render_think_blocks(text: str) -> str:
+    """把 <think>...</think> 渲染为可读文本；支持多个思考块，不丢弃后续正文。"""
+    if "<think>" not in text:
+        return text
+    if "</think>" not in text:
+        think_content = text.split("<think>", 1)[1]
+        return f"💭 *思考中...*\n\n{think_content}"
+    out_parts: list[str] = []
+    rest = text
+    while "<think>" in rest and "</think>" in rest:
+        pre, rest = rest.split("<think>", 1)
+        think_content, rest = rest.split("</think>", 1)
+        if pre.strip():
+            out_parts.append(pre)
+        if think_content.strip():
+            out_parts.append(f"💭 *思考过程:*\n{think_content}")
+    if rest.strip():
+        out_parts.append(rest)
+    return "\n\n".join(out_parts)
+
+
 class AgentPanel(QWidget):
 
     agent_run_requested = Signal(str, str)
@@ -324,17 +345,7 @@ class AgentPanel(QWidget):
             self._stream_text = ""
 
         self._stream_text += chunk
-        display_text = self._stream_text
-
-        # 处理 think 标签
-        if "<think>" in display_text and "</think>" not in display_text:
-            think_content = display_text.split("<think>")[1]
-            display_text = f"💭 *思考中...*\n\n{think_content}"
-        elif "<think>" in display_text and "</think>" in display_text:
-            parts = display_text.split("</think>")
-            think_content = parts[0].split("<think>")[1]
-            answer = parts[1] if len(parts) > 1 else ""
-            display_text = f"💭 *思考过程:*\n{think_content}\n\n{answer}"
+        display_text = _render_think_blocks(self._stream_text)
 
         # widget 可能已被 deleteLater 销毁（切换 Agent 或清空聊天时）
         try:
@@ -355,15 +366,13 @@ class AgentPanel(QWidget):
             self._stream_widget, self._stream_text, self._stream_agent = pending
 
         if self._stream_widget and self._stream_text:
-            # 重新渲染完整内容（处理 think 标签）
-            final_text = self._stream_text
-            if "<think>" in final_text and "</think>" in final_text:
-                parts = final_text.split("</think>")
-                think_content = parts[0].split("<think>")[1]
-                answer = parts[1].strip() if len(parts) > 1 else ""
-                final_text = f"💭 *思考过程:*\n{think_content}\n\n{answer}" if think_content else answer
-            self._stream_widget._raw_content = final_text
-            self._stream_widget._set_content(final_text)
+            # 重新渲染完整内容（处理 think 标签，支持多思考块）
+            final_text = _render_think_blocks(self._stream_text)
+            try:
+                self._stream_widget._raw_content = final_text
+                self._stream_widget._set_content(final_text)
+            except RuntimeError as e:
+                logger.debug("Stream widget destroyed at finalize: %s", e)
 
             if target not in self._chat_history:
                 self._chat_history[target] = []
@@ -385,16 +394,21 @@ class AgentPanel(QWidget):
 
     def _restore_chat(self, agent_name: str):
         # 保存当前流式状态（如果有正在进行的流）
+        preserved_ids: set[int] = set()
         if self._stream_widget and self._stream_agent:
             self._pending_streams[self._stream_agent] = (
                 self._stream_widget, self._stream_text, self._stream_agent)
+            preserved_ids.add(id(self._stream_widget))
             self._stream_widget = None
             self._stream_text = ""
             self._stream_agent = ""
 
+        # 其他 Agent 的 pending 流式控件也绝不能销毁
+        for w, _text, _agent in self._pending_streams.values():
+            preserved_ids.add(id(w))
+
         for msg in self._msg_widgets:
-            # 如果是正在进行的流式 widget，跳过销毁（由 pending_streams 管理）
-            if msg is self._stream_widget:
+            if id(msg) in preserved_ids:
                 continue
             msg.deleteLater()
         self._msg_widgets.clear()
@@ -437,6 +451,8 @@ class AgentPanel(QWidget):
     def clear_chat(self):
         self._stream_widget = None
         self._stream_text = ""
+        self._stream_agent = ""
+        self._pending_streams.clear()
         for msg in self._msg_widgets:
             msg.deleteLater()
         self._msg_widgets.clear()

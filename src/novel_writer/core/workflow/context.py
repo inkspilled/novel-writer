@@ -55,6 +55,7 @@ def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> 
         return parts
 
     logger.info("上下文压缩触发: 当前≈%d tokens，目标≤%d tokens", total, max_tokens)
+    orig_total = total
 
     # 按类型标记每个 part
     tagged = []
@@ -97,19 +98,20 @@ def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> 
         return [p for _, p in tagged]
 
     # ── 阶段二：整段丢弃 ──
+    # other（无标记块）是项目元信息等关键上下文，刻意不参与裁剪——宁可略超预算也不丢
     priority_order = ["rag", "chapter_full", "planning", "sim", "summary"]
-    removed_tokens = 0
 
     for pri in priority_order:
-        total_now = sum(estimate_tokens(p) for _, p in tagged) - removed_tokens
+        # tagged 已是真实剩余集合，直接用其 token 和；不能再减历史 removed
+        total_now = sum(estimate_tokens(p) for _, p in tagged)
         if total_now <= max_tokens:
             break
         new_tagged = []
         for tag, p in tagged:
-            if tag == pri and total_now - removed_tokens > max_tokens:
-                removed_tokens += estimate_tokens(p)
-                logger.debug("裁剪 [%s]: %s... (节省≈%d tokens)",
-                             tag, p[:50].replace("\n", " "), estimate_tokens(p))
+            if tag == pri and total_now > max_tokens:
+                total_now -= estimate_tokens(p)
+                logger.debug("裁剪 [%s]: %s... (剩余≈%d tokens)",
+                             tag, p[:50].replace("\n", " "), total_now)
             else:
                 new_tagged.append((tag, p))
         tagged = new_tagged
@@ -117,7 +119,7 @@ def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> 
     result = [p for _, p in tagged]
     final_tokens = sum(estimate_tokens(p) for p in result)
     logger.info("上下文压缩完成: %d → %d tokens (裁剪 %.1f%%)",
-                total, final_tokens, (1 - final_tokens / total) * 100 if total else 0)
+                orig_total, final_tokens, (1 - final_tokens / orig_total) * 100 if orig_total else 0)
     return result
 
 
@@ -803,7 +805,8 @@ def extract_chapter_section(outline: str, n: int) -> str:
     capture = False
     out: list[str] = []
     for line in lines:
-        if re.match(rf"^#.*第\s*{n}\s*章", line) or re.match(rf"^#.*{n}\.", line):
+        # 边界约束：n=1 不能命中「11.」「21.」等；n=10 不能命中「101.」
+        if re.match(rf"^#.*第\s*{n}\s*章", line) or re.match(rf"^#.*(?<!\d){n}\.(?!\d)", line):
             capture = True
             out.append(line.rstrip())
             continue

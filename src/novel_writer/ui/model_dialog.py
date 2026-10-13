@@ -321,11 +321,15 @@ class ModelDialog(QDialog):
         self._default_combo.addItem(t("model_select_default"), "")
         for name in self._saved_models:
             self._default_combo.addItem(name, name)
-        # 选中当前默认
+        # 选中当前默认：itemData 是配置显示名，需比对 saved_models 里的 model ID
         current = self.config.get("current_provider", {})
         current_model = current.get("model", "")
         for i in range(self._default_combo.count()):
-            if self._default_combo.itemData(i) == current_model:
+            key = self._default_combo.itemData(i)
+            if not key:
+                continue
+            saved = self._saved_models.get(key) or {}
+            if saved.get("model") == current_model or key == current_model:
                 self._default_combo.setCurrentIndex(i)
                 break
         self._default_combo.blockSignals(False)

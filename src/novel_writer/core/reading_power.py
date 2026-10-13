@@ -72,10 +72,8 @@ class ReadingPowerTracker:
                 self._data = []
 
     def save(self):
-        self._path.write_text(
-            json.dumps(self._data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        from .project_io import write_json
+        write_json(self._path, self._data)
 
     def record(self, rp: ChapterReadingPower):
         """记录一章的追读力数据。"""
@@ -87,6 +85,8 @@ class ReadingPowerTracker:
 
     def get_recent(self, n: int = 5) -> list[dict]:
         """获取最近 n 章的追读力数据。"""
+        if n <= 0:
+            return []
         return self._data[-n:]
 
     def get_hook_stats(self, window: int = 10) -> dict[str, int]:
@@ -109,8 +109,10 @@ class ReadingPowerTracker:
         return stats
 
     def get_debt_total(self) -> float:
-        """获取当前总债务。"""
-        return sum(d.get("debt_balance", 0) for d in self._data)
+        """获取当前阅读债务余额（取最新一章的余额，而非各章求和）。"""
+        if not self._data:
+            return 0.0
+        return float(self._data[-1].get("debt_balance", 0) or 0)
 
     def build_guidance(self, next_chapter: int) -> str:
         """基于追读力数据生成下一章的写作指导。"""
@@ -195,5 +197,20 @@ class ReadingPowerTracker:
         score += len(rp.cool_points) * 5
         score += len(rp.micro_payoffs) * 3
         rp.score = min(100, max(0, score))
+
+        # 阅读债务：软违规（弱钩/无爽点/无微兑现）累积，爽点/微兑现偿还
+        debt = self.get_debt_total()
+        if rp.hook_strength == "weak":
+            debt += 1.0
+            rp.soft_suggestions.append("本章缺少有力钩子")
+        if not rp.cool_points:
+            debt += 1.5
+            rp.soft_suggestions.append("本章缺少爽点")
+        if not rp.micro_payoffs:
+            debt += 1.0
+            rp.soft_suggestions.append("本章缺少微兑现")
+        debt -= len(rp.cool_points) * 0.5
+        debt -= len(rp.micro_payoffs) * 0.3
+        rp.debt_balance = max(0.0, min(20.0, debt))
 
         return rp

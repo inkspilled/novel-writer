@@ -2,6 +2,12 @@
 from __future__ import annotations
 
 import re
+from html import escape as _html_escape
+
+
+def _esc(text: str) -> str:
+    """转义 HTML 特殊字符，防止 LLM 输出被当作标签/外链渲染。"""
+    return _html_escape(text, quote=False)
 
 # 默认颜色池
 COLOR_POOL = ["#ff6b8a", "#51cf66", "#4da6ff", "#ffd43b", "#cc5de8", "#ff922b",
@@ -28,8 +34,9 @@ def _is_light_color(hex_color: str) -> bool:
 
 
 def _inline_md(text: str, fg: str = "#e8e8ed") -> str:
-    """行内 Markdown：粗体、斜体、行内代码。"""
+    """行内 Markdown：粗体、斜体、行内代码。先转义再加标签。"""
     code_bg = "rgba(0,0,0,0.06)" if _is_light_color(fg) else "rgba(255,255,255,0.08)"
+    text = _esc(text)
     text = re.sub(r'`([^`]+)`',
                   r'<code style="background:' + code_bg + r';padding:1px 5px;'
                   r'border-radius:3px;font-family:Consolas,monospace;font-size:12px;">\1</code>', text)
@@ -84,11 +91,11 @@ def md_to_html(text: str, fg: str = "#e8e8ed") -> str:
                 table_rows = []
                 header = "".join(
                     f'<th style="padding:6px 12px;border:1px solid {border_color};'
-                    f'text-align:left;font-weight:600;">{c}</th>' for c in cells)
+                    f'text-align:left;font-weight:600;">{_esc(c)}</th>' for c in cells)
                 table_rows.append(f"<tr>{header}</tr>")
             else:
                 row = "".join(
-                    f'<td style="padding:4px 12px;border:1px solid {border_color};">{c}</td>'
+                    f'<td style="padding:4px 12px;border:1px solid {border_color};">{_esc(c)}</td>'
                     for c in cells)
                 table_rows.append(f"<tr>{row}</tr>")
             continue
@@ -101,11 +108,11 @@ def md_to_html(text: str, fg: str = "#e8e8ed") -> str:
 
         # 标题
         if stripped.startswith("### "):
-            out.append(f'<b style="font-size:13px;">{stripped[4:]}</b><br>')
+            out.append(f'<b style="font-size:13px;">{_esc(stripped[4:])}</b><br>')
         elif stripped.startswith("## "):
-            out.append(f'<b style="font-size:14px;">{stripped[3:]}</b><br>')
+            out.append(f'<b style="font-size:14px;">{_esc(stripped[3:])}</b><br>')
         elif stripped.startswith("# "):
-            out.append(f'<b style="font-size:15px;">{stripped[2:]}</b><br>')
+            out.append(f'<b style="font-size:15px;">{_esc(stripped[2:])}</b><br>')
         # 无序列表
         elif stripped.startswith("- ") or stripped.startswith("* "):
             if not in_list:

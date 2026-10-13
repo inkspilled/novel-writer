@@ -12,12 +12,14 @@ HISTORY_TOKEN_BUDGET = 24_000
 
 
 def _estimate_messages_tokens(messages: list[LLMMessage]) -> int:
+    # 与 workflow/context.estimate_tokens 同口径：中文≈1.5/字，英文单词≈1.3
+    import re
     total = 0
     for m in messages:
         content = m.content or ""
         cn = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
-        en = len(content) - cn
-        total += int(cn * 1.5 + en * 0.3)
+        en_words = len(re.findall(r'[a-zA-Z]+', content))
+        total += int(cn * 1.5 + en_words * 1.3)
     return total
 
 
