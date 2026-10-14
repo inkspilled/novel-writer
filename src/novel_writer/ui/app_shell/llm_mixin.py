@@ -10,7 +10,11 @@ logger = get_logger(__name__)
 
 class LlmMixin:
     def _create_llm(self, provider: dict):
-        """创建 LLM 实例 — 统一走 OpenAI 兼容协议（api_key + base_url + model）。"""
+        """创建 LLM 实例 — 统一走 OpenAI 兼容协议（api_key + base_url + model）。
+
+        provider 里可选思考方言覆盖：
+        thinking_dialect / thinking_off_body / thinking_on_body
+        """
         model = provider.get("model", "")
         if not model:
             return None
@@ -18,7 +22,14 @@ class LlmMixin:
         if not base_url:
             base_url = "https://api.openai.com/v1"
         api_key = provider.get("api_key", "")
-        return LLMClient(model=model, api_key=api_key, base_url=base_url)
+        extra = {}
+        if provider.get("thinking_dialect"):
+            extra["thinking_dialect"] = provider["thinking_dialect"]
+        if provider.get("thinking_off_body"):
+            extra["thinking_off_body"] = provider["thinking_off_body"]
+        if provider.get("thinking_on_body"):
+            extra["thinking_on_body"] = provider["thinking_on_body"]
+        return LLMClient(model=model, api_key=api_key, base_url=base_url, **extra)
 
     def _init_llm(self):
         provider = self.config.get("current_provider")

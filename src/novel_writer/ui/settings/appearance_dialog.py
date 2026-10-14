@@ -194,7 +194,7 @@ class AppearanceDialog(QDialog):
         key = self.theme_combo.itemData(idx)
         is_custom = (key == "custom")
         self.custom_group.setVisible(is_custom)
-        colors = get_theme_colors("custom", self.config) if is_custom else get_theme_colors(key or "dark")
+        colors = get_theme_colors("custom", self.config) if is_custom else get_theme_colors(key or "light")
         self.theme_preview_label.setStyleSheet(
             f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
             f"stop:0 {colors['bg']}, stop:0.25 {colors['surface']}, stop:0.5 {colors['card']}, "
@@ -211,7 +211,7 @@ class AppearanceDialog(QDialog):
 
     def _apply_theme_now(self):
         key = self.theme_combo.itemData(self.theme_combo.currentIndex())
-        self.config["theme"] = key or "dark"
+        self.config["theme"] = key or "light"
         self.config["language"] = self.lang_combo.itemData(self.lang_combo.currentIndex()) or "zh"
         if key == "custom":
             self._on_custom_color_changed()
@@ -227,7 +227,7 @@ class AppearanceDialog(QDialog):
             if self.lang_combo.itemData(i) == saved_lang:
                 self.lang_combo.setCurrentIndex(i)
                 break
-        saved_theme = self.config.get("theme", "dark")
+        saved_theme = self.config.get("theme", "light")
         for i in range(self.theme_combo.count()):
             if self.theme_combo.itemData(i) == saved_theme:
                 self.theme_combo.setCurrentIndex(i)
@@ -245,7 +245,7 @@ class AppearanceDialog(QDialog):
         self._on_theme_changed()
 
     def _save(self):
-        self.config["theme"] = self.theme_combo.itemData(self.theme_combo.currentIndex()) or "dark"
+        self.config["theme"] = self.theme_combo.itemData(self.theme_combo.currentIndex()) or "light"
         self.config["language"] = self.lang_combo.itemData(self.lang_combo.currentIndex()) or "zh"
         self.config["custom_bg"] = self.color_bg.get_color()
         self.config["custom_surface"] = self.color_surface.get_color()

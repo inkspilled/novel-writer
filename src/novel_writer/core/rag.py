@@ -412,27 +412,6 @@ class RAGRetriever:
             self._save_index()
         self._loaded = True
 
-    def load_planning(self):
-        """加载规划文档到索引（按段落分块）。"""
-        planning_dir = self.project_dir / "planning"
-        if not planning_dir.exists():
-            return
-        for md_file in sorted(planning_dir.glob("*.md")):
-            content = md_file.read_text(encoding="utf-8")
-            if not content.strip():
-                continue
-            # 按段落或二级标题分块
-            sections = re.split(r"\n(?=#)|\n\n+", content)
-            for i, section in enumerate(sections):
-                section = section.strip()
-                if len(section) < 20:
-                    continue
-                self.index.add_chunk(Chunk(
-                    id=f"plan_{md_file.stem}_s{i}",
-                    chapter=0,
-                    text=section,
-                ))
-
     def retrieve(self, query: str, top_k: int = 5) -> str:
         """检索相关段落，返回格式化文本。
 

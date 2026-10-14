@@ -19,30 +19,30 @@ from ..common.styles import get_theme_colors
 logger = get_logger(__name__)
 
 
-def _render_think_blocks(text: str) -> str:
-    """把 <think>...</think> 渲染为可读文本；支持多个思考块，不丢弃后续正文。"""
-    if "<think>" not in text:
-        return text
-    if "</think>" not in text:
-        think_content = text.split("<think>", 1)[1]
-        return f"💭 *思考中...*\n\n{think_content}"
-    out_parts: list[str] = []
-    rest = text
-    while "<think>" in rest and "</think>" in rest:
-        pre, rest = rest.split("<think>", 1)
-        think_content, rest = rest.split("</think>", 1)
-        if pre.strip():
-            out_parts.append(pre)
-        if think_content.strip():
-            out_parts.append(f"💭 *思考过程:*\n{think_content}")
-    if rest.strip():
-        out_parts.append(rest)
-    return "\n\n".join(out_parts)
+def _render_stream_parts(parts: list[tuple[str, str]]) -> str:
+    """按 (kind, text) 渲染聊天内容：同 kind 合并，思考整段一个 💭。"""
+    merged: list[list[str]] = []
+    for kind, text in parts:
+        if not text:
+            continue
+        if merged and merged[-1][0] == kind:
+            merged[-1][1] += text
+        else:
+            merged.append([kind, text])
+    out: list[str] = []
+    for kind, text in merged:
+        if kind == "thinking":
+            out.append(f"💭 {text.strip()}")
+        else:
+            out.append(text)
+    return "\n\n".join(out)
 
 
 class AgentPanel(QWidget):
 
     agent_run_requested = Signal(str, str)
+    # 请求把 AI 输出写进章节：(章节号, 正文)
+    chapter_apply_requested = Signal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,16 +65,17 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── 办公室场景（占 35%） ──
+        # ── 办公室场景（小幅点缀，不抢聊天区） ──
         from .office_scene import OfficeScene
         self.office = OfficeScene()
+        self.office.setFixedHeight(160)
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
-        layout.addWidget(self.office, 35)
+        layout.addWidget(self.office)
 
         # ── 工作流迷你进度条（含日志） ──
         from ..workflow.workflow_bar import WorkflowMiniBar
         self.workflow_bar = WorkflowMiniBar()
-        self.workflow_bar.setMaximumHeight(220)
+        self.workflow_bar.setMaximumHeight(160)
         layout.addWidget(self.workflow_bar, 0)
 
         # ── Agent 信息行 ──
@@ -126,17 +127,17 @@ class AgentPanel(QWidget):
         self._quick_bar.setVisible(False)
         layout.addWidget(self._quick_bar)
 
-        # ── 聊天区域（占 45%） ──
+        # ── 聊天区域（主区域，弹性占满） ──
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
         self.chat_container = QWidget()
         self.chat_layout = QVBoxLayout(self.chat_container)
-        self.chat_layout.setContentsMargins(8, 8, 8, 8)
-        self.chat_layout.setSpacing(4)
+        self.chat_layout.setContentsMargins(12, 10, 12, 10)
+        self.chat_layout.setSpacing(8)
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
-        layout.addWidget(self.scroll_area, 45)
+        layout.addWidget(self.scroll_area, 1)
 
         # ── 加载指示器 ──
         self._loading_label = QLabel(t("agent_thinking"))
@@ -144,17 +145,17 @@ class AgentPanel(QWidget):
         self._loading_label.setStyleSheet("color: gray; padding: 4px 16px; font-size: 12px;")
         layout.addWidget(self._loading_label)
 
-        # ── 输入区（占 20%，最小 120px） ──
+        # ── 输入区（固定底栏，禁止被撑大） ──
         input_area = QWidget()
         input_area.setObjectName("agentInput")
-        input_area.setMinimumHeight(120)
+        input_area.setFixedHeight(132)  # 输入框+按钮行，写死不参与布局膨胀
         input_layout = QVBoxLayout(input_area)
-        input_layout.setContentsMargins(12, 6, 12, 8)
-        input_layout.setSpacing(6)
+        input_layout.setContentsMargins(12, 10, 12, 12)
+        input_layout.setSpacing(8)
 
         self.input_edit = ChatTextEdit()
         self.input_edit.setPlaceholderText(t("agent_ph_input"))
-        self.input_edit.setMinimumHeight(60)
+        self.input_edit.setFixedHeight(68)  # QTextEdit 默认会纵向膨胀，必须锁死
         self.input_edit.setEnabled(False)
         self.input_edit.submit.connect(self._on_send)
         input_layout.addWidget(self.input_edit)
@@ -166,17 +167,19 @@ class AgentPanel(QWidget):
         btn_row.addStretch()
         self.btn_run = QPushButton(t("agent_send"))
         self.btn_run.setObjectName("primary")
-        self.btn_run.setFixedHeight(34)
-        self.btn_run.setFixedWidth(80)
+        self.btn_run.setFixedHeight(36)
+        self.btn_run.setFixedWidth(88)
         self.btn_run.setEnabled(False)
         self.btn_run.clicked.connect(self._on_send)
         btn_row.addWidget(self.btn_run)
         input_layout.addLayout(btn_row)
 
-        layout.addWidget(input_area, 20)
+        layout.addWidget(input_area)
 
         # 初始状态：禁用交互
         self._project_loaded = False
+        self._chat_locked = False   # 工作流执行中禁止自由对话
+        self._working_active = False  # 单次对话生成中
 
     # ── Agent 按钮管理 ──
 
@@ -277,7 +280,7 @@ class AgentPanel(QWidget):
     def _apply_quick_style(self):
         """应用快捷按钮主题样式。"""
         colors = get_theme_colors(
-            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "dark"),
+            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "light"),
             AGENT_PANEL_GLOBALS.get("config")
         )
         card = colors.get("card", "#1c1c26")
@@ -333,8 +336,8 @@ class AgentPanel(QWidget):
         self._chat_history[agent_name].append(
             {"type": "agent", "text": text, "agent_name": agent_name})
 
-    def append_stream_chunk(self, chunk: str, agent_name: str = ""):
-        """追加流式文本块。"""
+    def append_stream_chunk(self, chunk: str, agent_name: str = "", kind: str = "text"):
+        """追加流式文本块。kind=thinking 时灰字显示，text 常规显示。"""
         if self._stream_widget is None:
             self._stream_agent = agent_name or self._current_agent
             self._stream_widget = ChatMessage("agent", "", agent_name=self._stream_agent)
@@ -343,9 +346,15 @@ class AgentPanel(QWidget):
                 self._msg_widgets.append(self._stream_widget)
                 self.chat_layout.insertWidget(self.chat_layout.count() - 1, self._stream_widget)
             self._stream_text = ""
+            self._stream_parts = []  # (kind, text)
 
-        self._stream_text += chunk
-        display_text = _render_think_blocks(self._stream_text)
+        if not hasattr(self, "_stream_parts"):
+            self._stream_parts = []
+        self._stream_parts.append((kind, chunk))
+        # 历史只存正文
+        if kind == "text":
+            self._stream_text += chunk
+        display_text = _render_stream_parts(self._stream_parts)
 
         # widget 可能已被 deleteLater 销毁（切换 Agent 或清空聊天时）
         try:
@@ -354,6 +363,7 @@ class AgentPanel(QWidget):
             logger.debug("Stream widget destroyed during update: %s", e)
             self._stream_widget = None
             self._stream_text = ""
+            self._stream_parts = []
             return
         QTimer.singleShot(20, self._scroll_to_bottom)
 
@@ -365,9 +375,10 @@ class AgentPanel(QWidget):
         if pending and not self._stream_widget:
             self._stream_widget, self._stream_text, self._stream_agent = pending
 
-        if self._stream_widget and self._stream_text:
-            # 重新渲染完整内容（处理 think 标签，支持多思考块）
-            final_text = _render_think_blocks(self._stream_text)
+        parts = getattr(self, "_stream_parts", None) or []
+        if self._stream_widget and (self._stream_text or parts):
+            # 按 kind 渲染：思考灰字、正文常规（无标签）
+            final_text = _render_stream_parts(parts) if parts else self._stream_text
             try:
                 self._stream_widget._raw_content = final_text
                 self._stream_widget._set_content(final_text)
@@ -376,12 +387,38 @@ class AgentPanel(QWidget):
 
             if target not in self._chat_history:
                 self._chat_history[target] = []
+            # 历史只存正文
             self._chat_history[target].append(
                 {"type": "agent", "text": self._stream_text, "agent_name": target})
 
+            # 动作条：外部（chat_mixin）判定章节号后调用 show_chapter_actions
+            self._last_agent_message = self._stream_widget
+
         self._stream_widget = None
         self._stream_text = ""
+        self._stream_parts = []
         self._stream_agent = ""
+
+    def show_apply_actions(self, chapter_n: int, content: str):
+        """在最近一条 AI 消息下显示「替换第 N 章 / 复制」。"""
+        msg = getattr(self, "_last_agent_message", None)
+        if msg is None:
+            return
+        msg.show_chapter_actions(chapter_n, content)
+        try:
+            msg.apply_to_chapter.connect(
+                lambda text, n=chapter_n: self.chapter_apply_requested.emit(n, text)
+            )
+            msg.copy_requested.connect(
+                lambda text: self._copy_to_clipboard(text)
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _copy_to_clipboard(text: str):
+        from PySide6.QtWidgets import QApplication
+        QApplication.clipboard().setText(text)
 
     def _scroll_to_bottom(self):
         sb = self.scroll_area.verticalScrollBar()
@@ -448,17 +485,6 @@ class AgentPanel(QWidget):
         self._msg_widgets.clear()
         self.save_history()
 
-    def clear_chat(self):
-        self._stream_widget = None
-        self._stream_text = ""
-        self._stream_agent = ""
-        self._pending_streams.clear()
-        for msg in self._msg_widgets:
-            msg.deleteLater()
-        self._msg_widgets.clear()
-        self._chat_history.clear()
-        self.save_history()
-
     # ── 项目级聊天记录 ──
 
     def set_project_db(self, project_dir: Path | None):
@@ -503,6 +529,7 @@ class AgentPanel(QWidget):
     # ── 工作状态 ──
 
     def set_working(self, active: bool, agent_name: str = ""):
+        self._working_active = active
         if active:
             color = get_color(agent_name)
             self.indicator.start(color)
@@ -512,17 +539,19 @@ class AgentPanel(QWidget):
             self.input_edit.setEnabled(False)
         else:
             self.indicator.stop()
-            self.btn_run.setEnabled(True)
-            self.btn_run.setText(t("agent_send"))
             self._loading_label.setVisible(False)
-            self.input_edit.setEnabled(True)
+            # 工作流锁定期间不解锁聊天
+            if not self._chat_locked:
+                self.btn_run.setEnabled(self._project_loaded)
+                self.btn_run.setText(t("agent_send"))
+                self.input_edit.setEnabled(self._project_loaded)
 
     # ── 主题刷新 ──
 
     def refresh_theme(self):
         """刷新所有组件的主题样式。"""
         colors = get_theme_colors(
-            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "dark"),
+            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "light"),
             AGENT_PANEL_GLOBALS.get("config")
         )
         fg3 = colors.get("fg3", "#5a5a66")
@@ -591,6 +620,8 @@ class AgentPanel(QWidget):
                 self.office.set_agent_state(slot.name, AgentState.WAITING)
         self.workflow_bar.set_running(True)
         self.workflow_bar.append_log("── 工作流开始 ──")
+        # 工作流占用 Agent/LLM：禁止自由对话，避免和流程步骤抢模型、打乱历史
+        self._set_chat_locked(True)
 
     def on_workflow_finished(self):
         from .office_scene import AgentState
@@ -598,6 +629,22 @@ class AgentPanel(QWidget):
             self.office.set_agent_state(slot.name, AgentState.DONE)
         self.workflow_bar.set_running(False)
         self.workflow_bar.append_log("── <b>工作流完成！</b> ──")
+        self._set_chat_locked(False)
+
+    def _set_chat_locked(self, locked: bool):
+        """工作流执行期间锁定/解锁自由对话。"""
+        self._chat_locked = locked
+        if locked:
+            self.input_edit.setEnabled(False)
+            self.btn_run.setEnabled(False)
+            self.input_edit.setPlaceholderText("工作流执行中，暂不可自由对话（可点停止后继续）")
+            self.btn_run.setText(t("agent_generating"))
+        else:
+            enabled = self._project_loaded and not self._working_active
+            self.input_edit.setEnabled(enabled)
+            self.btn_run.setEnabled(enabled)
+            self.input_edit.setPlaceholderText(t("agent_ph_input"))
+            self.btn_run.setText(t("agent_send"))
 
     def _find_agent_by_title(self, title: str) -> str:
         """根据 agent 中文标题找到配置名。"""

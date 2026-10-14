@@ -1,7 +1,7 @@
 """聊天消息控件 — 消息气泡与输入框。"""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QFrame
+from PySide6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QFrame, QPushButton, QWidget
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
 
@@ -11,6 +11,10 @@ from .styles import get_theme_colors
 
 class ChatMessage(QFrame):
     """单条消息气泡，支持 Markdown 渲染。"""
+
+    # 动作按钮：替换到章节 / 复制
+    apply_to_chapter = Signal(str)  # 发出正文
+    copy_requested = Signal(str)
 
     def __init__(self, role: str, content: str, agent_name: str = "", parent=None):
         super().__init__(parent)
@@ -35,6 +39,26 @@ class ChatMessage(QFrame):
         )
         self._bubble_layout.addWidget(self._label)
 
+        # 动作条（默认隐藏，AI 改章后显示）
+        self._action_row = QHBoxLayout()
+        self._action_row.setSpacing(8)
+        self._btn_apply = QPushButton()
+        self._btn_apply.setFixedHeight(28)
+        self._btn_apply.setObjectName("primary")
+        self._btn_apply.setStyleSheet("font-size: 12px; padding: 2px 12px;")
+        self._btn_apply.clicked.connect(self._on_apply_clicked)
+        self._btn_copy = QPushButton("复制")
+        self._btn_copy.setFixedHeight(28)
+        self._btn_copy.setStyleSheet("font-size: 12px; padding: 2px 12px;")
+        self._btn_copy.clicked.connect(lambda: self.copy_requested.emit(self._raw_content))
+        self._action_row.addWidget(self._btn_apply)
+        self._action_row.addWidget(self._btn_copy)
+        self._action_row.addStretch()
+        self._action_row_widget = QWidget()
+        self._action_row_widget.setLayout(self._action_row)
+        self._action_row_widget.setVisible(False)
+        self._bubble_layout.addWidget(self._action_row_widget)
+
         self._avatar = None
         if role == "user":
             self._outer.addStretch()
@@ -45,9 +69,18 @@ class ChatMessage(QFrame):
         self._apply_style()
         self._set_content(content)
 
+    def show_chapter_actions(self, chapter_n: int, content: str):
+        """显示「替换第 N 章 / 复制」动作条。"""
+        self._pending_apply_content = content
+        self._btn_apply.setText(f"替换第 {chapter_n} 章")
+        self._action_row_widget.setVisible(True)
+
+    def _on_apply_clicked(self):
+        self.apply_to_chapter.emit(getattr(self, "_pending_apply_content", "") or self._raw_content)
+
     def _apply_style(self):
         colors = get_theme_colors(
-            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "dark"),
+            AGENT_PANEL_GLOBALS.get("config", {}).get("theme", "light"),
             AGENT_PANEL_GLOBALS.get("config")
         )
         accent = colors.get("accent", "#6e8efb")

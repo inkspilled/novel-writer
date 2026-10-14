@@ -1,6 +1,8 @@
 """工作流启动/进度/停止"""
 from __future__ import annotations
 
+from PySide6.QtWidgets import QDialog, QMessageBox
+
 from ..workflow.workflow_panel import WorkflowThread
 from ..project.project_dialogs import WorkflowModeDialog
 from ...core.workflow import (
@@ -167,7 +169,7 @@ class WorkflowMixin:
         """创建工作流执行器与后台线程并启动。"""
         from ...core.rag import configure_embedding
         configure_embedding(self._embedding_config())
-        max_context_tokens = self.config.get("max_context_tokens", 120_000)
+        max_context_tokens = self.config.get("max_context_tokens", 48_000)
         self._wf_runner = WorkflowRunner(
             agents=self.agents,
             project_dir=self.project.project_dir,
@@ -238,7 +240,10 @@ class WorkflowMixin:
 
     def _on_wf_stopped(self):
         self._park_wf_thread()
+        # 与完成路径同样解锁自由对话（停止也必须恢复聊天）
+        self.agent_panel.on_workflow_finished()
         self.agent_panel.workflow_bar.set_running(False)
+        self.agent_panel.workflow_bar.append_log("── <b>工作流已停止</b> ──")
         self._refresh_chapters()
         self.statusBar().showMessage(t("workflow_stopped"))
 

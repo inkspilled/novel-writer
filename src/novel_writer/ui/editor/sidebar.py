@@ -20,18 +20,18 @@ class Sidebar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("sidebarWidget")
-        self.setMinimumWidth(220)
+        self.setMinimumWidth(200)
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 20, 16, 16)
+        layout.setContentsMargins(16, 18, 16, 14)
         layout.setSpacing(12)
 
         # 项目标题
         self.project_label = QLabel(t("sidebar_no_project"))
         self.project_label.setWordWrap(True)
-        self.project_label.setStyleSheet("font-size: 17px; font-weight: 700; letter-spacing: -0.3px;")
+        self.project_label.setStyleSheet("font-size: 15px; font-weight: 700; letter-spacing: -0.2px;")
         layout.addWidget(self.project_label)
 
         # 操作按钮
@@ -39,8 +39,8 @@ class Sidebar(QWidget):
         btn_row.setSpacing(8)
         self.btn_new = QPushButton(t("sidebar_new"))
         self.btn_open = QPushButton(t("sidebar_open"))
-        self.btn_new.setFixedHeight(34)
-        self.btn_open.setFixedHeight(34)
+        self.btn_new.setFixedHeight(32)
+        self.btn_open.setFixedHeight(32)
         self.btn_new.setObjectName("primary")
         btn_row.addWidget(self.btn_new)
         btn_row.addWidget(self.btn_open)
@@ -50,7 +50,7 @@ class Sidebar(QWidget):
 
         # 章节标题
         self._section_label = QLabel(t("sidebar_chapters"))
-        self._section_label.setStyleSheet("font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; padding: 8px 0 4px 0;")
+        self._section_label.setStyleSheet("font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; padding: 8px 0 4px 0; color: #8e8e9a;")
         layout.addWidget(self._section_label)
 
         # 章节树（占据剩余空间）

@@ -57,10 +57,6 @@ class Chapter:
         self._content_cache = value
         self._write_file(self._content_path, value)
 
-    def invalidate_content_cache(self) -> None:
-        """外部改过磁盘文件后调用，强制下次重读。"""
-        self._content_cache = None
-
     @property
     def outline(self) -> str:
         if self._outline_cache is not None:

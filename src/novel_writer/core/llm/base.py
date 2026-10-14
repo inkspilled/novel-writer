@@ -4,6 +4,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Literal
 
+# 思考模式：off=强制关闭（工具类步骤省 token）；on=强制开启；auto=不干预模型默认行为
+ThinkingMode = Literal["off", "on", "auto"]
+
 
 @dataclass
 class LLMMessage:
@@ -33,13 +36,27 @@ class BaseLLM(ABC):
         self.extra = kwargs
 
     @abstractmethod
-    async def chat(self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096) -> LLMResponse:
+    async def chat(
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        thinking: ThinkingMode = "auto",
+    ) -> LLMResponse:
         """单次对话，返回完整响应。"""
         ...
 
     @abstractmethod
     async def stream_chat(
-        self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096
-    ) -> AsyncIterator[str]:
-        """流式对话，逐块返回内容。"""
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        thinking: ThinkingMode = "auto",
+    ) -> AsyncIterator[tuple[str, str]]:
+        """流式对话，逐块返回 (kind, text)。
+
+        kind: "thinking"（思考过程）| "text"（正式回答）
+        分片不带任何包装标签，UI 自行按 kind 着色。
+        """
         ...

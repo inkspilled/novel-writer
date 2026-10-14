@@ -81,6 +81,10 @@ def main():
     app.setApplicationName("Novel Writer")
     app.setOrganizationName("NovelWriter")
 
+    # 全局：下拉框/数值框不响应滚轮（防止悬停误改值，学 smt-intelligent）
+    from novel_writer.ui.common.filters import install_no_wheel_combo_filter
+    install_no_wheel_combo_filter(app)
+
     # 应用图标（dock + 窗口标题栏 + Windows 任务栏）
     icon_path = PROJECT_ROOT / "logo.png"
     if icon_path.exists():

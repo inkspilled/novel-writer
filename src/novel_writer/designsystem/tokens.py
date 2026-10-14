@@ -80,5 +80,5 @@ def get_theme_colors(name: str, config: dict | None = None) -> dict:
             "shadow": "0 2px 16px rgba(0,0,0,0.5)",
         })
         return colors
-    _, t = THEMES.get(name, THEMES["dark"])
+    _, t = THEMES.get(name, THEMES["light"])
     return t

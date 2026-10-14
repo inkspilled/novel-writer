@@ -31,3 +31,18 @@ CHAPTER_CONTENT_STEP_IDS = ("chapter", "polish")
 
 # 反哺类步骤（强制覆盖 planning/ 文件）
 PLANNING_UPDATE_STEP_PREFIX = "update_"
+
+# 工具/抽取类步骤：强制关闭思考（JSON 抽取、校对、目录等无需长考）
+NO_THINKING_STEP_IDS = frozenset({
+    "sim", "chapter_summary", "world_state_update", "toc",
+    "proofread", "quality_check", "fix_titles", "sediment",
+})
+
+# 工作流内不写入 Agent 对话历史的步骤（历史只留给规划链传递上下文）
+NO_HISTORY_STEP_IDS = frozenset({
+    "sim", "chapter_summary", "world_state_update", "toc",
+    "polish", "proofread", "summary", "quality_check", "fix_titles",
+    "inspiration", "sediment",
+}) | frozenset({
+    "update_outline", "update_characters", "update_foreshadow",
+})

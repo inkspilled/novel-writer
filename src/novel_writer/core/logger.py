@@ -43,6 +43,14 @@ def _get_log_dir() -> Path:
 
 LOG_DIR = _get_log_dir()
 
+# ─── 日志配置常量（与 smt-intelligent/engine/core/logger.py 对齐） ───
+
+# 单文件大小上限（100MB）
+MAX_LOG_FILE_SIZE = 100 * 1024 * 1024
+
+# 保留天数（滚动文件 info.log.YYYY-MM-DD 个数）
+LOG_BACKUP_COUNT = 30
+
 # ─── 日志格式 ───
 
 # 与 Java Logback 一致：时间 [线程] 级别 logger - 消息
@@ -61,15 +69,20 @@ _RESET = "\033[0m"
 
 
 class _ColorFormatter(logging.Formatter):
-    """控制台彩色日志格式化器"""
+    """控制台彩色日志格式化器
 
-    def __init__(self, fmt=None, datefmt=None):
-        super().__init__(fmt, datefmt)
+    注意：绝不能永久改 record.levelname——同一 record 会流经多个 handler，
+    改脏后文件日志会混入 ANSI 色码，还会因二次 format 产生重复行。
+    """
 
     def format(self, record):
-        color = _COLOR_MAP.get(record.levelname, "")
-        record.levelname = f"{color}{record.levelname}{_RESET}"
-        return super().format(record)
+        orig = record.levelname
+        color = _COLOR_MAP.get(orig, "")
+        record.levelname = f"{color}{orig}{_RESET}"
+        try:
+            return super().format(record)
+        finally:
+            record.levelname = orig  # 还原，避免污染文件 handler
 
 
 # ─── 滚动文件 Handler（按天 + 按大小） ───
@@ -82,8 +95,8 @@ class _DailySizeRotatingHandler(logging.Handler):
     - 保留 backup_count 天的日志
     """
 
-    def __init__(self, filename, max_bytes=100 * 1024 * 1024, backup_count=30,
-                 encoding="utf-8"):
+    def __init__(self, filename, max_bytes: int = MAX_LOG_FILE_SIZE,
+                 backup_count: int = LOG_BACKUP_COUNT, encoding: str = "utf-8"):
         super().__init__()
         self._handler = logging.handlers.TimedRotatingFileHandler(
             filename=filename,
@@ -93,6 +106,7 @@ class _DailySizeRotatingHandler(logging.Handler):
             encoding=encoding,
             delay=True,
         )
+        # 滚动文件名：info.log.2026-10-14（与 smt-intelligent 一致）
         self._handler.suffix = "%Y-%m-%d"
         self._max_bytes = max_bytes
 
@@ -128,11 +142,17 @@ def _setup_logging():
         root = logging.getLogger()
         root.setLevel(logging.DEBUG)
 
+        # 防重复挂 handler（多次 import/初始化会把每条日志写两遍）
+        if getattr(root, "_nw_log_ready", False):
+            _initialized = True
+            return
+        root._nw_log_ready = True
+
         # ── INFO 文件 ──
         info_handler = _DailySizeRotatingHandler(
             filename=str(LOG_DIR / "info.log"),
-            max_bytes=100 * 1024 * 1024,
-            backup_count=30,
+            max_bytes=MAX_LOG_FILE_SIZE,
+            backup_count=LOG_BACKUP_COUNT,
         )
         info_handler.setLevel(logging.INFO)
         info_handler.addFilter(lambda record: record.levelno < logging.WARNING)
@@ -142,8 +162,8 @@ def _setup_logging():
         # ── ERROR 文件 ──
         error_handler = _DailySizeRotatingHandler(
             filename=str(LOG_DIR / "error.log"),
-            max_bytes=100 * 1024 * 1024,
-            backup_count=30,
+            max_bytes=MAX_LOG_FILE_SIZE,
+            backup_count=LOG_BACKUP_COUNT,
         )
         error_handler.setLevel(logging.WARNING)
         error_handler.setFormatter(logging.Formatter(_LOG_FORMAT, _DATE_FORMAT))

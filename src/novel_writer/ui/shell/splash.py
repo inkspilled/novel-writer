@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import Qt, QTimer, QRectF, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QTimer, QRectF
 from PySide6.QtGui import (
     QPainter, QColor, QLinearGradient, QFont, QPixmap, QPen, QPainterPath,
 )

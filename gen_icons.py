@@ -23,15 +23,13 @@ print(f"logo.png generated: {project_root / 'logo.png'}")
 
 # ── 状态栏图标：单色模板 PNG ──
 status_renderer = QSvgRenderer(str(assets / "status_icon.svg"))
-for px in [18, 36]:
-    img = QImage(px, px, QImage.Format.Format_ARGB32)
-    img.fill(Qt.GlobalColor.transparent)
-    p = QPainter(img)
-    status_renderer.render(p)
-    p.end()
-    suffix = "@2x" if px == 36 else ""
-    path = assets / f"status_icon{suffix}.png"
-    img.save(str(path))
-    print(f"Status icon: {path}")
+img = QImage(18, 18, QImage.Format.Format_ARGB32)
+img.fill(Qt.GlobalColor.transparent)
+p = QPainter(img)
+status_renderer.render(p)
+p.end()
+path = assets / "status_icon.png"
+img.save(str(path))
+print(f"Status icon: {path}")
 
 print("Done!")

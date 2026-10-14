@@ -107,7 +107,7 @@ class OfficeScene(QWidget):
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(150)  # 150ms ≈ 7fps，动画更流畅
+        self._timer.start(200)  # 5fps：动画更缓，避免左右闪
 
     def setup_agents(self, agents_cfg: dict, colors: dict):
         self._slots.clear()
@@ -169,15 +169,18 @@ class OfficeScene(QWidget):
                     else:
                         slot.behavior = random.choice(list(IdleBehavior))
                 if slot.behavior == IdleBehavior.WANDER:
+                    # 闲置只做极轻微漂移，禁止左右大幅走动
                     dx = slot.target_offset_x - slot.offset_x
                     dy = slot.target_offset_y - slot.offset_y
                     if abs(dx) < 0.005 and abs(dy) < 0.005:
-                        slot.target_offset_x = random.uniform(-0.04, 0.04)
-                        slot.target_offset_y = random.uniform(-0.02, 0.02)
+                        slot.target_offset_x = random.uniform(-0.008, 0.008)
+                        slot.target_offset_y = random.uniform(-0.004, 0.004)
                     else:
-                        slot.offset_x += 0.002 * (1 if dx > 0 else -1)
-                        slot.offset_y += 0.002 * (1 if dy > 0 else -1)
+                        slot.offset_x += 0.0006 * (1 if dx > 0 else -1)
+                        slot.offset_y += 0.0004 * (1 if dy > 0 else -1)
             elif slot.state == AgentState.SLACKING and slot.escaped:
+                # 走开：只向右，速度放慢
+                slot.offset_x += 0.0015
                 slot.escape_timer -= 1
                 if slot.escape_timer <= 0:
                     slot.state = AgentState.IDLE
@@ -298,6 +301,10 @@ class OfficeScene(QWidget):
         if slot.escaped:
             painter.setFont(self._font_emoji_12)
             painter.drawText(x - 6, y + 28, "💨")
+            # 逃跑时仍显示名字，避免像「缺名字的智能体」
+            painter.setPen(self._pen_title)
+            painter.setFont(self._font_text_7)
+            painter.drawText(QRectF(x - 24, y + 38, 48, 12), Qt.AlignmentFlag.AlignCenter, slot.title)
             return
 
         # 选中光圈
@@ -308,7 +315,15 @@ class OfficeScene(QWidget):
             painter.drawEllipse(QPointF(x, y + 20), 26, 26)
             painter.setOpacity(1.0)
 
-        # emoji
+        self._draw_agent_emoji(painter, slot, x, y)
+
+        # 标题
+        painter.setPen(self._pen_title)
+        painter.setFont(self._font_text_7)
+        painter.drawText(QRectF(x - 24, y + 38, 48, 12), Qt.AlignmentFlag.AlignCenter, slot.title)
+
+    def _draw_agent_emoji(self, painter: QPainter, slot: AgentSlot, x: int, y: int) -> None:
+        """纯代码绘制的小人（emoji + 位移动画）。"""
         emoji_size = 24 if slot.state == AgentState.WORKING else 20
         painter.setFont(self._font_emoji_24 if emoji_size == 24 else self._font_emoji_20)
         er = QRectF(x - 14, y + 8, 28, 28)
@@ -324,11 +339,6 @@ class OfficeScene(QWidget):
             er.moveLeft(er.left() + shake)
 
         painter.drawText(er, Qt.AlignmentFlag.AlignCenter, slot.emoji)
-
-        # 标题
-        painter.setPen(self._pen_title)
-        painter.setFont(self._font_text_7)
-        painter.drawText(QRectF(x - 24, y + 38, 48, 12), Qt.AlignmentFlag.AlignCenter, slot.title)
 
     def _draw_working_highlight(self, painter: QPainter, slot: AgentSlot, w: int, h: int):
         """工作中的 Agent — 大光圈 + 脉冲 + 任务标签。"""

@@ -10,6 +10,7 @@ import re
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .. import project_io
+from ..json_extract import extract_json_object
 from ..logger import get_logger
 from ..quality_checker import QualityChecker
 from ..world_state import WorldState
@@ -110,14 +111,11 @@ async def _run_fix_titles(runner: "WorkflowRunner", step: "WorkflowStep", n: int
         excerpts.append(f"第{ch['number']}章（当前标题：「{ch['title']}」）：\n{excerpt}")
     prompt = build_fix_titles_prompt(excerpts)
     try:
-        resp = await agent.run(prompt)
-        # 提取 JSON（兼容 ```json ``` 包裹；允许嵌套对象）
+        resp = await agent.run(prompt, thinking="off", keep_history=False)
+        # 稳健提取 JSON（兼容 ```json``` 包裹 / 思考噪声 / 嵌套对象）
         text = resp.content.strip()
-        m = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        if not m:
-            m = re.search(r'(\{.*\})', text, re.DOTALL)
-        if m:
-            title_map = json.loads(m.group(1))
+        title_map = extract_json_object(text)
+        if title_map:
             logs = []
             for ch_num_str, new_title in title_map.items():
                 ch_num = int(ch_num_str)
@@ -167,11 +165,10 @@ async def _run_world_state_update(runner: "WorkflowRunner", step: "WorkflowStep"
     gs_summary = gs.build_context_text()
     prompt = build_world_state_prompt(n, gs_summary, content)
     try:
-        resp = await agent.run(prompt)
+        resp = await agent.run(prompt, thinking="off", keep_history=False)
         text = resp.content.strip()
-        m = re.search(r'\{[\s\S]+\}', text)
-        if m:
-            update = json.loads(m.group())
+        update = extract_json_object(text)
+        if update:
             # 注入章节号到 timeline
             for ev in update.get("timeline", []):
                 ev["chapter"] = n
@@ -213,7 +210,7 @@ async def _run_chapter_summary(runner: "WorkflowRunner", step: "WorkflowStep", n
     content = project_io.read_md(existing_path)
     prompt = build_chapter_summary_prompt(n, ch_title, content)
     try:
-        resp = await agent.run(prompt)
+        resp = await agent.run(prompt, thinking="off", keep_history=False)
         project_io.write_md(summary_path, resp.content)
         logger.info("第%d章概要已生成", n)
         if runner.on_step_end:
@@ -287,7 +284,7 @@ async def _proofread_single_chapter(runner: "WorkflowRunner", step: "WorkflowSte
     content = project_io.read_md(chapter_path)
     prompt = f"校对第{n}章的错别字、语法、标点。列出发现的问题和修改建议。\n\n正文：\n{content}"
     try:
-        resp = await agent.run(prompt)
+        resp = await agent.run(prompt, thinking="off", keep_history=False)
         if not resp.content.strip():
             logger.warning("第%d章校对返回空内容，跳过写入", n)
             return
@@ -325,7 +322,7 @@ async def _proofread_all_chapters(runner: "WorkflowRunner", step: "WorkflowStep"
             break
         agent.clear_history()  # 各批独立，避免批间历史累积
         prompt = build_proofread_batch_prompt(batch, i, len(batches))
-        resp = await agent.run(prompt)
+        resp = await agent.run(prompt, thinking="off", keep_history=False)
         if resp.content.strip():
             findings.append(
                 f"### 第 {i}/{len(batches)} 批（第{batch[0][0]}-{batch[-1][0]}章）\n\n{resp.content.strip()}"
@@ -382,7 +379,7 @@ async def _run_review(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
             break
         agent.clear_history()
         prompt = build_review_batch_prompt(batch, planning_summary, i, len(batches))
-        resp = await agent.run(prompt)
+        resp = await agent.run(prompt, thinking="auto", keep_history=False)
         if resp.content.strip():
             findings.append(resp.content.strip())
         logger.info("全书审核进度: 批 %d/%d", i, len(batches))
@@ -397,7 +394,7 @@ async def _run_review(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
     agent.clear_history()
     aggregate_prompt = build_review_aggregate_prompt(findings, len(chapters))
     try:
-        resp = await agent.run(aggregate_prompt)
+        resp = await agent.run(aggregate_prompt, thinking="auto", keep_history=False)
         report = resp.content.strip() or "\n\n".join(findings)
     except Exception as e:
         logger.warning("审核汇总调用失败，直接落盘各批发现: %s", e)

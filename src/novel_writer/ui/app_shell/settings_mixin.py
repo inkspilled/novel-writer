@@ -1,7 +1,11 @@
 """设置类对话框入口"""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QMessageBox
+from pathlib import Path
+
+import shutil
+
+from PySide6.QtWidgets import QDialog, QMessageBox
 
 from ..settings.model_dialog import ModelDialog
 from ..settings.appearance_dialog import AppearanceDialog

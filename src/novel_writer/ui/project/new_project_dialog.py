@@ -13,7 +13,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QPixmap
 
+from ...core.logger import get_logger
 from ...locales import t
+
+logger = get_logger(__name__)
 
 GENRES = [
     "玄幻", "仙侠", "都市", "科幻", "历史", "武侠",
@@ -30,9 +33,10 @@ STYLES = [
 
 
 class _AIWorker(QThread):
-    """后台线程调用 Agent，带超时保护。"""
+    """后台线程调用 Agent（流式），带超时保护。思考/正文分开发出，UI 可实时看。"""
     # 遮蔽 QThread 内建 finished（无参），用带载荷的 completed
-    completed = Signal(str)
+    chunk = Signal(str, str)  # (kind, text)：thinking | text
+    completed = Signal(str)   # 正文（不含思考）
     error = Signal(str)
 
     # API 模型 2 分钟，本地模型 10 分钟
@@ -50,6 +54,9 @@ class _AIWorker(QThread):
         base_url = getattr(agent.llm, 'base_url', '') or ''
         is_local = any(h in base_url for h in ('127.0.0.1', 'localhost', '0.0.0.0'))
         self._timeout = self.TIMEOUT_LOCAL if is_local else self.TIMEOUT_API
+        # 防 QThread 运行中被 GC（学 smt：finished 后才释放）
+        from ..common.workers import _register_worker
+        _register_worker(self)
 
     def cancel(self):
         self._cancelled = True
@@ -68,18 +75,39 @@ class _AIWorker(QThread):
             self._loop = loop
 
             async def _call():
-                return await asyncio.wait_for(
-                    self.agent.run(self.prompt),
-                    timeout=self._timeout,
+                buf: list[str] = []  # 只收正文
+                gen = self.agent.stream_run(
+                    self.prompt,
+                    thinking="auto",      # 允许思考，用户要看见
+                    keep_history=False,   # 每次独立，不背历史
                 )
+                try:
+                    async for kind, piece in gen:
+                        if self._cancelled:
+                            break
+                        if kind == "text":
+                            buf.append(piece)
+                        try:
+                            self.chunk.emit(kind, piece)
+                        except RuntimeError:
+                            break
+                finally:
+                    # 关闭异步生成器，避免 "aclose never awaited / Task destroyed"
+                    aclose = getattr(gen, "aclose", None)
+                    if aclose is not None:
+                        try:
+                            await aclose()
+                        except Exception:
+                            pass
+                return "".join(buf)
 
             self._task = loop.create_task(_call())
-            resp = loop.run_until_complete(self._task)
+            full = loop.run_until_complete(self._task)
             if not self._cancelled:
-                self.completed.emit(resp.content)
+                self.completed.emit(full or "")
         except (asyncio.TimeoutError, asyncio.CancelledError):
             if not self._cancelled:
-                self.error.emit(f"AI 生成超时（{self._timeout}秒），本地模型较慢请耐心等待或换用更快的模型")
+                self.error.emit(f"AI 润色超时（{self._timeout}秒），本地模型较慢请耐心等待或换用更快的模型")
         except Exception as e:
             if not self._cancelled:
                 self.error.emit(str(e)[:300])
@@ -87,7 +115,21 @@ class _AIWorker(QThread):
             self._task = None
             self._loop = None
             if loop:
-                loop.close()
+                # 清掉残留任务再关 loop，消灭 "Task was destroyed but it is pending"
+                try:
+                    pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception:
+                    pass
+                try:
+                    loop.close()
+                except Exception:
+                    pass
 
 
 class NewProjectDialog(QDialog):
@@ -101,7 +143,8 @@ class NewProjectDialog(QDialog):
         self._cover_path = ""
         self._llm = llm
         self._agents = agents or {}  # Agent 实例字典
-        self._workers: dict[str, _AIWorker] = {}  # field → worker，支持并发生成
+        self._workers: dict[str, _AIWorker] = {}  # field → worker（同时只跑一个）
+        self._ai_busy = False  # 串行闸：True 时禁止再发润色请求
         self._project_data = project_data
         self._setup_ui()
         if project_data:
@@ -122,7 +165,11 @@ class NewProjectDialog(QDialog):
         layout.setSpacing(20)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # ── 基本信息 ──
+        # ── 基本信息 + 题材与风格：左右分栏 ──
+        top_row = QHBoxLayout()
+        top_row.setSpacing(16)
+
+        # ── 基本信息（左） ──
         basic_group = QGroupBox("基本信息")
         basic_form = QFormLayout(basic_group)
         basic_form.setSpacing(14)
@@ -161,9 +208,9 @@ class NewProjectDialog(QDialog):
         cover_btn_col.addStretch()
         cover_row.addLayout(cover_btn_col)
         basic_form.addRow("封面", cover_row)
-        layout.addWidget(basic_group)
+        top_row.addWidget(basic_group, 1)
 
-        # ── 题材与风格 ──
+        # ── 题材与风格（右） ──
         genre_group = QGroupBox("题材与风格")
         genre_form = QFormLayout(genre_group)
         genre_form.setSpacing(14)
@@ -198,7 +245,8 @@ class NewProjectDialog(QDialog):
         self.chapters_spin.setMinimumHeight(34)
         genre_form.addRow("目标章节数", self.chapters_spin)
 
-        layout.addWidget(genre_group)
+        top_row.addWidget(genre_group, 1)
+        layout.addLayout(top_row)
 
         # ── 立意与方向（必填） ──
         concept_group = QGroupBox("立意与方向（必填）")
@@ -210,9 +258,10 @@ class NewProjectDialog(QDialog):
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("核心立意 *"))
         row1.addStretch()
-        self.btn_ai_theme = QPushButton("✨ AI 生成")
+        self.btn_ai_theme = QPushButton("✨ AI 润色")
         self.btn_ai_theme.setFixedHeight(26)
         self.btn_ai_theme.setStyleSheet("font-size: 11px; padding: 2px 10px;")
+        self.btn_ai_theme.setToolTip("先在下方框里写草稿，再点此按钮让 AI 润色提升")
         self.btn_ai_theme.clicked.connect(lambda: self._ai_generate("theme"))
         row1.addWidget(self.btn_ai_theme)
         concept_layout.addLayout(row1)
@@ -234,9 +283,10 @@ class NewProjectDialog(QDialog):
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("规划方向 *"))
         row2.addStretch()
-        self.btn_ai_dir = QPushButton("✨ AI 生成")
+        self.btn_ai_dir = QPushButton("✨ AI 润色")
         self.btn_ai_dir.setFixedHeight(26)
         self.btn_ai_dir.setStyleSheet("font-size: 11px; padding: 2px 10px;")
+        self.btn_ai_dir.setToolTip("先在下方框里写草稿，再点此按钮让 AI 润色提升")
         self.btn_ai_dir.clicked.connect(lambda: self._ai_generate("direction"))
         row2.addWidget(self.btn_ai_dir)
         concept_layout.addLayout(row2)
@@ -271,10 +321,20 @@ class NewProjectDialog(QDialog):
         scroll.setWidget(content)
         main_layout.addWidget(scroll, 1)
 
-        # ── 状态栏 + 按钮（固定在底部） ──
+        # ── AI 流式输出（思考/润色实时可见）+ 状态 + 按钮（固定底部） ──
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("font-size: 11px; color: gray;")
         main_layout.addWidget(self._status_label)
+
+        self._stream_view = QTextEdit()
+        self._stream_view.setReadOnly(True)
+        self._stream_view.setPlaceholderText("点「AI 润色」后，这里实时显示思考过程和润色结果…")
+        self._stream_view.setMinimumHeight(0)
+        self._stream_view.setMaximumHeight(0)  # 初始收起，润色时展开
+        self._stream_view.setStyleSheet("font-size: 12px;")
+        self._stream_buf = ""  # 兼容旧字段
+        self._stream_chunks: list[tuple[str, str]] = []  # (kind, text)
+        main_layout.addWidget(self._stream_view)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
@@ -293,12 +353,52 @@ class NewProjectDialog(QDialog):
         main_layout.addLayout(btn_row)
 
     def _ai_generate(self, field: str):
-        """AI 生成立意或方向。"""
+        """AI 润色立意或方向：先读框里已有草稿，再让 AI 改写提升。
+
+        串行执行：同一时刻只允许一个润色请求，避免并发触发网关 429 限流。
+        """
         # 根据字段选择对应 Agent：立意→主编(editor)，方向→策划(planner)
         agent_name = "editor" if field == "theme" else "planner"
         agent = self._agents.get(agent_name)
         if not agent:
             QMessageBox.warning(self, "提示", "请先在设置中配置模型和智能体")
+            return
+
+        # 串行闸：仅看忙碌标志。不能用 isRunning()——completed 是在 run()
+        # 内发出的，此刻线程尚未退出，会把下一次点击误拦住。
+        if self._ai_busy:
+            QMessageBox.information(
+                self, "请稍候",
+                "已有一项润色正在进行，等它完成后再试。\n（并发请求容易被服务端限流，反而更慢）",
+            )
+            return
+
+        label = "核心立意" if field == "theme" else "规划方向"
+        edit = self.theme_edit if field == "theme" else self.direction_edit
+        draft = edit.toPlainText().strip()
+        logger.info("AI 润色请求: field=%s draft_len=%d", field, len(draft))
+        if not draft:
+            QMessageBox.information(
+                self, "提示",
+                f"请先在【{label}】框里写下你的想法（哪怕几句话），再点 AI 润色。",
+            )
+            return
+
+        # 必填校验：书名/题材/风格会进 prompt，缺了润色必歪
+        missing: list[str] = []
+        if not self.title_edit.text().strip():
+            missing.append("书名")
+        if not self.genre_combo.currentText().strip():
+            missing.append("题材")
+        if not self.style_combo.currentText().strip():
+            missing.append("风格")
+        if missing:
+            QMessageBox.warning(
+                self, "请先补全",
+                "AI 润色需要对齐下面这些信息，否则会写歪：\n\n"
+                + "、".join(missing)
+                + "\n\n请先在上方【基本信息 / 题材与风格】里填好，再点润色。",
+            )
             return
 
         # 如果该字段已有正在运行的 worker，先取消
@@ -308,31 +408,22 @@ class NewProjectDialog(QDialog):
             old.wait(2000)
             del self._workers[field]
 
-        label = "核心立意" if field == "theme" else "规划方向"
-        hint = "一个少年穿越到异世界" if field == "theme" else "分3卷，前期升级，中期争霸，后期收尾"
+        genre = self.genre_combo.currentText().strip()
+        style = self.style_combo.currentText().strip()
+        title = self.title_edit.text().strip()
 
-        one_liner, ok = QInputDialog.getText(
-            self, f"AI 生成{label}",
-            f"用一句话描述你的想法，AI 会帮你展开：\n（例：{hint}）",
-        )
-        if not ok or not one_liner.strip():
-            return
-
-        genre = self.genre_combo.currentText()
-        style = self.style_combo.currentText()
-        title = self.title_edit.text().strip() or "未定"
-
-        # 互相关联：生成其中一个字段时，注入另一个字段的现有内容作为上下文
+        # 互相关联：润色其中一个字段时，注入另一个字段的现有内容作为上下文
         current_theme = self.theme_edit.toPlainText().strip()
         current_direction = self.direction_edit.toPlainText().strip()
 
         if field == "theme":
-            # 生成核心立意时，参考已有的规划方向
             ref = f"\n\n【已有规划方向（必须保持一致）】\n{current_direction}" if current_direction else ""
-            prompt = f"""你是小说主编。根据一句话想法写核心立意。
+            prompt = f"""你是小说主编。请润色下面这段核心立意草稿：保留用户原意和关键信息，补全结构、压缩废话、提升表达。必须严格贴合给定的题材与风格，书名相关表述不得偏离。
 
-题材：{genre}  风格：{style}  书名：{title}
-用户想法：{one_liner}{ref}
+题材：{genre}  风格：{style}  书名：《{title}》{ref}
+
+用户草稿：
+{draft}
 
 严格按以下格式输出，总字数不超过200字：
 
@@ -343,12 +434,13 @@ class NewProjectDialog(QDialog):
 
 不要有任何多余解释。"""
         else:
-            # 生成规划方向时，必须参考已有的核心立意
             ref = f"\n\n【已有核心立意（必须严格保持一致的题材和风格）】\n{current_theme}" if current_theme else ""
-            prompt = f"""你是小说策划。根据一句话方向写规划方向。
+            prompt = f"""你是小说策划。请润色下面这段规划方向草稿：保留用户原意和卷章安排，补全结构、压缩废话、提升表达。必须严格贴合给定的题材与风格，卷章规划不得偏离书名调性。
 
-题材：{genre}  风格：{style}  书名：{title}
-用户想法：{one_liner}{ref}
+题材：{genre}  风格：{style}  书名：《{title}》{ref}
+
+用户草稿：
+{draft}
 
 严格按以下格式输出，总字数不超过200字：
 
@@ -360,26 +452,106 @@ class NewProjectDialog(QDialog):
 不要有任何多余解释。"""
 
         self._set_generating(True, field)
+        self._ai_busy = True
+        logger.info("AI 润色调用: field=%s agent=%s prompt_len=%d", field, agent_name, len(prompt))
         # 不设 parent：对话框关闭时由 closeEvent 等待线程结束后再销毁
         worker = _AIWorker(agent, prompt, None)
+        worker.chunk.connect(self._on_ai_chunk)
         worker.completed.connect(lambda text: self._on_ai_done(field, text))
         worker.error.connect(lambda err: self._on_ai_error(err, field))
+        # 内建 finished（run 真正返回后）兜底放行，防止 done 信号丢失卡死
+        worker.finished.connect(lambda f=field: self._release_ai_worker(f))
         self._workers[field] = worker
         worker.start()
 
+    def _release_ai_worker(self, field: str = ""):
+        """请求结束（完成/失败/线程退出）后立刻放行下一个。"""
+        if field:
+            self._workers.pop(field, None)
+        self._ai_busy = False
+
+    def _on_ai_chunk(self, kind: str, piece: str):
+        """流式增量：thinking 灰字、text 常规字，自动滚到底。"""
+        self._stream_chunks.append((kind, piece))
+        self._stream_view.setHtml(self._render_stream_html())
+        sb = self._stream_view.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _render_stream_html(self) -> str:
+        """把 (kind,text) 分片合并后渲染：同 kind 连成一段，思考整段一个 💭。
+
+        绝不能每个分片一个 <br/>+💭——流式按 2～3 字切片，那样会碎成渣。
+        """
+        import html as _html
+
+        def esc(s: str) -> str:
+            return _html.escape(s)
+
+        # 合并相邻同 kind
+        merged: list[list[str]] = []
+        for kind, text in self._stream_chunks:
+            if not text:
+                continue
+            if merged and merged[-1][0] == kind:
+                merged[-1][1] += text
+            else:
+                merged.append([kind, text])
+
+        out: list[str] = []
+        for kind, text in merged:
+            if kind == "thinking":
+                body = esc(text.strip())
+                out.append(
+                    "<div style='color:#8e8e9a;font-style:italic;margin:2px 0;'>"
+                    f"💭 {body}</div>"
+                )
+            else:
+                out.append(
+                    "<div style='margin:2px 0;'>"
+                    f"{esc(text).replace(chr(10), '<br/>')}</div>"
+                )
+        return "".join(out)
+
+    # 每个字段只保留自己那几节，防止模型顺手把另一个字段的格式也吐出来
+    _FIELD_KEYS = {
+        "theme": ("核心主题", "立意", "卖点", "读者"),
+        "direction": ("整体构思", "分卷", "节奏", "预估字数"),
+    }
+
+    @classmethod
+    def _extract_formatted(cls, body: str, field: str = "") -> str:
+        """从润色正文里只抽出 【xxx】 格式行，去掉元评论；按 field 过滤小节。"""
+        import re
+        allowed = cls._FIELD_KEYS.get(field, ())
+        kept: list[str] = []
+        for line in body.splitlines():
+            line = line.strip()
+            m = re.match(r"^(【([^】]+)】)(.*)$", line)
+            if not m:
+                continue
+            title, key, content = m.group(1), m.group(2).strip(), m.group(3).strip()
+            # 只留本字段的小节（theme 不写整体构思，反之亦然）
+            if field and allowed and key not in allowed:
+                continue
+            # 去开头「30字内：」这类字数提示
+            content = re.sub(r"^\d+\s*字内\s*[：:]\s*", "", content)
+            # 在「。约20字…」「。控制总字数」处截断元评论
+            content = re.split(
+                r"[。．]\s*(?=约?\s*\d+\s*字|控制总字数|格式准确|微调|不要有多余)",
+                content,
+            )[0].strip()
+            kept.append(f"{title}{content}")
+        return "\n".join(kept) if kept else body.strip()
+
     def _on_ai_done(self, field: str, text: str):
-        self._workers.pop(field, None)
+        logger.info("AI 润色完成: field=%s raw_len=%d", field, len(text or ""))
+        self._release_ai_worker(field)
         self._set_generating(False, field)
-        text = text.strip()
-        # 清理思考模型可能残留的前缀标签
-        for prefix in ["[思考过程]", "[回答]"]:
-            if text.startswith(prefix):
-                # 跳过 [思考过程]\n...\n\n[回答]\n... 格式，提取 [回答] 后的内容
-                answer_idx = text.find("[回答]\n")
-                if answer_idx >= 0:
-                    text = text[answer_idx + len("[回答]\n"):]
-                break
-        text = text.strip()
+        # completed 只含正文；按 field 只保留本字段的小节，防止写串
+        body = (text or "").strip()
+        extracted = self._extract_formatted(body, field=field)
+        # 抽不出格式段时回退原文，绝不能出现「润色完了框里是空的」
+        text = extracted if extracted.strip() else body
         if len(text) > 300:
             for sep in ["\n\n", "\n", "。", "；"]:
                 idx = text.rfind(sep, 0, 300)
@@ -392,33 +564,37 @@ class NewProjectDialog(QDialog):
             self.theme_edit.setPlainText(text)
         else:
             self.direction_edit.setPlainText(text)
-        self._status_label.setText("")
+        self._status_label.setText("润色完成，结果已填入上方输入框（思考过程见底部）")
 
     def _on_ai_error(self, error: str, field: str = ""):
-        self._workers.pop(field, None)
+        logger.error("AI 润色失败: field=%s err=%s", field, error)
+        self._release_ai_worker(field)
         self._set_generating(False, field)
-        self._status_label.setText("")
-        QMessageBox.warning(self, "AI 生成失败", error)
+        self._status_label.setText("润色失败")
+        QMessageBox.warning(self, "AI 润色失败", error)
 
     def _set_generating(self, generating: bool, field: str = ""):
-        """设置生成状态，field 指定是哪个字段在生成（'theme'/'direction'）。"""
+        """设置润色状态，field 指定是哪个字段（'theme'/'direction'）。"""
         if generating:
-            # 只禁用正在生成的按钮，另一个保持可用
-            if field == "theme":
-                self.btn_ai_theme.setEnabled(False)
-                self.btn_ai_theme.setText("生成中...")
-            elif field == "direction":
-                self.btn_ai_dir.setEnabled(False)
-                self.btn_ai_dir.setText("生成中...")
+            # 串行：润色期间两个按钮都锁死，防止并发触发 429
+            self.btn_ai_theme.setEnabled(False)
+            self.btn_ai_dir.setEnabled(False)
+            self.btn_ai_theme.setText("润色中...")
+            self.btn_ai_dir.setText("润色中...")
             self.btn_create.setEnabled(False)
-            self._status_label.setText("AI 正在生成...")
+            self._status_label.setText("AI 正在润色（思考过程见下）…")
+            # 展开流式窗并清空
+            self._stream_chunks = []
+            self._stream_view.clear()
+            self._stream_view.setMinimumHeight(140)
+            self._stream_view.setMaximumHeight(220)
         else:
             # 恢复所有按钮
             self.btn_ai_theme.setEnabled(True)
             self.btn_ai_dir.setEnabled(True)
             self.btn_create.setEnabled(True)
-            self.btn_ai_theme.setText("✨ AI 生成")
-            self.btn_ai_dir.setText("✨ AI 生成")
+            self.btn_ai_theme.setText("✨ AI 润色")
+            self.btn_ai_dir.setText("✨ AI 润色")
 
     def _pick_cover(self):
         path, _ = QFileDialog.getOpenFileName(

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from .base import BaseLLM, LLMMessage, LLMResponse
+from .base import BaseLLM, LLMMessage, LLMResponse, ThinkingMode
+from .thinking import build_thinking_body, parse_json_body
+from .client import _delta_parts
 from ..logger import get_logger
 
 logger = get_logger(__name__)
@@ -48,13 +50,30 @@ class OpenAICompatLLM(BaseLLM):
             await self.client.close()
             logger.debug("OpenAI 兼容客户端已关闭")
 
-    async def chat(self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096) -> LLMResponse:
-        resp = await self.client.chat.completions.create(
+    async def chat(
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        thinking: ThinkingMode = "auto",
+    ) -> LLMResponse:
+        create_kwargs: dict = dict(
             model=self.model,
             messages=[{"role": m.role, "content": m.content} for m in messages],
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        extra = build_thinking_body(
+            thinking,
+            model=self.model,
+            base_url=self.base_url,
+            dialect=self.extra.get("thinking_dialect"),
+            off_body=parse_json_body(self.extra.get("thinking_off_body")),
+            on_body=parse_json_body(self.extra.get("thinking_on_body")),
+        )
+        if extra:
+            create_kwargs["extra_body"] = extra
+        resp = await self.client.chat.completions.create(**create_kwargs)
         choice = resp.choices[0]
         return LLMResponse(
             content=choice.message.content or "",
@@ -63,15 +82,38 @@ class OpenAICompatLLM(BaseLLM):
         )
 
     async def stream_chat(
-        self, messages: list[LLMMessage], temperature: float = 0.7, max_tokens: int = 4096
-    ) -> AsyncIterator[str]:
-        stream = await self.client.chat.completions.create(
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        thinking: ThinkingMode = "auto",
+    ) -> AsyncIterator[tuple[str, str]]:
+        create_kwargs: dict = dict(
             model=self.model,
             messages=[{"role": m.role, "content": m.content} for m in messages],
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
         )
-        async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        extra = build_thinking_body(
+            thinking,
+            model=self.model,
+            base_url=self.base_url,
+            dialect=self.extra.get("thinking_dialect"),
+            off_body=parse_json_body(self.extra.get("thinking_off_body")),
+            on_body=parse_json_body(self.extra.get("thinking_on_body")),
+        )
+        if extra:
+            create_kwargs["extra_body"] = extra
+        stream = await self.client.chat.completions.create(**create_kwargs)
+        try:
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta:
+                    kind, text = _delta_parts(chunk.choices[0].delta)
+                    if text:
+                        yield kind, text
+        finally:
+            try:
+                await stream.close()
+            except Exception:
+                pass

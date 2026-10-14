@@ -142,26 +142,55 @@ QComboBox {{
     color: {t['fg']};
     border: 1px solid {t['border']};
     border-radius: 10px;
-    padding: 8px 14px;
+    padding: 8px 32px 8px 14px;
     font-size: 13px;
     min-height: 20px;
 }}
 QComboBox:hover {{
     border-color: {t['fg3']};
 }}
+QComboBox:focus {{
+    border-color: {t['accent']};
+}}
 QComboBox::drop-down {{
     border: none;
-    width: 24px;
+    width: 28px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+}}
+QComboBox::down-arrow {{
+    image: none;
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid {t['fg2']};
+    margin-right: 10px;
+}}
+QComboBox::down-arrow:on {{
+    border-top-color: {t['accent']};
 }}
 QComboBox QAbstractItemView {{
     background-color: {t['card']};
     color: {t['fg']};
     border: 1px solid {t['border']};
     border-radius: 10px;
-    padding: 4px;
+    padding: 6px;
     selection-background-color: {t['accent_bg']};
     selection-color: {t['accent']};
     outline: none;
+}}
+QComboBox QAbstractItemView::item {{
+    padding: 8px 12px;
+    border-radius: 6px;
+    min-height: 20px;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {t['border']};
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {t['accent_bg']};
+    color: {t['accent']};
 }}
 
 /* ──── 数字输入 ──── */
@@ -174,9 +203,10 @@ QDoubleSpinBox, QSpinBox {{
     font-size: 13px;
 }}
 
-/* ──── Tab ──── */
+/* ──── Tab（正文/规划页签） ──── */
 QTabWidget::pane {{
     border: none;
+    border-top: 1px solid {t['divider']};
     background-color: {t['bg']};
 }}
 QTabBar {{
@@ -194,10 +224,12 @@ QTabBar::tab {{
 }}
 QTabBar::tab:hover {{
     color: {t['fg']};
+    background-color: {t['border']};
 }}
 QTabBar::tab:selected {{
     color: {t['accent']};
     border-bottom: 2px solid {t['accent']};
+    background-color: {t['accent_bg']};
 }}
 
 /* ──── 状态栏 ──── */
@@ -243,8 +275,8 @@ QGroupBox {{
     background-color: {t['surface']};
     border: 1px solid {t['border']};
     border-radius: 14px;
-    margin-top: 12px;
-    padding: 24px 16px 14px 16px;
+    margin-top: 14px;
+    padding: 26px 18px 16px 18px;
     font-weight: 600;
     font-size: 13px;
 }}
@@ -255,6 +287,17 @@ QGroupBox::title {{
     color: {t['fg2']};
     font-weight: 500;
     font-size: 12px;
+}}
+
+/* ──── 表单标签 ──── */
+QFormLayout > QLabel {{
+    color: {t['fg2']};
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 12px 8px 0;
+}}
+QFormLayout {{
+    spacing: 12px;
 }}
 
 /* ──── 菜单栏 ──── */
@@ -338,5 +381,10 @@ QWidget#editorToolbar {{
 QWidget#sidebarWidget {{
     background-color: {t['surface']};
     border-right: 1px solid {t['divider']};
+}}
+
+/* ──── 三栏分区：编辑区是纸面，两侧是工具条 ──── */
+QWidget#editorPanel {{
+    background-color: {t['bg']};
 }}
 """

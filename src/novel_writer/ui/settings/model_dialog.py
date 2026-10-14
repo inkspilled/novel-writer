@@ -14,11 +14,13 @@ from PySide6.QtCore import QTimer
 
 from ..common.workers import TestConnectionWorker, FetchModelsWorker
 from ...locales import t
+from ...core.app_config import PROJECT_ROOT
 from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 
-_CONFIG_DIR = Path(__file__).resolve().parents[3] / "config"
+# 配置目录在项目根（与 core.agents 一致）；原先 parents[3] 误指到 src/
+_CONFIG_DIR = PROJECT_ROOT / "config"
 
 
 def load_default_providers() -> list[dict]:
@@ -77,11 +79,11 @@ class ModelDialog(QDialog):
         self._ctx_tokens_spin = QSpinBox()
         self._ctx_tokens_spin.setRange(4096, 200_000)
         self._ctx_tokens_spin.setSingleStep(4096)
-        self._ctx_tokens_spin.setValue(self.config.get("max_context_tokens", 120_000))
-        self._ctx_tokens_spin.setToolTip("写作用的上下文上限，留空间给输出。140K模型建议设120K")
+        self._ctx_tokens_spin.setValue(self.config.get("max_context_tokens", 48_000))
+        self._ctx_tokens_spin.setToolTip("写作用的上下文上限，留空间给输出。默认 48K；140K 模型可调到 100K+")
         ctx_layout.addWidget(self._ctx_tokens_spin)
 
-        ctx_layout.addWidget(QLabel("(140K模型建议120K，留20K给输出)"))
+        ctx_layout.addWidget(QLabel("(默认 48K；大窗口模型可上调，注意 prompt 计费)"))
         ctx_layout.addStretch()
 
         layout.addWidget(ctx_group)

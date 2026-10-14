@@ -1,8 +1,6 @@
 """应用主窗口 — 组合 app_shell 各 Mixin，自身只留骨架（状态组装/信号接线/生命周期）。"""
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter,
 )
@@ -77,6 +75,7 @@ class MainWindow(
     def _setup_ui(self):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(1)
+        splitter.setChildrenCollapsible(False)
         self.sidebar = Sidebar()
         self.editor = EditorPanel()
         self.agent_panel = AgentPanel()
@@ -84,10 +83,14 @@ class MainWindow(
         splitter.addWidget(self.sidebar)
         splitter.addWidget(self.editor)
         splitter.addWidget(self.agent_panel)
+        # 写作工具：正文是主角。侧边栏固定窄条，右栏协作区略窄
         splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 1)
-        splitter.setSizes([220, 560, 620])
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([240, 680, 480])
+        self.sidebar.setMinimumWidth(200)
+        self.sidebar.setMaximumWidth(320)
+        self.agent_panel.setMinimumWidth(340)
         self.setCentralWidget(splitter)
         self.statusBar().showMessage(t("status_ready"))
 
@@ -96,6 +99,7 @@ class MainWindow(
         self.sidebar.open_project_requested.connect(self._open_project)
         self.sidebar.chapter_add_requested.connect(self._add_chapter)
         self.agent_panel.agent_run_requested.connect(self._on_agent_run)
+        self.agent_panel.chapter_apply_requested.connect(self._on_chapter_apply)
         self.editor.content_changed.connect(self._on_content_changed)
         self.editor.save_requested.connect(self._save_project)
         self.editor.planning_save_requested.connect(self._on_planning_save)

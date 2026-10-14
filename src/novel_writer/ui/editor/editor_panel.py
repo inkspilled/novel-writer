@@ -6,11 +6,14 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QPushButton,
     QTabWidget, QStackedWidget,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QTextOption
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QFont, QTextOption, QTextBlockFormat, QTextCursor
 
 from ...locales import t
 from ...core import project_io
+from ...core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # planning/ 下的 8 个文档（按依赖顺序）
@@ -27,16 +30,26 @@ PLANNING_DOCS = [
 
 
 def _make_editor(placeholder: str = "") -> QTextEdit:
-    """创建统一风格的编辑器。"""
+    """创建统一风格的编辑器（纸面阅读：侧边留白 + 舒适行距）。"""
     edit = QTextEdit()
     edit.setPlaceholderText(placeholder)
     edit.setAcceptRichText(False)
     edit.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    edit.setLineWrapColumnOrWidth(720)  # 约 35–40 汉字/行，长文可读
+    edit.setLineWrapMode(QTextEdit.LineWrapMode.FixedPixelWidth)
     import sys
     _font = "Microsoft YaHei" if sys.platform == "win32" else "PingFang SC"
     font = QFont(_font, 16)
     font.setStyleHint(QFont.StyleHint.SansSerif)
     edit.setFont(font)
+    edit.document().setDocumentMargin(28)  # 纸面内边距
+    # 行距：QFont 无 setLineSpacing，用段落块格式（ProportionalHeight=150%）
+    # 空文档直接 setDefaultCharFormat/不 select 全文，避免 QTextCursor::setPosition out of range
+    block_fmt = QTextBlockFormat()
+    block_fmt.setLineHeight(150.0, QTextBlockFormat.ProportionalHeight.value)
+    cursor = QTextCursor(edit.document())
+    cursor.mergeBlockFormat(block_fmt)  # 只作用于当前块，不 select Document
+    edit.setTextCursor(cursor)
     return edit
 
 
@@ -48,6 +61,7 @@ class EditorPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("editorPanel")
         self._current_chapter = None  # 当前编辑的 Chapter 对象（勿用 number-1 当列表下标）
         self._project_dir: Path | None = None
         self._planning_edits: dict[str, QTextEdit] = {}
@@ -218,16 +232,8 @@ class EditorPanel(QWidget):
         edit = self._planning_edits.get(doc_name)
         return edit.toPlainText() if edit else ""
 
-    def set_planning_content(self, doc_name: str, content: str):
-        """设置指定规划文档的编辑器内容。"""
-        edit = self._planning_edits.get(doc_name)
-        if edit:
-            edit.blockSignals(True)
-            edit.setPlainText(content)
-            edit.blockSignals(False)
-            self._planning_loaded.add(doc_name)
-
     def load_chapter(self, chapter):
+        logger.info("编辑器加载章节: 第%s章 %s", getattr(chapter, "number", "?"), getattr(chapter, "title", ""))
         self._current_chapter = chapter
         self.chapter_title.setText(f"第{chapter.number}章 {chapter.title}" if hasattr(chapter, 'number') else "")
         self.content_edit.blockSignals(True)
@@ -240,20 +246,6 @@ class EditorPanel(QWidget):
 
     def get_content(self) -> str:
         return self.content_edit.toPlainText()
-
-    def set_content(self, text: str):
-        self.content_edit.setPlainText(text)
-
-    def is_planning_tab(self) -> bool:
-        """当前是否在规划文档标签页。"""
-        return self.tab_bar.currentIndex() > 0
-
-    def current_planning_name(self) -> str | None:
-        """当前选中的规划文档名称，不在规划标签时返回 None。"""
-        idx = self.tab_bar.currentIndex()
-        if idx <= 0:
-            return None
-        return PLANNING_DOCS[idx - 1][0]
 
     def retranslate(self):
         self.chapter_title.setText(t("editor_select_chapter"))

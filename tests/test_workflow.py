@@ -32,7 +32,7 @@ def agents():
             self.config = config
             self.history = []
 
-        async def run(self, user_input, context=""):
+        async def run(self, user_input, context="", thinking=None, keep_history=True):
             return LLMResponse(content="测试响应")
 
     config = AgentConfig(

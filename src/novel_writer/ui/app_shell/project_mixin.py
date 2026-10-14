@@ -165,7 +165,10 @@ class ProjectMixin:
             self.project.set_project_dir(project_dir)
         try:
             self.project.save()
-            self._show_toast(t("status_saved", self.project.title))
+            n_ch = len(self.project.chapters)
+            # 正文本来就是实时落盘的，这里说清楚「保存项目」到底写了什么
+            self._show_toast(f"已保存书目信息 · {n_ch} 章正文已是实时保存")
+            self.statusBar().showMessage(f"书目信息已保存（{n_ch} 章）", 3000)
         except Exception as e:
             self._show_toast(f"保存失败: {e}", error=True)
             logger.error("项目保存失败: %s", e)

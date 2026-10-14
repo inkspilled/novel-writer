@@ -89,7 +89,6 @@ class Exporter:
           OEBPS/chapter_N.xhtml
         """
         import zipfile
-        import html as html_mod
         from xml.sax.saxutils import escape
 
         if output_path is None:

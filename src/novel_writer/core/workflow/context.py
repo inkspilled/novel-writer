@@ -35,7 +35,8 @@ def estimate_tokens(text: str) -> int:
 
 
 # 上下文 token 预算（留空间给 system prompt + 输出）
-MAX_CONTEXT_TOKENS = 120_000  # 120K，为 140K 模型预留 20K 给输出
+# 48K：正文写作一章的规划+前文足够用；120K 会把每次调用的 prompt_tokens 顶满
+MAX_CONTEXT_TOKENS = 48_000
 
 
 def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> list[str]:

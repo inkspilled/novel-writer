@@ -1,4 +1,10 @@
-"""后台工作线程 — Agent 流式调用。"""
+"""后台工作线程 — Agent 流式调用。
+
+线程生存期（学 smt-intelligent）：自定义完成信号会在 run() 内发出，
+结果槽里清掉最后一个 Python 引用时 QThread 可能还没走完 C++ 收尾，
+GC 触发 `QThread: Destroyed while thread is still running` 直接 abort。
+因此全部 worker 挂进模块级强引用注册表，只在内建 finished 之后释放。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,12 +16,30 @@ from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 模块级强引用：防止运行中的 QThread 被 GC 析构
+_ALIVE_WORKERS: list[QThread] = []
+
+
+def _register_worker(worker: QThread) -> None:
+    """把 worker 钉在模块级列表里，finished 后再摘除 + deleteLater。"""
+    _ALIVE_WORKERS.append(worker)
+
+    def _release():
+        try:
+            _ALIVE_WORKERS.remove(worker)
+        except ValueError:
+            pass
+        worker.deleteLater()
+
+    # 用内建 finished（run() 真正返回后才发），不用自定义 completed
+    worker.finished.connect(_release)
+
 
 class AgentWorker(QThread):
     """后台线程执行 Agent 调用，支持流式输出。"""
-    chunk_received = Signal(str)  # 流式文本块
+    chunk_received = Signal(str, str)  # (kind, text)：thinking | text
     # 不用 QThread 内建的 finished（无参），自定义带载荷的完成信号
-    completed = Signal(str)  # 完成时的完整响应
+    completed = Signal(str)  # 完成时的正文（不含思考）
     error = Signal(str)
 
     def __init__(self, agent: BaseAgent, user_input: str, context: str = ""):
@@ -26,6 +50,7 @@ class AgentWorker(QThread):
         self._cancelled = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
+        _register_worker(self)
 
     def cancel(self):
         """请求取消进行中的任务。"""
@@ -38,24 +63,27 @@ class AgentWorker(QThread):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
-            full_response = ""
+            answer_parts: list[str] = []
+
             async def collect_stream():
-                nonlocal full_response
-                async for chunk in self.agent.stream_run(self.user_input, self.context):
+                async for kind, chunk in self.agent.stream_run(self.user_input, self.context):
                     if self._cancelled:
                         break
-                    full_response += chunk
-                    # 信号发射异常记录日志，不静默吞掉
+                    if kind == "text":
+                        answer_parts.append(chunk)
                     try:
-                        self.chunk_received.emit(chunk)
+                        self.chunk_received.emit(kind, chunk)
                     except RuntimeError as e:
-                        # Widget 可能已销毁，记录并退出
                         logger.debug("Signal emit failed (widget destroyed): %s", e)
                         break
-                return full_response
+                return "".join(answer_parts)
 
             self._task = self._loop.create_task(collect_stream())
-            self._loop.run_until_complete(self._task)
+            import time as _t
+            _t0 = _t.monotonic()
+            full_response = self._loop.run_until_complete(self._task)
+            logger.info("AgentWorker 完成: 耗时=%.1fs 答案=%d字 cancelled=%s",
+                        _t.monotonic() - _t0, len(full_response or ""), self._cancelled)
             if not self._cancelled:
                 self.completed.emit(full_response)
         except asyncio.CancelledError:
@@ -84,6 +112,7 @@ class TestConnectionWorker(QThread):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
+        _register_worker(self)
 
     def run(self):
         try:
@@ -118,6 +147,7 @@ class FetchModelsWorker(QThread):
         super().__init__()
         self.api_key = api_key
         self.base_url = base_url
+        _register_worker(self)
 
     def run(self):
         try:

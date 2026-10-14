@@ -40,6 +40,8 @@ class WorkflowStep:
     optional: bool = False  # 找不到匹配 Agent 时跳过
     update_planning: bool = False  # 强制覆盖 planning/ 文件（用于反哺步骤）
     parallel_ok: bool = False  # 可与相邻 parallel_ok 步骤并发执行
+    # off=关闭思考（工具类步骤省 token/提速）；on=强制开启；auto=模型默认
+    thinking: str = "auto"
 
 
 @dataclass
@@ -66,6 +68,7 @@ class WorkflowDef:
                 optional=s.get("optional", False),
                 update_planning=s.get("update_planning", False),
                 parallel_ok=s.get("parallel_ok", False),
+                thinking=s.get("thinking", "auto"),
             ))
         return cls(
             name=data.get("name", ""),
@@ -91,6 +94,7 @@ class WorkflowDef:
                     "optional": s.optional,
                     "update_planning": s.update_planning,
                     "parallel_ok": s.parallel_ok,
+                    "thinking": s.thinking,
                 }
                 for s in self.steps
             ],
@@ -100,34 +104,35 @@ class WorkflowDef:
 # ── 模板步骤（单一来源，按需组合） ──
 
 _PLANNING_STEPS = [
-    {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md"},
-    {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲。注意：必须严格按照【规划方向】中的分卷章数来规划总篇幅（如「30章→35章→35章」即100章），不要被其他数字误导。请将故事分为多个阶段（开篇铺垫、前期发展、中期推进、后期高潮、收束终章），每个阶段标注起止章节和核心剧情。大纲要足够详细，能支撑全部分卷的篇幅，避免剧情提前走完。", "input": ["planning/立意.md"], "output": "planning/大纲.md"},
-    {"id": "characters", "needs": "人物设定", "prompt": "根据大纲设计主要人物档案（性格、背景、成长弧线、关系）。", "input": ["planning/大纲.md"], "output": "planning/人物设定.md"},
-    {"id": "world", "needs": "世界观构建", "prompt": "根据大纲构建详细的世界观设定。", "input": ["planning/大纲.md", "planning/人物设定.md"], "output": "planning/世界观.md"},
-    {"id": "timeline", "needs": "故事结构", "prompt": "根据大纲设计故事时间线。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md"], "output": "planning/时间线.md"},
-    {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点和对应章节范围。主线冲突的升级节奏必须匹配立意中规划的分卷篇幅，不要压缩剧情。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/立意.md"], "output": "planning/主线.md"},
-    {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。支线数量和深度必须匹配立意中规划的分卷篇幅，不能提前把所有支线写完。", "input": ["planning/大纲.md", "planning/主线.md", "planning/立意.md"], "output": "planning/支线.md"},
-    {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。伏笔的埋设和回收要分布在整本书的各卷中，不要全部集中在前几十章。", "input": ["planning/大纲.md", "planning/主线.md", "planning/支线.md", "planning/立意.md"], "output": "planning/伏笔.md"},
+    {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md", "thinking": "off"},
+    {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲。注意：必须严格按照【规划方向】中的分卷章数来规划总篇幅（如「30章→35章→35章」即100章），不要被其他数字误导。请将故事分为多个阶段（开篇铺垫、前期发展、中期推进、后期高潮、收束终章），每个阶段标注起止章节和核心剧情。大纲要足够详细，能支撑全部分卷的篇幅，避免剧情提前走完。", "input": ["planning/立意.md"], "output": "planning/大纲.md", "thinking": "off"},
+    {"id": "characters", "needs": "人物设定", "prompt": "根据大纲设计主要人物档案（性格、背景、成长弧线、关系）。", "input": ["planning/大纲.md"], "output": "planning/人物设定.md", "thinking": "off"},
+    {"id": "world", "needs": "世界观构建", "prompt": "根据大纲构建详细的世界观设定。", "input": ["planning/大纲.md", "planning/人物设定.md"], "output": "planning/世界观.md", "thinking": "off"},
+    {"id": "timeline", "needs": "故事结构", "prompt": "根据大纲设计故事时间线。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md"], "output": "planning/时间线.md", "thinking": "off"},
+    {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点和对应章节范围。主线冲突的升级节奏必须匹配立意中规划的分卷篇幅，不要压缩剧情。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/立意.md"], "output": "planning/主线.md", "thinking": "off"},
+    {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。支线数量和深度必须匹配立意中规划的分卷篇幅，不能提前把所有支线写完。", "input": ["planning/大纲.md", "planning/主线.md", "planning/立意.md"], "output": "planning/支线.md", "thinking": "off"},
+    {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。伏笔的埋设和回收要分布在整本书的各卷中，不要全部集中在前几十章。", "input": ["planning/大纲.md", "planning/主线.md", "planning/支线.md", "planning/立意.md"], "output": "planning/伏笔.md", "thinking": "off"},
 ]
 
 _FIX_TITLES_STEP = {"id": "fix_titles", "needs": "", "prompt": "", "output": "", "optional": True}
 
 # 逐章循环步骤（章前定时 + 正文写作 + 章后定时沉淀 + 全书审校）
+# thinking: 工具/抽取类步骤 off（省 token、免长考）；创作/审稿类 auto/on
 _CYCLE_STEPS = [
-    {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True},
-    {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True},
-    {"id": "chapter", "needs": "正文写作", "prompt": "根据所有规划文档和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/时间线.md", "planning/主线.md", "planning/支线.md", "planning/伏笔.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt"},
-    {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
-    {"id": "world_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
-    {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True},
-    {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True},
-    {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。列出发现的问题和修改建议。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告_第{n}章.md", "every": 1, "optional": True},
-    {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True},
-    {"id": "update_outline", "needs": "故事结构", "prompt": "根据前{n}章的实际内容，更新故事大纲。保留原有结构，补充实际发生的剧情走向、新增的支线、调整后的节奏。输出完整的新大纲。", "input": ["planning/大纲.md", "prev_chapters"], "output": "planning/大纲.md", "every": 5, "optional": True, "update_planning": True},
-    {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 5, "optional": True, "update_planning": True},
-    {"id": "update_foreshadow", "needs": "伏笔设计", "prompt": "根据前{n}章的实际内容，更新伏笔清单。标注哪些伏笔已回收、哪些仍悬而未决、新增了哪些伏笔。保留原有清单，在末尾追加【进展更新】。", "input": ["planning/伏笔.md", "prev_chapters"], "output": "planning/伏笔.md", "every": 5, "optional": True, "update_planning": True},
-    {"id": "quality_check", "needs": "", "prompt": "", "output": "review/质量检查报告.md", "every": 1, "optional": True},
-    {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md"},
+    {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True, "thinking": "auto"},
+    {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True, "thinking": "off"},
+    {"id": "chapter", "needs": "正文写作", "prompt": "根据所有规划文档和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/时间线.md", "planning/主线.md", "planning/支线.md", "planning/伏笔.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt", "thinking": "off"},
+    {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
+    {"id": "world_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
+    {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
+    {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True, "thinking": "auto"},
+    {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。列出发现的问题和修改建议。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告_第{n}章.md", "every": 1, "optional": True, "thinking": "off"},
+    {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True, "thinking": "off"},
+    {"id": "update_outline", "needs": "故事结构", "prompt": "根据前{n}章的实际内容，更新故事大纲。保留原有结构，补充实际发生的剧情走向、新增的支线、调整后的节奏。输出完整的新大纲。", "input": ["planning/大纲.md", "prev_chapters"], "output": "planning/大纲.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
+    {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
+    {"id": "update_foreshadow", "needs": "伏笔设计", "prompt": "根据前{n}章的实际内容，更新伏笔清单。标注哪些伏笔已回收、哪些仍悬而未决、新增了哪些伏笔。保留原有清单，在末尾追加【进展更新】。", "input": ["planning/伏笔.md", "prev_chapters"], "output": "planning/伏笔.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
+    {"id": "quality_check", "needs": "", "prompt": "", "output": "review/质量检查报告.md", "every": 1, "optional": True, "thinking": "off"},
+    {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md", "thinking": "off"},
 ]
 
 

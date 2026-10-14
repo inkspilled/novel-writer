@@ -16,6 +16,8 @@ from ..memory import MemoryScratchpad
 from .builtin_steps import BUILTIN_STEP_HANDLERS, _fallback_agent
 from .constants import (
     CHAPTER_CONTENT_STEP_IDS,
+    NO_HISTORY_STEP_IDS,
+    NO_THINKING_STEP_IDS,
     PLANNING_UPDATE_STEP_PREFIX,
     POST_CHAPTER_PERIODIC_IDS,
     PRE_CHAPTER_PERIODIC_IDS,
@@ -26,6 +28,7 @@ from .context import ContextBuilder
 from .definition import WorkflowDef, WorkflowStep
 from .prompts import build_memory_sediment_prompt, build_pacing_context, build_title_constraint
 from .sediment import extract_chapter_title, sediment_chapter
+from ..json_extract import extract_json_object
 
 logger = get_logger(__name__)
 
@@ -42,7 +45,7 @@ class WorkflowRunner:
         agents: dict[str, BaseAgent],
         project_dir: Path,
         project_info: dict,
-        max_context_tokens: int = 120_000,
+        max_context_tokens: int = 48_000,
         rotate_agents: bool = False,
     ):
         self.agents = agents
@@ -281,20 +284,17 @@ class WorkflowRunner:
         active_loops = mem.get_open_loops(limit=15, current_chapter=n)
         prompt = build_memory_sediment_prompt(n, active_loops, content)
         try:
-            response = await agent.run(prompt)
+            # 沉淀是结构化抽取：关思考、不写历史，避免与本章其他工具步重复计费
+            response = await agent.run(prompt, thinking="off", keep_history=False)
         except Exception as e:
             logger.warning("第%d章 LLM 沉淀调用失败，回退正则提取: %s", n, e)
             return None
-        m = re.search(r"\{[\s\S]+\}", response.content or "")
-        if not m:
-            logger.warning("第%d章 LLM 沉淀返回非 JSON，回退正则提取", n)
+        data = extract_json_object(response.content or "")
+        if not data:
+            # 预期回退路径（正则兜底），不是故障，降为 debug 防刷屏
+            logger.debug("第%d章 LLM 沉淀返回非 JSON，回退正则提取", n)
             return None
-        try:
-            data = json.loads(m.group())
-        except json.JSONDecodeError:
-            logger.warning("第%d章 LLM 沉淀 JSON 解析失败，回退正则提取", n)
-            return None
-        return data if isinstance(data, dict) else None
+        return data
 
     async def _run_single(self, step: WorkflowStep, project: dict, n: int, progress: dict):
         # ── 内置特殊步骤（不走标准 LLM 流程） ──
@@ -349,7 +349,16 @@ class WorkflowRunner:
                     prompt += build_title_constraint(m.group(2))
 
         try:
-            response = await agent.run(prompt, context=context)
+            thinking = step.thinking if getattr(step, "thinking", "auto") != "auto" else (
+                "off" if step.id in NO_THINKING_STEP_IDS else "auto"
+            )
+            keep_history = step.id not in NO_HISTORY_STEP_IDS
+            response = await agent.run(
+                prompt,
+                context=context,
+                thinking=thinking,
+                keep_history=keep_history,
+            )
             for k, v in (response.usage or {}).items():
                 if isinstance(v, (int, float)):
                     self.total_usage[k] = int(self.total_usage.get(k, 0) + v)

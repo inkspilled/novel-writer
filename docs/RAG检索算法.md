@@ -103,6 +103,6 @@ TF_norm   = tf × (k1+1) / (tf + k1 × (1 - b + b × dl / avg_dl))
 - BM25 的 bigram+unigram 对人名/专有名词友好，但同义词（「灵石」vs「灵玉」）无法召回——语义检索启用后由向量路径补足。
 - 进程内检索器缓存（`_RETRIEVER_CACHE`）+ 磁盘持久化后，大书冷启动只需重算 df/解码向量，不需重新分块/重嵌。
 - 语义检索是单路余弦（无 rerank、无混合加权）；rerank 为后续候补。
-- `load_planning()` 存在但**上下文组装未调用**——规划文档走的是 `_rag_planning_fragments` 现场建索引（BM25）。
+- 规划文档走 `ContextBuilder._rag_planning_fragments` 现场建 BM25 索引，不进 `RAGRetriever`（章节索引与规划索引分离）。
 - `Chunk.tokens` 在 `add_chunk` 时填充；`search` 前会 `build()`（幂等）。
 - 查询侧不做停用词过滤，`第N章` 等高频词会稀释 IDF（影响有限，因 BM25 本身有 IDF）。

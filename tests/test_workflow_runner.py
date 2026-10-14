@@ -42,14 +42,15 @@ class MockAgent(BaseAgent):
         self.content = content
         self.calls: list[str] = []
 
-    async def run(self, user_input, context=""):
+    async def run(self, user_input, context="", thinking=None, keep_history=True):
         self.calls.append(user_input)
         if any(kw in user_input for kw in self.fail_keywords):
             raise RuntimeError(f"模拟 API 故障: {user_input[:20]}")
         response = LLMResponse(content=self.content, usage={"total_tokens": 10})
-        # 与 BaseAgent.run 一致：追加对话历史（历史治理测试依赖此行为）
-        self.history.append(LLMMessage(role="user", content=user_input))
-        self.history.append(LLMMessage(role="assistant", content=response.content))
+        # 与 BaseAgent.run 一致：仅 keep_history 时追加对话历史
+        if keep_history:
+            self.history.append(LLMMessage(role="user", content=user_input))
+            self.history.append(LLMMessage(role="assistant", content=response.content))
         return response
 
 

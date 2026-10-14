@@ -12,7 +12,8 @@ import threading
 import time
 from typing import AsyncIterator
 
-from .base import BaseLLM, LLMMessage, LLMResponse
+from .base import BaseLLM, LLMMessage, LLMResponse, ThinkingMode
+from .thinking import build_thinking_body, parse_json_body
 from ..logger import get_logger
 
 logger = get_logger(__name__)
@@ -27,33 +28,41 @@ def _get_retryable_errors():
     return (RateLimitError, APITimeoutError, APIConnectionError)
 
 
-# ── 全局限流器：保证两次 API 调用之间有最小间隔 ──
+# ── 全局限流器：默认不人为拖延；仅 429 后进入冷却 ──
 class _RateLimiter:
-    """异步全局限流器，所有 LLMClient 实例共享。
+    """自适应限流：正常调用零等待；收到 429 后冷却数秒。
 
-    用 threading.Lock 而非 asyncio.Lock：调用方（AgentWorker / WorkflowThread 等）
-    各自创建独立事件循环，asyncio.Lock 会绑定首次使用的 loop，跨 loop 竞争即死锁。
+    固定 min_interval 会把工作流每一步都拖慢（曾设 1.2s，串行 100 章白等 15 分钟+）。
+    用 threading.Lock：调用方各自 new_event_loop，asyncio.Lock 跨 loop 会死锁。
     """
 
-    def __init__(self, min_interval: float = 0.3):
+    def __init__(self, min_interval: float = 0.15):
         self._lock = threading.Lock()
         self._last_request_time: float = 0.0
         self._min_interval = min_interval
+        self._cooldown_until: float = 0.0
 
     async def acquire(self):
-        """等待直到距离上次请求超过 min_interval 秒。"""
+        """等到可以发请求：正常只隔 min_interval；限流冷却中则等到冷却结束。"""
         while True:
             with self._lock:
                 now = time.monotonic()
-                elapsed = now - self._last_request_time
-                if elapsed >= self._min_interval:
+                start = max(self._last_request_time, self._cooldown_until)
+                wait = start + self._min_interval - now
+                if wait <= 0:
                     self._last_request_time = now
                     return
-                wait = self._min_interval - elapsed
             logger.debug("限流器：等待 %.2f 秒", wait)
-            await asyncio.sleep(wait)
+            await asyncio.sleep(min(wait, 2.0))
 
-_global_limiter = _RateLimiter(min_interval=0.3)
+    def penalize(self, seconds: float = 6.0):
+        """429 后进入冷却，避免连续撞限流。"""
+        with self._lock:
+            self._cooldown_until = max(self._cooldown_until, time.monotonic() + seconds)
+        logger.warning("触发限流冷却 %.1f 秒", seconds)
+
+
+_global_limiter = _RateLimiter(min_interval=0.15)
 
 # N-01 修复：使用模块级缓存实现真正的单次懒加载
 _async_openai_cls = None
@@ -66,6 +75,44 @@ def _get_async_openai():
         from openai import AsyncOpenAI
         _async_openai_cls = AsyncOpenAI
     return _async_openai_cls
+
+
+def _is_invalid_request(e: Exception) -> bool:
+    """是否为参数不被接受（可去掉思考字段重试）。"""
+    name = type(e).__name__
+    if name in ("BadRequestError", "UnprocessableEntityError", "InvalidRequestError"):
+        return True
+    text = str(e).lower()
+    return any(s in text for s in ("extra_body", "enable_thinking", "reasoning_effort", "thinking", "unknown field", "unrecognized"))
+
+
+def _delta_parts(delta) -> tuple[str, str]:
+    """从流式/非流式 delta 提取 (kind, text)。
+
+    content 是正式回答；reasoning_content/reasoning 是思考过程。
+    不包任何标签，由 UI 按 kind 着色——标签既脏 UI 又浪费 token。
+    """
+    content = getattr(delta, "content", None) or ""
+    if content:
+        return "text", content
+    for attr in ("reasoning_content", "reasoning"):
+        r = getattr(delta, attr, None)
+        if r:
+            return "thinking", r
+    return "text", ""
+
+
+def _message_parts(message) -> tuple[str, str]:
+    """非流式：拆 (thinking, text)。只有思考无正文时，思考升格为正文。"""
+    content = getattr(message, "content", None) or ""
+    thinking = (
+        getattr(message, "reasoning_content", None)
+        or getattr(message, "reasoning", None)
+        or ""
+    )
+    if content:
+        return thinking, content
+    return "", thinking
 
 
 class LLMClient(BaseLLM):
@@ -81,6 +128,17 @@ class LLMClient(BaseLLM):
         self._bound_loop: asyncio.AbstractEventLoop | None = None
         self.client = self._build_client()
         logger.info("LLM 客户端初始化: model=%s, base_url=%s", model, base_url)
+
+    def _thinking_body(self, thinking: ThinkingMode) -> dict:
+        """按模型方言构造思考字段；支持配置覆盖。"""
+        return build_thinking_body(
+            thinking,
+            model=self.model,
+            base_url=self.base_url,
+            dialect=self.extra.get("thinking_dialect"),
+            off_body=parse_json_body(self.extra.get("thinking_off_body")),
+            on_body=parse_json_body(self.extra.get("thinking_on_body")),
+        )
 
     def _build_client(self):
         AsyncOpenAI = _get_async_openai()
@@ -141,23 +199,33 @@ class LLMClient(BaseLLM):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         max_retries: int = 3,
+        thinking: ThinkingMode = "auto",
     ) -> LLMResponse:
         self._sync_loop()
         last_exc: Exception | None = None
+        extra = self._thinking_body(thinking)
         for attempt in range(max_retries + 1):
             try:
                 await _global_limiter.acquire()
-                resp = await self.client.chat.completions.create(
+                create_kwargs: dict = dict(
                     model=self.model,
                     messages=[{"role": m.role, "content": m.content} for m in messages],
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+                if extra:
+                    create_kwargs["extra_body"] = extra
+                try:
+                    resp = await self.client.chat.completions.create(**create_kwargs)
+                except Exception as e:
+                    # 思考字段不被该 API 认可时降级重试一次（不带 extra_body）
+                    if extra and attempt < max_retries and _is_invalid_request(e):
+                        logger.warning("思考开关被 %s 拒绝，去掉后重试: %s", self.base_url, e)
+                        extra = {}
+                        continue
+                    raise
                 choice = resp.choices[0]
-                content = choice.message.content or ""
-                # content 为空时回退到 reasoning（部分模型将回答放在 reasoning 字段）
-                if not content and hasattr(choice.message, 'reasoning') and choice.message.reasoning:
-                    content = choice.message.reasoning
+                _think, content = _message_parts(choice.message)
                 return LLMResponse(
                     content=content,
                     model=resp.model,
@@ -176,6 +244,7 @@ class LLMClient(BaseLLM):
                 from openai import RateLimitError
                 if isinstance(e, RateLimitError):
                     base_wait = max(base_wait + attempt * 2, 8)
+                    _global_limiter.penalize(base_wait)  # 冷却，别再怼
                 wait = base_wait + random.uniform(0, 1)
                 logger.warning("LLM 调用遇到可重试错误 (%s)，第 %d 次重试，等待 %.1f 秒...", e, attempt + 1, wait)
                 await asyncio.sleep(wait)
@@ -187,33 +256,50 @@ class LLMClient(BaseLLM):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         max_retries: int = 3,
+        thinking: ThinkingMode = "auto",
     ) -> AsyncIterator[str]:
         self._sync_loop()
         last_exc: Exception | None = None
+        extra = self._thinking_body(thinking)
         for attempt in range(max_retries + 1):
             yielded_any = False
             try:
                 await _global_limiter.acquire()
-                stream = await self.client.chat.completions.create(
+                create_kwargs: dict = dict(
                     model=self.model,
                     messages=[{"role": m.role, "content": m.content} for m in messages],
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=True,
                 )
-                async for chunk in stream:
-                    try:
-                        if chunk.choices and chunk.choices[0].delta:
-                            delta = chunk.choices[0].delta
-                            content = delta.content or ""
-                            if not content and hasattr(delta, 'reasoning') and delta.reasoning:
-                                content = delta.reasoning
-                            if content:
-                                yielded_any = True
-                                yield content
-                    except (AttributeError, IndexError):
-                        logger.debug("跳过空的流式响应 chunk")
+                if extra:
+                    create_kwargs["extra_body"] = extra
+                try:
+                    stream = await self.client.chat.completions.create(**create_kwargs)
+                except Exception as e:
+                    if extra and not yielded_any and _is_invalid_request(e):
+                        logger.warning("思考开关被 %s 拒绝（流式），去掉后重试: %s", self.base_url, e)
+                        extra = {}
                         continue
+                    raise
+                try:
+                    async for chunk in stream:
+                        try:
+                            if chunk.choices and chunk.choices[0].delta:
+                                kind, content = _delta_parts(chunk.choices[0].delta)
+                                if content:
+                                    yielded_any = True
+                                    yield kind, content
+                        except (AttributeError, IndexError):
+                            logger.debug("跳过空的流式响应 chunk")
+                            continue
+                finally:
+                    # 必须 await 关流：openai AsyncStream.close() 是协程，
+                    # 不 await 会留下 Response.aiter_bytes 幽灵 aclose
+                    try:
+                        await stream.close()
+                    except Exception as e:
+                        logger.debug("关闭流式连接异常（忽略）: %s", e)
                 return  # 流式正常结束
             except _get_retryable_errors() as e:
                 last_exc = e
@@ -228,6 +314,7 @@ class LLMClient(BaseLLM):
                 from openai import RateLimitError
                 if isinstance(e, RateLimitError):
                     base_wait = max(base_wait + attempt * 2, 8)
+                    _global_limiter.penalize(base_wait)  # 冷却，别再怼
                 wait = base_wait + random.uniform(0, 1)
                 logger.warning("流式 LLM 调用遇到可重试错误 (%s)，第 %d 次重试，等待 %.1f 秒...", e, attempt + 1, wait)
                 await asyncio.sleep(wait)
