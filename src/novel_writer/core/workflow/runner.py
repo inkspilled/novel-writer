@@ -534,10 +534,11 @@ class WorkflowRunner:
                     and getattr(agent.llm, "supports_content_stream", True)):
                 # 正文流式：边出边进编辑器；此分支不挂工具，换取实时可见
                 parts: list[str] = []
-                # 有些模型 thinking=off 时流式只推 reasoning、不推正文；正文流式用 auto 拿 text
-                stream_thinking = "auto" if thinking == "off" else thinking
+                # 思考会先占用输出预算：正文流式至少给 8192，避免 reasoning 吃完后没有 text
+                stream_limit = max(int(step.max_tokens or 0), 8192)
                 async for kind, chunk in agent.stream_run(
-                    prompt, context=context, thinking=stream_thinking, keep_history=keep_history,
+                    prompt, context=context, thinking=thinking, keep_history=keep_history,
+                    max_tokens=stream_limit,
                 ):
                     if kind == "text" and chunk:
                         parts.append(chunk)

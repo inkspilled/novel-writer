@@ -194,13 +194,15 @@ class BaseAgent(ABC):
         context: str = "",
         thinking: ThinkingMode | None = None,
         keep_history: bool = True,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         """流式执行，逐块返回 (kind, text)。kind: thinking | text。"""
         messages = self._build_messages(user_input, context)
         mode: ThinkingMode = thinking if thinking is not None else self.config.thinking
         answer_parts: list[str] = []
+        limit = self.config.max_tokens if max_tokens is None else max_tokens
         async for kind, chunk in self.llm.stream_chat(
-            messages, self.config.temperature, self.config.max_tokens, thinking=mode
+            messages, self.config.temperature, limit, thinking=mode
         ):
             if kind == "text":
                 answer_parts.append(chunk)

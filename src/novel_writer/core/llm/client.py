@@ -214,11 +214,9 @@ class LLMClient(BaseLLM):
         super().__init__(model, api_key, base_url, **kwargs)
         self._bound_loop: asyncio.AbstractEventLoop | None = None
         self.client = self._build_client()
-        name = (model or "").lower()
-        url = (base_url or "").lower()
-        # MiMo 的流式只推 reasoning_content，正文要到非流式 final 才有；
-        # 工作流正文若强行流式会拿到空内容，因此标记为不支持正文流式。
-        self.supports_content_stream = not ("mimo" in name or "milai.com" in url)
+        # 所有 OpenAI 兼容实现都可能有 reasoning + content 两种 delta。
+        # 是否真的流正文由 max_tokens 决定：思考会先吃掉配额，正文步要给足预算。
+        self.supports_content_stream = True
         logger.info("LLM 客户端初始化: model=%s, base_url=%s, stream_text=%s",
                     model, base_url, self.supports_content_stream)
 
