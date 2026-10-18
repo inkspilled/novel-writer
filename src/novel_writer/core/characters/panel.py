@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -108,9 +109,16 @@ async def run_character_panel(
     if not cast:
         return None
     builder = CharacterViewBuilder(project_dir, registry=reg)
+    # 多角色提案彼此独立：并行 fan-out，导演再串行 fan-in
+    results = await asyncio.gather(
+        *[_propose(project_dir, chapter, rec, base_agent, builder) for rec in cast],
+        return_exceptions=True,
+    )
     proposals: list[dict] = []
-    for rec in cast:
-        data = await _propose(project_dir, chapter, rec, base_agent, builder)
+    for rec, data in zip(cast, results):
+        if isinstance(data, Exception):
+            logger.warning("角色 %s 提案异常: %s", rec.name, data)
+            continue
         if data:
             proposals.append(data)
             out = project_dir / "sim_cache" / "pov" / rec.id / f"sim_{chapter}.json"

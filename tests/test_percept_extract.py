@@ -127,3 +127,16 @@ def test_context_injects_pov_proposals(tmp_path: Path):
     )
     assert "角色当前意图" in ctx
     assert "查清符文来历" in ctx
+
+
+def test_percept_extract_touches_last_seen(tmp_path: Path):
+    reg = CharacterRegistry(tmp_path)
+    reg.create("林牧", chapter=0, tier=CharacterTier.CORE)
+    chapters = tmp_path / "chapters"; chapters.mkdir()
+    (chapters / "1_开端.txt").write_text("# 第1章\n林牧醒来。", encoding="utf-8")
+    agent = FakeAgent({"scene": "药圃", "events": [{
+        "actor": "林牧", "observable": "林牧醒来", "known_by": ["林牧"],
+    }]})
+    asyncio.run(bs._run_percept_extract(FakeRunner(tmp_path, agent),
+                                        WorkflowStep(id="percept_extract", needs="剧情审查"), 1))
+    assert CharacterRegistry(tmp_path).get("林牧").last_seen == 1

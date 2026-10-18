@@ -565,6 +565,15 @@ async def _run_percept_extract(runner: "WorkflowRunner", step: "WorkflowStep", n
             runner.project_dir, n, project_io.read_md(chapter_path), agent,
             registry=registry,
         )
+        if events:
+            touched = False
+            for event in events:
+                for name in {event.actor, *event.known_by}:
+                    if name and registry.get(name):
+                        registry.touch(name, n)
+                        touched = True
+            if touched:
+                registry.save()
         msg = f"第{n}章感知事件 {len(events)} 条"
         logger.info(msg)
         if runner.on_step_end:

@@ -156,7 +156,7 @@ print(view.text)
 
 每章写作前，仅对显式 `auto_sim` 的角色：
 
-1. 选角（最多 4 人，`simulatable` 优先）；
+1. 选角（最多 4 人，`simulatable` 优先），提案并行 fan-out；
 2. 每个角色用隔离 `CharacterView` 写提案（intent/action/dialogue/knowledge_used）；
 3. 裁判用 `validate_knowledge_used` 拒绝引用视图外事件；
 4. 导演按 drama/consistency/surprise 评分，选/合并一个走向；
