@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QProgressBar, QTextEdit,
+    QProgressBar, QTextEdit, QSizePolicy,
 )
 from PySide6.QtCore import Signal
 
@@ -78,6 +78,7 @@ class WorkflowMiniBar(QWidget):
         # 执行日志（默认隐藏）
         self._log_area = QTextEdit()
         self._log_area.setReadOnly(True)
+        self._log_area.setPlaceholderText("工作流日志")
         self._log_area.setMinimumHeight(80)
         self._log_area.setMaximumHeight(180)
         self._log_area.setStyleSheet(
@@ -109,6 +110,20 @@ class WorkflowMiniBar(QWidget):
 
     def set_has_workflow(self, has: bool):
         self._btn_start.setEnabled(has)
+
+    def set_fill_available(self, fill: bool):
+        """聊天折叠时让日志区吃掉剩余高度；展开时恢复 160px 上限。"""
+        self._log_area.setMaximumHeight(16777215 if fill else 180)
+        self.setMaximumHeight(16777215 if fill else 160)
+        self._log_area.setVisible(True if fill else self._log_expanded)
+        self._log_area.setSizePolicy(
+            QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
+        )
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
+        )
 
     def set_usage(self, usage: dict | None):
         usage = usage or {}

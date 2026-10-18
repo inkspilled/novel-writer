@@ -118,6 +118,7 @@ class AgentPanel(QWidget):
         """)
         self.btn_clear.clicked.connect(self._clear_current_chat)
         header_layout.addWidget(self.btn_clear)
+        self._header = header
         layout.addWidget(header)
 
         # ── 未打开项目提示 ──
@@ -231,6 +232,11 @@ class AgentPanel(QWidget):
         self._project_loaded = False
         self._chat_locked = False   # 工作流执行中禁止自由对话
         self._working_active = False  # 单次对话生成中
+        self._root_layout = layout
+        # header 放在工作流日志上方：折叠时日志能吃掉下面整块空间
+        hi = layout.indexOf(self._header)
+        layout.removeWidget(self.workflow_bar)
+        layout.insertWidget(hi + 1, self.workflow_bar)
         self._set_chat_expanded(False)
 
     def _set_chat_expanded(self, expanded: bool):
@@ -245,7 +251,9 @@ class AgentPanel(QWidget):
         self._input_area.setVisible(self._chat_expanded)
         self._quick_bar.setVisible(self._chat_expanded and bool(self._quick_buttons))
         self._loading_label.setVisible(self._chat_expanded and self._working_active)
-        self._collapsed_spacer.setVisible(not self._chat_expanded)
+        self.workflow_bar.set_fill_available(not self._chat_expanded)
+        self._root_layout.setStretchFactor(self.workflow_bar, 0 if self._chat_expanded else 1)
+        self._collapsed_spacer.setVisible(False)
         if self._chat_expanded:
             self._update_empty_hint()
             QTimer.singleShot(0, self._scroll_chat_to_bottom)

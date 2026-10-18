@@ -42,11 +42,12 @@ class AgentWorker(QThread):
     completed = Signal(str)  # 完成时的正文（不含思考）
     error = Signal(str)
 
-    def __init__(self, agent: BaseAgent, user_input: str, context: str = ""):
+    def __init__(self, agent: BaseAgent, user_input: str, context: str = "", toolkit=None):
         super().__init__()
         self.agent = agent
         self.user_input = user_input
         self.context = context
+        self.toolkit = toolkit
         self._cancelled = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
@@ -64,6 +65,21 @@ class AgentWorker(QThread):
         asyncio.set_event_loop(self._loop)
         try:
             answer_parts: list[str] = []
+
+            if self.toolkit is not None:
+                async def run_with_tools():
+                    resp = await self.agent.run_with_tools(
+                        self.toolkit, self.user_input, context=self.context,
+                        thinking="auto", keep_history=True,
+                    )
+                    return resp.content or ""
+
+                self._task = self._loop.create_task(run_with_tools())
+                full_response = self._loop.run_until_complete(self._task)
+                if not self._cancelled and full_response:
+                    self.chunk_received.emit("text", full_response)
+                    self.completed.emit(full_response)
+                return
 
             async def collect_stream():
                 async for kind, chunk in self.agent.stream_run(self.user_input, self.context):

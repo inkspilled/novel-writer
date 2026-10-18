@@ -29,7 +29,24 @@ class ChatMixin:
         context = self._build_context(agent_name)
         logger.debug("context_len=%d, context_preview=%r", len(context), context[:200])
         self.agent_panel.set_working(True, agent_name)
-        self._worker = AgentWorker(agent, user_input, context)
+        toolkit = None
+        if self.project.project_dir:
+            try:
+                from ...core.agents.tools import NovelToolkit
+                chapter_n = (
+                    self._parse_target_chapter(user_input)
+                    or getattr(getattr(self.editor, "_current_chapter", None), "number", 0)
+                    or len(self.project.chapters) + 1
+                )
+                toolkit = NovelToolkit(
+                    self.project.project_dir,
+                    {"title": self.project.title, "genre": self.project.genre,
+                     "target_chapters": self.project.target_chapters},
+                    chapter_n,
+                ).build(None)
+            except Exception as e:
+                logger.warning("自由对话工具集创建失败（降级纯文本）: %s", e)
+        self._worker = AgentWorker(agent, user_input, context, toolkit=toolkit)
         self._worker.chunk_received.connect(partial(self._on_agent_stream, agent_name))
         self._worker.completed.connect(partial(self._on_agent_finished, agent_name))
         self._worker.error.connect(self._on_agent_error)
