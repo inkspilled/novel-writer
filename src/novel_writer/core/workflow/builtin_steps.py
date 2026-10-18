@@ -194,6 +194,13 @@ async def _run_world_state_update(runner: "WorkflowRunner", step: "WorkflowStep"
             # 注入章节号到 timeline
             for ev in update.get("timeline", []):
                 ev["chapter"] = n
+            compact = gs.compact_update(update, chapter=n)
+            if not compact:
+                logger.info("第%d章世界状态无实际变化，跳过正典写入", n)
+                if runner.on_step_end:
+                    runner.on_step_end(step.id, n, agent.title, "世界状态无变化")
+                return
+            update = compact
             # 先入正典（可重放），再更新快照
             try:
                 CanonLog(runner.project_dir).append(CanonEvent(

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -302,6 +303,122 @@ class WorldState:
 
     # ── LLM 结构化更新 ──
 
+    def compact_update(self, update_json: dict, chapter: int = 0,
+                       max_timeline: int = 3) -> dict:
+        """把 LLM 的“全量快照”压成最小 diff，写正典前调用。
+
+        - 角色：只保留变化字段；inventory 改成 inventory_add/remove
+        - 物品：已存在的 new 丢弃；give/remove/move 只保留实际变化
+        - 地点：与当前一致的丢弃
+        - timeline：去重 + 截断，避免与感知事件逐段复述
+        """
+        if not isinstance(update_json, dict):
+            return {}
+        u = copy.deepcopy(update_json)
+        u["_chapter"] = int(chapter or u.get("_chapter") or 0)
+
+        chars = u.get("characters")
+        if isinstance(chars, dict):
+            for name in list(chars):
+                delta = chars[name]
+                if not isinstance(delta, dict):
+                    chars.pop(name); continue
+                cur = self.characters.get(name)
+                if not isinstance(cur, dict):
+                    continue  # 新角色保留完整档案
+                for field_name in list(delta):
+                    value = delta[field_name]
+                    if field_name == "inventory":
+                        old = cur.get("inventory") or []
+                        new = value if isinstance(value, list) else []
+                        if old == new:
+                            delta.pop(field_name)
+                            continue
+                        old_names = {str(i.get("name")) for i in old if isinstance(i, dict)}
+                        new_names = {str(i.get("name")) for i in new if isinstance(i, dict)}
+                        added = [i for i in new if isinstance(i, dict) and str(i.get("name")) not in old_names]
+                        removed = [n for n in old_names if n and n not in new_names]
+                        if added:
+                            delta["inventory_add"] = added
+                        if removed:
+                            delta["inventory_remove"] = removed
+                        delta.pop(field_name)
+                    elif cur.get(field_name) == value:
+                        delta.pop(field_name)
+                if not delta:
+                    chars.pop(name)
+            if not chars:
+                u.pop("characters")
+
+        items = u.get("items")
+        if isinstance(items, dict):
+            for key in ("new", "give", "remove", "move"):
+                ops = items.get(key)
+                if not isinstance(ops, list):
+                    continue
+                kept = []
+                for op in ops:
+                    if not isinstance(op, dict):
+                        continue
+                    if key == "new":
+                        name = str(op.get("name") or "")
+                        if not name or name in self.items_catalog:
+                            continue
+                    elif key == "give":
+                        ch = self.characters.get(str(op.get("character") or "")) or {}
+                        inv = ch.get("inventory") or []
+                        if any(isinstance(i, dict) and i.get("name") == op.get("item") for i in inv):
+                            continue
+                    elif key == "remove":
+                        ch = self.characters.get(str(op.get("character") or "")) or {}
+                        inv = ch.get("inventory") or []
+                        if not any(isinstance(i, dict) and i.get("name") == op.get("item") for i in inv):
+                            continue
+                    elif key == "move":
+                        item = self.items_catalog.get(str(op.get("item") or "")) or {}
+                        if item.get("location") == op.get("location") and item.get("holder") == op.get("holder"):
+                            continue
+                    kept.append(op)
+                if kept:
+                    items[key] = kept
+                else:
+                    items.pop(key, None)
+            if not items:
+                u.pop("items")
+
+        locs = u.get("locations")
+        if isinstance(locs, dict):
+            for name in list(locs):
+                if self.locations.get(name) == locs[name]:
+                    locs.pop(name)
+            if not locs:
+                u.pop("locations")
+
+        timeline = u.get("timeline")
+        if isinstance(timeline, list):
+            existing = {str(e.get("event")) for e in self.timeline if isinstance(e, dict)}
+            seen = set()
+            kept = []
+            for ev in timeline:
+                if not isinstance(ev, dict) or not ev.get("event"):
+                    continue
+                text = str(ev["event"])
+                if text in seen or text in existing:
+                    continue
+                seen.add(text); kept.append(ev)
+                if len(kept) >= max_timeline:
+                    break
+            if kept:
+                u["timeline"] = kept
+            else:
+                u.pop("timeline", None)
+
+        if u.get("date") == self.world.get("current_date"):
+            u.pop("date", None)
+        if set(u.keys()) <= {"_chapter"}:
+            return {}
+        return u
+
     def apply_llm_update(self, update_json: dict, chapter: int = 0) -> list[str]:
         """应用 LLM 返回的状态更新 JSON。
 
@@ -336,6 +453,18 @@ class WorldState:
                     continue
                 old_loc = str((self.characters.get(name) or {}).get("location") or "")
                 if name in self.characters:
+                    delta = dict(updates)
+                    add = delta.pop("inventory_add", None) or []
+                    rem = delta.pop("inventory_remove", None) or []
+                    if add or rem:
+                        inv = self.characters[name].setdefault("inventory", [])
+                        rem_names = {str(x) for x in rem}
+                        inv[:] = [i for i in inv if not (isinstance(i, dict) and str(i.get("name")) in rem_names)]
+                        have = {str(i.get("name")) for i in inv if isinstance(i, dict)}
+                        for item in add:
+                            if isinstance(item, dict) and str(item.get("name")) not in have:
+                                inv.append(item)
+                        updates = delta
                     self.update_character(name, updates)
                     logs.append(f"更新角色 {name}")
                 else:

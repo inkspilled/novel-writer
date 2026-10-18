@@ -18,7 +18,7 @@ from .events import CanonEvent, CanonLog
 
 logger = get_logger(__name__)
 
-PERCEPT_MAX_EVENTS = 12
+PERCEPT_MAX_EVENTS = 8
 _ALLOWED_TYPES = {"action", "dialogue", "reveal", "death", "state_change", "belief"}
 _ALLOWED_VIS = {"private", "participants", "public", "world"}
 
@@ -52,7 +52,8 @@ def build_percept_prompt(chapter_text: str, names: list[str], chapter: int) -> s
 3. known_by 只能列名单中的角色；不在场的人不要写进去。
 4. 死亡、重伤、身份揭露、关键承诺/威胁，单独成条。
 5. 每章最多 {PERCEPT_MAX_EVENTS} 条；没有可抽取事件时输出空 events 数组。
-6. 不要输出 Markdown 代码块以外的解释。
+6. 不要逐句记录走路、站立、转身、看、坐下等无信息动作；同类动作合并，只保留改变关系/位置/认知/资源的动作。
+7. 不要输出 Markdown 代码块以外的解释。
 
 【正文】
 {chapter_text[:12000]}
@@ -95,6 +96,7 @@ def apply_percept_payload(
 
     canon = CanonLog(project_dir)
     written: list[CanonEvent] = []
+    seen: set[tuple] = set()
     for raw in raw_events[:PERCEPT_MAX_EVENTS]:
         if not isinstance(raw, dict):
             continue
@@ -117,6 +119,10 @@ def apply_percept_payload(
         event_type = str(raw.get("type") or "action")
         if event_type not in _ALLOWED_TYPES:
             event_type = "action"
+        sig = (actor, event_type, observable, hidden)
+        if sig in seen:
+            continue
+        seen.add(sig)
         written.append(canon.append(CanonEvent(
             chapter=chapter,
             scene=scene,

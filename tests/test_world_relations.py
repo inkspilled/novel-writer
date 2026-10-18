@@ -52,3 +52,20 @@ def test_location_page_shows_ledger(tmp_path):
     text = page.location_page.log.toPlainText()
     assert "林牧" in text and "离开" in text
     page.close()
+
+
+def test_compact_world_update_keeps_only_diff(tmp_path: Path):
+    gs = WorldState(tmp_path); gs.load()
+    gs.add_character("顾言", {"location": "抱朴院", "inventory": [{"name": "锈铁片"}]})
+    same = gs.compact_update({"characters": {"顾言": {
+        "location": "抱朴院", "inventory": [{"name": "锈铁片"}],
+    }}}, chapter=2)
+    assert same == {}
+
+    diff = gs.compact_update({"characters": {"顾言": {
+        "location": "执事堂",
+        "inventory": [{"name": "锈铁片"}, {"name": "申辩状"}],
+    }}}, chapter=2)
+    assert diff["characters"]["顾言"]["location"] == "执事堂"
+    assert diff["characters"]["顾言"]["inventory_add"] == [{"name": "申辩状"}]
+    assert "inventory" not in diff["characters"]["顾言"]

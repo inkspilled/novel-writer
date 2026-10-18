@@ -51,6 +51,14 @@ class CanonEvent:
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
+def _content_key(event: CanonEvent) -> str:
+    """事件内容指纹（不含 id/prev_hash），用于 append 时跳过完全重复。"""
+    data = event.to_dict()
+    data.pop("id", None)
+    data.pop("prev_hash", None)
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
 def _event_hash(event: CanonEvent) -> str:
     payload = event.to_dict()
     payload.pop("id", None)
@@ -165,6 +173,13 @@ class CanonLog:
         ev = event if isinstance(event, CanonEvent) else CanonEvent.from_dict(event)
         if ev.chapter < 0:
             raise ValueError("chapter 不能为负")
+        key = _content_key(ev)
+        for existing in reversed(self._events):
+            if existing.chapter != ev.chapter:
+                continue
+            if _content_key(existing) == key:
+                logger.debug("跳过重复正典事件: 第%d章 %s", ev.chapter, ev.type)
+                return existing
         ev.prev_hash = self._events[-1].id if self._events else ""
         ev.id = ev.id or f"evt_{_event_hash(ev)}"
         if any(e.id == ev.id for e in self._events):
