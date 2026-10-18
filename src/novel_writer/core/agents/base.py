@@ -123,6 +123,29 @@ class BaseAgent(ABC):
             self.name, mode, limit, keep_history, len(user_input), len(self.history),
         )
         response = await self.llm.chat(messages, self.config.temperature, limit, thinking=mode)
+        # 长文档步骤（大纲/人物/世界观）给到 8192 仍可能被截断：
+        # finish_reason=length 时自动续写，避免把半句话写进规划文档。
+        if (limit >= 8192 and response.finish_reason == "length"
+                and response.content and not response.tool_calls):
+            for round_no in range(2):
+                messages = messages + [
+                    LLMMessage(role="assistant", content=response.content),
+                    LLMMessage(role="user",
+                               content="继续输出未完成的部分，紧接上文，不重复、不解释、不要重新开头。"),
+                ]
+                more = await self.llm.chat(
+                    messages, self.config.temperature, limit, thinking=mode,
+                )
+                extra = more.content or ""
+                if not extra:
+                    break
+                response.content += extra
+                for k, v in (more.usage or {}).items():
+                    response.usage[k] = int(response.usage.get(k, 0)) + int(v)
+                logger.info("长文档自动续写 +%d 字（第%d次），finish=%s",
+                            len(extra), round_no + 1, more.finish_reason)
+                if more.finish_reason != "length":
+                    break
         self._record_usage(response.usage)
         elapsed = _time.monotonic() - t0
         logger.info(

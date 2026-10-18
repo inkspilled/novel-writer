@@ -19,21 +19,21 @@ from src.novel_writer.core.workflow import (
 
 EXPECTED_DEFAULT_IDS = [
     "ideation", "outline", "characters", "world", "timeline",
-    "main_plot", "sub_plot", "foreshadow", "chapter_outline", "fix_titles",
+    "main_plot", "sub_plot", "foreshadow", "fix_titles",
     "inspiration", "sim", "character_panel", "chapter", "chapter_summary", "world_state_update",
     "toc", "polish", "percept_extract", "seal_chapter", "offscreen_tick", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel",
-    "quality_check", "review",
+    "quality_check", "review", "chapter_outline",
 ]
 
 EXPECTED_CONTINUE_IDS = [
-    "fix_titles", "chapter_outline",
+    "fix_titles",
     "inspiration", "sim", "character_panel", "chapter", "chapter_summary", "world_state_update",
     "toc", "polish", "percept_extract", "seal_chapter", "offscreen_tick", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel",
-    "quality_check", "review",
+    "quality_check", "review", "chapter_outline",
 ]
 
 EXPECTED_VALIDATE_IDS = ["fix_titles", "toc", "review", "proofread"]
@@ -57,9 +57,10 @@ class TestTemplateEquivalence:
     def test_planning_step_order(self):
         assert [s["id"] for s in PLANNING_WORKFLOW["steps"]] == EXPECTED_PLANNING_IDS
 
-    def test_planning_is_prefix_of_default(self):
+    def test_planning_core_is_prefix_of_default(self):
         default_ids = [s["id"] for s in DEFAULT_WORKFLOW["steps"]]
-        assert EXPECTED_PLANNING_IDS == default_ids[:len(EXPECTED_PLANNING_IDS)]
+        core = EXPECTED_PLANNING_IDS[:-1]  # 细纲已移到文末
+        assert core == default_ids[:len(core)]
 
     def test_continue_only_reuses_chapter_outline(self):
         """续写不重跑规划链，只允许补一份缺失的章节细纲。"""

@@ -12,6 +12,7 @@ from typing import Callable, Iterator
 from .. import project_io
 from ..agents.base import BaseAgent
 from ..logger import get_logger
+from ..text_clean import clean_model_text
 from ..memory import MemoryScratchpad
 from .builtin_steps import BUILTIN_STEP_HANDLERS, _fallback_agent
 from .constants import (
@@ -546,12 +547,12 @@ class WorkflowRunner:
                     on_event=_on_tool,
                 )
             else:
-                response = await agent.run(
-                    prompt,
-                    context=context,
-                    thinking=thinking,
-                    keep_history=keep_history,
+                run_kwargs = dict(
+                    context=context, thinking=thinking, keep_history=keep_history,
                 )
+                if step.max_tokens:
+                    run_kwargs["max_tokens"] = step.max_tokens
+                response = await agent.run(prompt, **run_kwargs)
             # usage 由 BaseAgent.usage_sink 汇总（含内置步骤与工具循环）
             logger.info("步骤完成: %s (第%d章)", step.id, n)
         except Exception as e:
@@ -559,6 +560,17 @@ class WorkflowRunner:
             if self.on_error:
                 self.on_error(step.id, str(e))
             raise
+
+        original = response.content or ""
+        cleaned = clean_model_text(original, step.id)
+        if cleaned != original:
+            logger.warning("步骤 %s 剥离模型思考前缀 %d 字符", step.id, len(original) - len(cleaned))
+            response.content = cleaned
+        if not cleaned.strip():
+            logger.error("步骤 %s 返回空内容（可能只有思考过程）", step.id)
+            if self.on_error:
+                self.on_error(step.id, "模型只返回了思考过程，没有正文")
+            raise RuntimeError("模型只返回了思考过程，没有可写正文")
 
         output = self._resolve_output(step, project, n, response.content)
 

@@ -253,13 +253,14 @@ def test_workflow_step_parses_runtime_fields():
     wf = WorkflowDef.from_dict({"steps": [{
         "id": "chapter", "tools": ["read_planning"], "tool_rounds": 3,
         "skills": ["dialogue"], "retry": 2, "retry_delay": 1.5,
-        "timeout": 60, "phase": "写作", "depends_on": ["outline"],
+        "timeout": 60, "max_tokens": 8192, "phase": "写作", "depends_on": ["outline"],
     }]})
     step = wf.steps[0]
     assert step.tools == ["read_planning"]
     assert step.tool_rounds == 3
     assert step.skills == ["dialogue"]
     assert step.retry == 2 and step.retry_delay == 1.5 and step.timeout == 60
+    assert step.max_tokens == 8192
     assert step.phase == "写作" and step.depends_on == ["outline"]
 
 

@@ -25,6 +25,7 @@ from ..characters.view import (
     validate_knowledge_used,
 )
 from ..json_extract import extract_json_object
+from ..text_clean import clean_model_text
 from ..logger import get_logger
 from ..quality_checker import QualityChecker
 from ..world_state import WorldState
@@ -240,7 +241,7 @@ async def _run_chapter_summary(runner: "WorkflowRunner", step: "WorkflowStep", n
     prompt = build_chapter_summary_prompt(n, ch_title, content)
     try:
         resp = await agent.run(prompt, thinking="off", keep_history=False)
-        project_io.write_md(summary_path, resp.content)
+        project_io.write_md(summary_path, clean_model_text(resp.content, "chapter_summary"))
         logger.info("第%d章概要已生成", n)
         if runner.on_step_end:
             runner.on_step_end(step.id, n, agent.title, f"第{n}章概要已生成")
@@ -317,7 +318,7 @@ async def _proofread_single_chapter(runner: "WorkflowRunner", step: "WorkflowSte
         if not resp.content.strip():
             logger.warning("第%d章校对返回空内容，跳过写入", n)
             return
-        project_io.write_md(out_path, resp.content)
+        project_io.write_md(out_path, clean_model_text(resp.content, "proofread"))
         logger.info("第%d章校对完成", n)
         if runner.on_step_end:
             runner.on_step_end(step.id, n, agent.title, f"第{n}章校对完成")
@@ -428,7 +429,7 @@ async def _run_review(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
     except Exception as e:
         logger.warning("审核汇总调用失败，直接落盘各批发现: %s", e)
         report = "\n\n".join(findings)
-    project_io.write_md(out_path, report)
+    project_io.write_md(out_path, clean_model_text(report, "review"))
     # 审稿 → 反模式禁忌库（原先在 runner 标准路径里，review 改内置后成了死代码）
     try:
         from ..anti_patterns import AntiPatternTracker
@@ -878,9 +879,14 @@ async def _run_chapter_outline(runner: "WorkflowRunner", step: "WorkflowStep", n
         if step.optional:
             return
         raise RuntimeError(f"没有智能体承担步骤 {step.id}（{step.needs}）")
-    total = _resolve_total_chapters(runner)
+    # 文末补细纲时按“已写章节数”生成，避免只写了 3 章却硬生成 500 章细纲；
+    # 规划模式（还没有正文）仍按目标总章数生成。
+    written = len(_scan_nonempty_chapters(runner))
+    total = written if written > 0 else _resolve_total_chapters(runner)
     if total < 1:
         return
+    if written:
+        logger.info("章节细纲按已写 %d 章生成（文末补全）", written)
     if runner.on_step_start:
         runner.on_step_start(step.id, n, agent.title)
 
@@ -910,8 +916,16 @@ async def _run_chapter_outline(runner: "WorkflowRunner", step: "WorkflowStep", n
         prior = _prior_beats_block("\n\n".join(chunks), a)
         prompt = build_chapter_outline_batch_prompt(brief, a, b, total, prior_beats=prior)
         agent.clear_history()
-        # 15 章 × 4 行 ≈ 2–3k 字；显式放宽到 8192，防 provider 默认值过低截断
-        resp = await agent.run(prompt, thinking="off", keep_history=False, max_tokens=8192)
+        # 15 章 × 4 行 ≈ 2–3k 字；显式放宽到 8192，防 provider 默认值过低截断。
+        # 单批硬超时 300s：避免 provider 连接挂死把整个工作流拖 30+ 分钟。
+        try:
+            resp = await asyncio.wait_for(
+                agent.run(prompt, thinking="off", keep_history=False, max_tokens=8192),
+                timeout=300,
+            )
+        except asyncio.TimeoutError:
+            logger.error("章节细纲批 %d（第%d–%d章）超时，保留已生成部分", i, a, b)
+            break
         raw = (resp.content or "").strip()
         text = clean_outline_text(raw)
         if text:

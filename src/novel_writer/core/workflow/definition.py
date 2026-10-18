@@ -46,6 +46,7 @@ class WorkflowStep:
     retry: int = 0  # 失败重试次数（不含首次）
     retry_delay: float = 2.0  # 重试基础退避秒数（指数）
     timeout: float = 0.0  # 单步超时秒数，0=不限
+    max_tokens: int = 0  # 本步输出上限，0=用 Agent 默认（4096）
     tools: list[str] = field(default_factory=list)  # 本步可用的只读工具白名单
     tool_rounds: int = 2  # 工具调用最大轮数（0=不给工具）
     skills: list[str] = field(default_factory=list)  # 直接注入上下文的技能包
@@ -81,6 +82,7 @@ class WorkflowDef:
                 retry=s.get("retry", 0),
                 retry_delay=s.get("retry_delay", 2.0),
                 timeout=s.get("timeout", 0.0),
+                max_tokens=s.get("max_tokens", 0),
                 tools=s.get("tools", []) or [],
                 tool_rounds=s.get("tool_rounds", 2),
                 skills=s.get("skills", []) or [],
@@ -115,6 +117,7 @@ class WorkflowDef:
                     "retry": s.retry,
                     "retry_delay": s.retry_delay,
                     "timeout": s.timeout,
+                    "max_tokens": s.max_tokens,
                     "tools": s.tools,
                     "tool_rounds": s.tool_rounds,
                     "skills": s.skills,
@@ -133,14 +136,14 @@ _CHAPTER_OUTLINE_STEP = {
 }
 
 _PLANNING_STEPS = [
-    {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md", "thinking": "off"},
-    {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲。注意：必须严格按照【规划方向】中的分卷章数来规划总篇幅（如「30章→35章→35章」即100章），不要被其他数字误导。请将故事分为多个阶段（开篇铺垫、前期发展、中期推进、后期高潮、收束终章），每个阶段标注起止章节和核心剧情。大纲要足够详细，能支撑全部分卷的篇幅，避免剧情提前走完。", "input": ["planning/立意.md"], "output": "planning/大纲.md", "thinking": "off", "retry": 1, "phase": "规划"},
-    {"id": "characters", "needs": "人物设定", "prompt": "根据大纲设计主要人物档案（性格、背景、成长弧线、关系）。", "input": ["planning/大纲.md"], "output": "planning/人物设定.md", "thinking": "off"},
-    {"id": "world", "needs": "世界观构建", "prompt": "根据大纲构建详细的世界观设定。", "input": ["planning/大纲.md", "planning/人物设定.md"], "output": "planning/世界观.md", "thinking": "off"},
-    {"id": "timeline", "needs": "故事结构", "prompt": "根据大纲设计故事时间线。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md"], "output": "planning/时间线.md", "thinking": "off"},
-    {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点和对应章节范围。主线冲突的升级节奏必须匹配立意中规划的分卷篇幅，不要压缩剧情。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/立意.md"], "output": "planning/主线.md", "thinking": "off"},
-    {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。支线数量和深度必须匹配立意中规划的分卷篇幅，不能提前把所有支线写完。", "input": ["planning/大纲.md", "planning/主线.md", "planning/立意.md"], "output": "planning/支线.md", "thinking": "off"},
-    {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。伏笔的埋设和回收要分布在整本书的各卷中，不要全部集中在前几十章。", "input": ["planning/大纲.md", "planning/主线.md", "planning/支线.md", "planning/立意.md"], "output": "planning/伏笔.md", "thinking": "off"},
+    {"id": "ideation", "needs": "立意规划", "prompt": "为一部{genre}题材的{style}风格小说确定核心立意、目标读者、卖点。书名：{title}", "output": "planning/立意.md", "max_tokens": 4096, "thinking": "off"},
+    {"id": "outline", "needs": "故事结构", "prompt": "根据立意设计完整的故事大纲。注意：必须严格按照【规划方向】中的分卷章数来规划总篇幅（如「30章→35章→35章」即100章），不要被其他数字误导。请将故事分为多个阶段（开篇铺垫、前期发展、中期推进、后期高潮、收束终章），每个阶段标注起止章节和核心剧情。大纲要足够详细，能支撑全部分卷的篇幅，避免剧情提前走完。", "input": ["planning/立意.md"], "output": "planning/大纲.md", "max_tokens": 8192, "thinking": "off", "retry": 1, "phase": "规划"},
+    {"id": "characters", "needs": "人物设定", "prompt": "根据大纲设计主要人物档案（性格、背景、成长弧线、关系）。", "input": ["planning/大纲.md"], "output": "planning/人物设定.md", "max_tokens": 8192, "thinking": "off"},
+    {"id": "world", "needs": "世界观构建", "prompt": "根据大纲构建详细的世界观设定。", "input": ["planning/大纲.md", "planning/人物设定.md"], "output": "planning/世界观.md", "max_tokens": 8192, "thinking": "off"},
+    {"id": "timeline", "needs": "故事结构", "prompt": "根据大纲设计故事时间线。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md"], "output": "planning/时间线.md", "max_tokens": 8192, "thinking": "off"},
+    {"id": "main_plot", "needs": "故事结构", "prompt": "梳理主线剧情脉络，标注关键转折点和对应章节范围。主线冲突的升级节奏必须匹配立意中规划的分卷篇幅，不要压缩剧情。", "input": ["planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/立意.md"], "output": "planning/主线.md", "max_tokens": 8192, "thinking": "off"},
+    {"id": "sub_plot", "needs": "故事结构", "prompt": "梳理支线剧情，说明与主线的交汇点。支线数量和深度必须匹配立意中规划的分卷篇幅，不能提前把所有支线写完。", "input": ["planning/大纲.md", "planning/主线.md", "planning/立意.md"], "output": "planning/支线.md", "max_tokens": 8192, "thinking": "off"},
+    {"id": "foreshadow", "needs": "伏笔设计", "prompt": "设计伏笔清单：伏笔内容、埋设章节、回收章节。伏笔的埋设和回收要分布在整本书的各卷中，不要全部集中在前几十章。", "input": ["planning/大纲.md", "planning/主线.md", "planning/支线.md", "planning/立意.md"], "output": "planning/伏笔.md", "max_tokens": 8192, "thinking": "off"},
     _CHAPTER_OUTLINE_STEP,
 ]
 
@@ -174,17 +177,25 @@ _CYCLE_STEPS = [
 
 # ── 内置工作流模板 ──
 
+_PLANNING_CORE_STEPS = _PLANNING_STEPS[:-1]
+_CHAPTER_OUTLINE_TAIL = {
+    **_CHAPTER_OUTLINE_STEP,
+    "optional": True,
+    "phase": "细纲",
+}
+
 DEFAULT_WORKFLOW = {
     "name": "新书全流程",
-    "description": "从立意到审校的全流程",
-    "steps": _PLANNING_STEPS + [_FIX_TITLES_STEP] + _CYCLE_STEPS,
+    "description": "从立意到审校，最后生成章节细纲",
+    # 细纲放到正文/审校之后：先让正文跑起来，避免 500 章细纲在开写前阻塞 30+ 次 LLM
+    "steps": _PLANNING_CORE_STEPS + [_FIX_TITLES_STEP] + _CYCLE_STEPS + [_CHAPTER_OUTLINE_TAIL],
 }
 
 CONTINUE_WORKFLOW = {
     "name": "续写",
     "description": "从已有章节继续写作",
-    # 老项目没有细纲时先补一份（已有则智能跳过）；optional 避免无策划 Agent 时阻断续写
-    "steps": [_FIX_TITLES_STEP, {**_CHAPTER_OUTLINE_STEP, "optional": True}] + _CYCLE_STEPS,
+    # 续写也先写正文，最后再补细纲；不再在开头阻塞
+    "steps": [_FIX_TITLES_STEP] + _CYCLE_STEPS + [_CHAPTER_OUTLINE_TAIL],
 }
 
 VALIDATE_WORKFLOW = {

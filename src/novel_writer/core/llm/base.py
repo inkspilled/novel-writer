@@ -28,6 +28,7 @@ class LLMResponse:
     # N-04 修复：明确 usage 类型
     usage: dict[str, int] = field(default_factory=dict)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    finish_reason: str = ""  # stop / length / tool_calls ...
 
 
 class BaseLLM(ABC):

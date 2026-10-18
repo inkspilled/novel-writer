@@ -303,6 +303,7 @@ class LLMClient(BaseLLM):
                         "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
                     },
                     tool_calls=_serialize_tool_calls(getattr(choice.message, "tool_calls", None)),
+                    finish_reason=getattr(choice, "finish_reason", "") or "",
                 )
             except _get_retryable_errors() as e:
                 last_exc = e
