@@ -12,6 +12,7 @@ from pathlib import Path
 from ..logger import get_logger
 from .. import project_io
 from .events import CanonEvent, CanonLog
+from .revisions import latest_revision
 
 logger = get_logger(__name__)
 
@@ -42,23 +43,27 @@ def seal_chapter(project_dir: Path, chapter: int) -> CanonEvent | None:
     filename = project_io.find_chapter_file(project_dir, chapter)
     if not filename:
         return None
-    path = project_dir / "chapters" / filename
+    base_path = project_dir / "chapters" / filename
+    path = latest_revision(project_dir, chapter) or base_path
     if not path.exists() or path.stat().st_size == 0:
         return None
     digest = chapter_digest(path)
     info = sealed_info(project_dir, chapter)
-    if info:
-        if info.get("digest") == digest:
-            return None
-        raise ChapterSealedError(
-            f"第{chapter}章已封印，内容与封印摘要不一致；请走版本化修订"
-        )
+    if info and info.get("digest") == digest:
+        return None
+    # 修订版重新封印：保留父摘要，最新 seal 生效
     event = CanonLog(project_dir).append(CanonEvent(
         chapter=chapter,
         type="chapter_sealed",
         actor="system",
         visibility="world",
-        payload={"chapter": chapter, "filename": filename, "digest": digest, "source": "seal"},
+        payload={
+            "chapter": chapter,
+            "filename": path.name,
+            "digest": digest,
+            "parent": (info or {}).get("digest", ""),
+            "source": "seal",
+        },
     ))
     logger.info("第%d章已封印 (%s)", chapter, digest[:12])
     return event

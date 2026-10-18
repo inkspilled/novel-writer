@@ -29,7 +29,7 @@ from ..logger import get_logger
 from ..quality_checker import QualityChecker
 from ..world_state import WorldState
 from .constants import SKILL_PROOFREAD, SKILL_REVIEW, SKILL_TYPO_CHECK
-from .context import estimate_tokens
+from .context import estimate_tokens, extract_chapter_section
 from .prompts import (
     CHAPTER_OUTLINE_BATCH,
     OUTLINE_REVISE_WINDOW,
@@ -594,8 +594,17 @@ async def _run_character_panel(runner: "WorkflowRunner", step: "WorkflowStep", n
         return
     if runner.on_step_start:
         runner.on_step_start(step.id, n, agent.title)
+    scene_brief = ""
+    for name in ("章节细纲.md", "大纲.md"):
+        text = project_io.read_md(runner.project_dir / "planning" / name)
+        section = extract_chapter_section(text, n) if text else ""
+        if section:
+            scene_brief = section[:800]
+            break
     try:
-        panel = await run_character_panel(runner.project_dir, n, agent, registry=registry)
+        panel = await run_character_panel(
+            runner.project_dir, n, agent, registry=registry, scene_brief=scene_brief,
+        )
     except Exception as e:
         logger.error("角色 panel 失败（不影响正文）: %s", e, exc_info=True)
         return

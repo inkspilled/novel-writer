@@ -152,9 +152,19 @@ async def extract_percepts(
         logger.debug("第%d章感知抽取跳过：角色注册表为空", chapter)
         return []
     prompt = build_percept_prompt(chapter_text, names, chapter)
-    resp = await agent.run(prompt, thinking="off", keep_history=False, max_tokens=4096)
-    payload = extract_json_object(resp.content or "")
-    if not payload:
-        logger.warning("第%d章感知抽取返回非 JSON，跳过", chapter)
+    payload = None
+    for attempt in range(2):
+        resp = await agent.run(prompt, thinking="off", keep_history=False, max_tokens=4096)
+        payload = extract_json_object(resp.content or "")
+        if isinstance(payload, dict) and isinstance(payload.get("events"), list):
+            break
+        logger.warning("第%d章感知抽取返回非法 JSON（第%d次），重试", chapter, attempt + 1)
+        prompt = (
+            "上一次输出不是合法 JSON。请严格只输出一个 JSON 对象，"
+            "格式为 {\"scene\":...,\"events\":[...]}，不要解释、不要 Markdown。\n\n"
+            + prompt
+        )
+    if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
+        logger.warning("第%d章感知抽取两次均失败，跳过", chapter)
         return []
     return apply_percept_payload(project_dir, chapter, payload, registry=reg)

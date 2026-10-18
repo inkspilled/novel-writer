@@ -266,6 +266,16 @@ class CharacterRegistry:
         self.save()
         return rec
 
+    def remove(self, name_or_id: str) -> bool:
+        """删除角色卡（正典事件保留，不做级联清史）。"""
+        self._load()
+        rec = self.get(name_or_id)
+        if not rec:
+            return False
+        self._characters = [c for c in self._characters if c.id != rec.id]
+        self.save()
+        return True
+
     def merge(self, keep: str, duplicate: str) -> CharacterRecord | None:
         """合并别名/重复卡：保留 keep，把 duplicate 的别名并入后移除。"""
         self._load()

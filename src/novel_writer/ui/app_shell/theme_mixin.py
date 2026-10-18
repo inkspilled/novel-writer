@@ -59,6 +59,10 @@ class ThemeMixin:
         self._manage_action = QAction(t("menu_agent_manage"), self)
         self._manage_action.triggered.connect(self._open_agent_manage)
         self._model_agent_menu.addAction(self._manage_action)
+        self._character_action = QAction(t("menu_character_manage"), self)
+        self._character_action.setShortcut(QKeySequence("Ctrl+Alt+R"))
+        self._character_action.triggered.connect(self._open_character_manager)
+        self._model_agent_menu.addAction(self._character_action)
 
         # ── 工作流：面板入口 / 一键载入默认 ──
         self._workflow_menu = menubar.addMenu(t("workflow_menu"))
@@ -70,6 +74,11 @@ class ThemeMixin:
         self._workflow_default_action = QAction(t("workflow_menu_default"), self)
         self._workflow_default_action.triggered.connect(self._load_default_workflow)
         self._workflow_menu.addAction(self._workflow_default_action)
+        self._workflow_menu.addSeparator()
+        self._seal_action = QAction(t("workflow_seal_current"), self)
+        self._seal_action.setShortcut(QKeySequence("Ctrl+Alt+S"))
+        self._seal_action.triggered.connect(self._seal_current_chapter)
+        self._workflow_menu.addAction(self._seal_action)
 
         # ── 设置：所有偏好收拢（项目 / 外观） ──
         self._settings_menu = menubar.addMenu(t("menu_settings"))
@@ -144,6 +153,7 @@ class ThemeMixin:
         self._model_agent_menu.setTitle(t("menu_model_agent"))
         self._model_action.setText(t("menu_model_open"))
         self._manage_action.setText(t("menu_agent_manage"))
+        self._character_action.setText(t("menu_character_manage"))
         self._settings_menu.setTitle(t("menu_settings"))
         self._settings_action.setText(t("menu_project_settings"))
         self._appearance_action.setText(t("menu_appearance_open"))
@@ -153,6 +163,7 @@ class ThemeMixin:
         self._workflow_menu.setTitle(t("workflow_menu"))
         self._workflow_open_action.setText(t("workflow_menu_open"))
         self._workflow_default_action.setText(t("workflow_menu_default"))
+        self._seal_action.setText(t("workflow_seal_current"))
         self._export_menu.setTitle(t("menu_export"))
         self._export_txt_action.setText(t("menu_export_txt"))
         self._export_epub_action.setText(t("menu_export_epub"))

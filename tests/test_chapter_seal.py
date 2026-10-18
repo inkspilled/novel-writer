@@ -27,10 +27,11 @@ def test_seal_is_idempotent_and_detects_change(tmp_path: Path):
     # 内容未变：幂等
     assert seal_chapter(tmp_path, 1) is None
 
-    # 内容被改：拒绝再次封印
+    # 内容被改：允许重新封印，最新 seal 生效
     p.write_text("# 第1章 开端\n改过的正文", encoding="utf-8")
-    with pytest.raises(ChapterSealedError):
-        seal_chapter(tmp_path, 1)
+    event2 = seal_chapter(tmp_path, 1)
+    assert event2 is not None
+    assert sealed_info(tmp_path, 1)["digest"] != sealed_info(tmp_path, 1).get("parent", "")
 
 
 def test_manual_edit_of_sealed_chapter_creates_revision(tmp_path: Path):
@@ -52,3 +53,31 @@ def test_manual_edit_of_sealed_chapter_creates_revision(tmp_path: Path):
     assert len(items) == 1
     assert "versions" in str(items[0]["content_path"])
     assert "修订后的正文" in items[0]["content_path"].read_text(encoding="utf-8")
+
+
+def test_reseal_current_revision(tmp_path: Path):
+    from src.novel_writer.models.chapter import Chapter
+    from src.novel_writer.core.canon.seal import chapter_digest
+
+    p = _chapter(tmp_path, "# 第1章\n" + "原始" * 30)
+    seal_chapter(tmp_path, 1)
+    chapter = Chapter(number=1, title="开端", _content_path=str(p))
+    chapter.content = "# 第1章\n" + "修订" * 30
+    event = seal_chapter(tmp_path, 1)
+    assert event is not None
+    info = sealed_info(tmp_path, 1)
+    assert info["filename"].endswith(".txt")
+    assert info["digest"] == chapter_digest(Path(chapter._content_path))
+    assert info["parent"]  # 链到首次封印
+
+
+def test_workflow_refuses_to_write_sealed_chapter(tmp_path: Path):
+    from src.novel_writer.core.workflow.runner import WorkflowRunner
+    from src.novel_writer.core.workflow.definition import WorkflowStep
+
+    p = _chapter(tmp_path, "# 第1章\n" + "正文" * 80)
+    seal_chapter(tmp_path, 1)
+    runner = WorkflowRunner({}, tmp_path, {}, enable_tools=False)
+    step = WorkflowStep(id="chapter", output="chapters/1_开端.txt")
+    assert runner._write_output(step, 1, "chapters/1_开端.txt", "新正文" * 80, None) is False
+    assert p.read_text(encoding="utf-8").startswith("# 第1章\n正文")

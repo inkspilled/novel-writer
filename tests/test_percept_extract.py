@@ -140,3 +140,23 @@ def test_percept_extract_touches_last_seen(tmp_path: Path):
     asyncio.run(bs._run_percept_extract(FakeRunner(tmp_path, agent),
                                         WorkflowStep(id="percept_extract", needs="剧情审查"), 1))
     assert CharacterRegistry(tmp_path).get("林牧").last_seen == 1
+
+
+def test_percept_extract_retries_bad_json(tmp_path: Path):
+    _project(tmp_path)
+
+    class RetryAgent:
+        title = "审核"
+        def __init__(self):
+            self.calls = 0
+        async def run(self, prompt, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResponse(content="不是 JSON")
+            return LLMResponse(content='{"scene":"药圃","events":[{"actor":"林牧","observable":"林牧醒来","known_by":["林牧"]}]}')
+
+    agent = RetryAgent()
+    asyncio.run(bs._run_percept_extract(FakeRunner(tmp_path, agent),
+                                        WorkflowStep(id="percept_extract", needs="剧情审查"), 1))
+    assert agent.calls == 2
+    assert len(CanonLog(tmp_path).for_chapter(1)) == 1

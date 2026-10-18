@@ -105,3 +105,23 @@ def test_offscreen_tick_batches_and_filters(tmp_path: Path):
     data = asyncio.run(run_offscreen_tick(tmp_path, 5, TickAgent(), registry=reg))
     assert data and len(data["ticks"]) == 2
     assert (tmp_path / "sim_cache" / "offscreen" / "tick_5.json").exists()
+
+
+def test_panel_director_gets_scene_brief(tmp_path: Path):
+    reg, event = _setup(tmp_path)
+    proposal = {
+        "intent": "查清符文", "action": "去药圃", "dialogue": "",
+        "knowledge_used": [event.id], "confidence": 0.6,
+    }
+    director = {"choice": "林牧", "selected_beats": ["去药圃"], "reason": "推进"}
+    llm = FakeLLM([
+        LLMResponse(content=json.dumps(proposal, ensure_ascii=False)),
+        LLMResponse(content=json.dumps(proposal, ensure_ascii=False)),
+        LLMResponse(content=json.dumps(director, ensure_ascii=False)),
+    ])
+    base = BaseAgent(AgentConfig(name="d", role="d", title="导演", system_prompt="s"), llm)
+    asyncio.run(run_character_panel(
+        tmp_path, 1, base, registry=reg, scene_brief="药圃，林牧与楚夜对峙",
+    ))
+    director_prompt = llm.calls[-1][-1].content
+    assert "药圃，林牧与楚夜对峙" in director_prompt

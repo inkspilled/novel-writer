@@ -169,6 +169,27 @@ class ProjectMixin:
                 len(self.project.chapters),
             )
 
+    def _seal_current_chapter(self):
+        """手动把当前章（含最新修订版）封印到正典。"""
+        chapter = getattr(self.editor, "_current_chapter", None)
+        if chapter is None or not self.project.project_dir:
+            QMessageBox.information(self, t("workflow_seal_current"), t("msg_no_project"))
+            return
+        self._flush_content_save()
+        from ...core.canon.seal import seal_chapter
+        try:
+            event = seal_chapter(self.project.project_dir, chapter.number)
+        except Exception as e:
+            QMessageBox.warning(self, t("workflow_seal_current"), str(e))
+            return
+        if event:
+            self.statusBar().showMessage(f"第{chapter.number}章已封印", 4000)
+            QMessageBox.information(self, t("workflow_seal_current"),
+                                    f"第{chapter.number}章已封印（含最新修订版）")
+        else:
+            QMessageBox.information(self, t("workflow_seal_current"),
+                                    f"第{chapter.number}章内容未变，无需重复封印")
+
     def _show_export_success(self, path: Path):
         """导出完成：给路径 + 一个“打开所在目录”的动作。"""
         box = QMessageBox(self)

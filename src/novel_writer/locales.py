@@ -12,6 +12,7 @@ STRINGS = {
     "menu_save_project": {"zh": "保存项目(&S)", "en": "Save Project(&S)"},
     "menu_exit": {"zh": "退出(&Q)", "en": "Exit(&Q)"},
     "menu_agent_manage": {"zh": "智能体管理", "en": "Agent Manager"},
+    "menu_character_manage": {"zh": "角色管理", "en": "Characters"},
 
     # ── 一级菜单 ──
     "menu_model_agent": {"zh": "模型与智能体(&M)", "en": "Model & Agent(&M)"},
@@ -186,6 +187,7 @@ STRINGS = {
     "workflow_menu": {"zh": "工作流(&W)", "en": "Workflow(&W)"},
     "workflow_menu_open": {"zh": "打开工作流面板", "en": "Open Workflow Panel"},
     "workflow_menu_default": {"zh": "加载默认工作流", "en": "Load Default Workflow"},
+    "workflow_seal_current": {"zh": "封印当前章", "en": "Seal Current Chapter"},
 
     # ── 右键菜单 ──
     "ctx_rename": {"zh": "重命名", "en": "Rename"},

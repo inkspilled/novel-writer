@@ -159,7 +159,7 @@ print(view.text)
 1. 选角（最多 4 人，`simulatable` 优先），提案并行 fan-out；
 2. 每个角色用隔离 `CharacterView` 写提案（intent/action/dialogue/knowledge_used）；
 3. 裁判用 `validate_knowledge_used` 拒绝引用视图外事件；
-4. 导演按 drama/consistency/surprise 评分，选/合并一个走向；
+4. 导演拿到本章公开场景 brief（大纲/细纲片段，仅导演可见）+ 提案，按 drama/consistency/surprise 评分，选/合并一个走向；
 5. 落盘 `sim_cache/pov/panel_{n}.json` + 每个角色 `sim_{n}.json`；
 6. 写手上下文注入「角色当前意图 + 导演裁决」。
 
@@ -226,7 +226,7 @@ print(view.text)
 ## 7. 当前边界（诚实说明）
 
 - `canon/events.jsonl` 由 `percept_extract` 自动写入；但感知抽取依赖 LLM，仍可能漏事件/把旁白当 observable；
-- `pov_sim`/`character_panel` 默认没有角色开启 `auto_sim`，所以实际不会调用；
+- `pov_sim`/`character_panel` 默认没有角色开启 `auto_sim`，所以实际不会调用；可在「角色管理（Ctrl+Alt+R）」里打开；
 - 离场 tick、角色 panel、裁判/导演评分、UI 花名册尚未实现；
 - `mark_dead_many()` 已实现，但“批量死亡正典事件”的自动写入（如灭门事件）还要等感知抽取层；
 - `CharacterView` 的 `scene_brief` 需要调用方保证是公开信息；

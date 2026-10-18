@@ -57,3 +57,16 @@ def test_agent_strip_caps_at_two_rows(qapp):
     office.setup_agents({f"agent{i}": {"title": f"角色{i}"} for i in range(3)}, {})
     assert office.height() == 104
     assert office._scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+
+def test_character_dialog_lists_records(qapp, tmp_path):
+    from src.novel_writer.core.characters.registry import CharacterRegistry, CharacterTier
+    from src.novel_writer.ui.character.character_dialog import CharacterDialog
+
+    reg = CharacterRegistry(tmp_path)
+    reg.create("林牧", chapter=1, tier=CharacterTier.CORE, auto_sim=True)
+    dlg = CharacterDialog(tmp_path)
+    assert dlg.list.count() == 1
+    assert dlg.name_label.text() == "林牧"
+    assert dlg.auto_sim.isChecked()
+    dlg.close()
