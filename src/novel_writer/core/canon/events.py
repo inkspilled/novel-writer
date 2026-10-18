@@ -96,6 +96,17 @@ class CanonLog:
         self._load()
         return next((e for e in self._events if e.id == event_id), None)
 
+    def for_chapter(self, chapter: int) -> list[CanonEvent]:
+        self._load()
+        return [e for e in self._events if e.chapter == chapter]
+
+    def has_percepts(self, chapter: int) -> bool:
+        """该章是否已抽过感知事件（用于幂等重跑）。"""
+        return any(
+            (e.payload or {}).get("source") == "percept"
+            for e in self.for_chapter(chapter)
+        )
+
     def known_to(self, character_id: str, up_to_chapter: int,
                  names: Iterable[str] = ()) -> list[CanonEvent]:
         """角色视角可见事件：本人事件 + known_by 包含他 + 章节不晚于当前。

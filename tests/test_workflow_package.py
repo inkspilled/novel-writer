@@ -21,7 +21,7 @@ EXPECTED_DEFAULT_IDS = [
     "ideation", "outline", "characters", "world", "timeline",
     "main_plot", "sub_plot", "foreshadow", "chapter_outline", "fix_titles",
     "inspiration", "sim", "pov_sim", "chapter", "chapter_summary", "world_state_update",
-    "toc", "polish", "proofread", "summary",
+    "toc", "polish", "percept_extract", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel",
     "quality_check", "review",
@@ -30,7 +30,7 @@ EXPECTED_DEFAULT_IDS = [
 EXPECTED_CONTINUE_IDS = [
     "fix_titles", "chapter_outline",
     "inspiration", "sim", "pov_sim", "chapter", "chapter_summary", "world_state_update",
-    "toc", "polish", "proofread", "summary",
+    "toc", "polish", "percept_extract", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel",
     "quality_check", "review",
@@ -116,6 +116,7 @@ class TestBuiltinStepHandlers:
             "toc", "fix_titles", "world_state_update", "chapter_summary", "quality_check",
             "proofread", "review",  # 批处理改造后由 handler 自行编排 LLM（分批校对/审核）
             "chapter_outline", "update_chapter_outline", "review_panel", "pov_sim",
+            "percept_extract",
         }
 
     def test_tool_steps_have_no_needs(self):

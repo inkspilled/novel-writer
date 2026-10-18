@@ -139,6 +139,19 @@ print(view.text)
 
 `validate_knowledge_used(proposal, view)` 检查提案引用的 `knowledge_used` 是否都在 `view.event_ids` 内；不在则拒绝。
 
+## 4.1 感知抽取（`percept_extract`）
+
+每章正文落盘后（polish 之后）执行，把正文转成 `CanonEvent`：
+
+- `observable`：旁人能看到/听到的客观行为；
+- `hidden`：只有本人知道的真实意图；
+- `known_by`：只在场的角色；不在场的人不能凭空知道；
+- 每章最多 12 条；同一章已抽过则跳过（幂等）；
+- 角色注册表为空时，先从 `planning/人物设定.md` 建 extra 卡（不会自动开 POV）。
+
+写手上下文会读取 `sim_cache/pov/{id}/sim_{n}.json`，注入
+`=== 角色当前意图（作者参考） ===`，让角色提案真正影响本章写作。
+
 ## 5. `pov_sim` 步骤
 
 - 每 5 章触发一次（`every=5`），`optional=True`；
@@ -184,7 +197,7 @@ print(view.text)
 
 ## 7. 当前边界（诚实说明）
 
-- `canon/events.jsonl` **还没有被 sediment 自动写入**；目前需要手动/后续“感知抽取”步骤填充；
+- `canon/events.jsonl` 由 `percept_extract` 自动写入；但感知抽取依赖 LLM，仍可能漏事件/把旁白当 observable；
 - `pov_sim` 默认没有角色开启 `auto_sim`，所以实际不会调用；
 - 离场 tick、角色 panel、裁判/导演评分、UI 花名册尚未实现；
 - `mark_dead_many()` 已实现，但“批量死亡正典事件”的自动写入（如灭门事件）还要等感知抽取层；

@@ -490,6 +490,11 @@ class ContextBuilder:
             if inspiration:
                 parts.append(f"=== 灵感 ===\n{inspiration}")
 
+        # 角色 POV 提案（作者参考；角色侧只写 sim_cache/pov/{id}/sim_{n}.json）
+        pov_text = self._load_pov_proposals(n)
+        if pov_text:
+            parts.append(f"=== 角色当前意图（作者参考） ===\n{pov_text}")
+
         # 角色推演结果
         sim_text = load_sim_cache(self.project_dir, n)
         if sim_text:
@@ -732,6 +737,33 @@ class ContextBuilder:
                 content = project_io.read_md(ch_file)
                 if content:
                     parts.append(f"=== 第{i}章 ===\n{content}")
+
+    def _load_pov_proposals(self, n: int) -> str:
+        """读取 sim_cache/pov/*/sim_{n}.json，格式化给写手做参考。"""
+        import json
+        root = self.project_dir / "sim_cache" / "pov"
+        if not root.exists():
+            return ""
+        lines: list[str] = []
+        for path in sorted(root.glob(f"*/sim_{n}.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            name = str(data.get("_character_name") or path.parent.name)
+            intent = str(data.get("intent") or "").strip()
+            action = str(data.get("action") or "").strip()
+            if not intent and not action:
+                continue
+            line = f"【{name}】"
+            if intent:
+                line += f"想要：{intent[:120]}"
+            if action:
+                line += f"；准备：{action[:120]}"
+            lines.append(line)
+        return "\n".join(lines[:4])
 
     def _add_chapter_rag(self, parts: list[str], n: int):
         """RAG 检索历史章节（基于大纲中本章描述作为查询）。"""

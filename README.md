@@ -91,7 +91,7 @@ src/novel_writer/
 ├── designsystem/            # 主题 token（四套色板 + 自定义）
 └── locales.py               # 中/英 i18n
 
-tests/                       # 256 个单元/回归测试
+tests/                       # 259 个单元/回归测试
 config/                      # agents/providers 配置
 data/                        # 用户数据（gitignore）
 ```
@@ -153,10 +153,11 @@ data/                        # 用户数据（gitignore）
 6. ✍️ **写作**（每章）→ 正文写作
 7. 📝 **章节概要 / 🌍 世界状态 / 📑 目录 / 🔍 校对**（每章）
 8. ✨ **润色**（每2章）
-9. 📋 **摘要 / 🔄 规划反哺 / 细纲修订**（每5章）
-10. 🧑‍⚖️ **多视角会审**（每10章）→ 三视角并行 + 主编聚合
-11. ✅ **质量检查**（每章）
-12. 🔍 **审核**（最后）→ 全书分批审校 + 聚合
+9. 🎬 **感知抽取**（每章）→ 正文转角色可感知的正典事件，供 POV 推演/上下文
+10. 📋 **摘要 / 🔄 规划反哺 / 细纲修订**（每5章）
+11. 🧑‍⚖️ **多视角会审**（每10章）→ 三视角并行 + 主编聚合
+12. ✅ **质量检查**（每章）
+13. 🔍 **审核**（最后）→ 全书分批审校 + 聚合
 
 ## 智能上下文（4层分层架构）
 
@@ -248,7 +249,7 @@ logger.info("操作完成")
 ## 单元测试
 
 ```bash
-python -m pytest tests/ -q          # 全量：256 passed
+python -m pytest tests/ -q          # 全量：259 passed
 python -m pytest tests/test_workflow_runner.py -v
 python -m pytest tests/test_character_isolation.py -v
 ```

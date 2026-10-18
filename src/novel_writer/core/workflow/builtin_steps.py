@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .. import project_io
 from ..agents.base import AgentConfig, BaseAgent
+from ..canon.events import CanonLog
+from ..canon.extract import extract_percepts
 from ..characters.registry import CharacterRegistry
+from ..character_sim import parse_characters
 from ..characters.view import (
     CharacterViewBuilder,
     build_character_system_prompt,
@@ -504,6 +507,59 @@ async def _run_review_panel(runner: "WorkflowRunner", step: "WorkflowStep", n: i
     logger.info(msg)
     if runner.on_step_end:
         runner.on_step_end(step.id, n, base_agent.title, msg)
+
+
+# ── 章节感知抽取（正文 → 角色可感知的正典事件） ──
+
+_PERCEPT_CHAPTER_CAP = 12000
+
+
+@handler("percept_extract")
+async def _run_percept_extract(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """把本章最终正文抽成 CanonEvent，供角色 POV 视图使用。
+
+    幂等：同一章已有 source=percept 的事件时跳过；失败不阻断整跑。
+    """
+    chapter_file = project_io.find_chapter_file(runner.project_dir, n)
+    if not chapter_file:
+        return
+    chapter_path = runner.project_dir / "chapters" / chapter_file
+    if not chapter_path.exists() or chapter_path.stat().st_size == 0:
+        return
+    if CanonLog(runner.project_dir).has_percepts(n):
+        logger.debug("第%d章已有感知事件，跳过", n)
+        return
+
+    registry = CharacterRegistry(runner.project_dir)
+    if not registry.all():
+        # 老项目没有角色注册表：先按人物设定建 extra 卡（不会自动 POV 推演）
+        char_doc = project_io.read_md(runner.project_dir / "planning" / "人物设定.md")
+        if char_doc.strip():
+            try:
+                registry.seed_from_profiles(parse_characters(char_doc), chapter=n)
+            except Exception as e:
+                logger.debug("人物设定建卡失败（忽略）: %s", e)
+    if not registry.all():
+        logger.debug("感知抽取跳过：角色注册表为空")
+        return
+
+    agent = runner.find_agent(step.needs) if step.needs else None
+    agent = agent or _fallback_agent(runner, (SKILL_REVIEW,))
+    if not agent:
+        return
+    if runner.on_step_start:
+        runner.on_step_start(step.id, n, agent.title)
+    try:
+        events = await extract_percepts(
+            runner.project_dir, n, project_io.read_md(chapter_path), agent,
+            registry=registry,
+        )
+        msg = f"第{n}章感知事件 {len(events)} 条"
+        logger.info(msg)
+        if runner.on_step_end:
+            runner.on_step_end(step.id, n, agent.title, msg)
+    except Exception as e:
+        logger.error("第%d章感知抽取失败（不影响正文）: %s", n, e)
 
 
 # ── 角色 POV 推演（隔离视图，不读大纲/全局状态） ──
