@@ -548,7 +548,11 @@ class AgentPanel(QWidget):
         if self._chat_db and self._chat_history:
             self.save_history()
         if project_dir:
-            self._chat_db = ChatHistory(project_dir / "chat.db")
+            # 聊天记录默认不落 SQLite；需要时在 config 里显式开 save_chat_history
+            if bool(AGENT_PANEL_GLOBALS.get("config", {}).get("save_chat_history", False)):
+                self._chat_db = ChatHistory(project_dir / "chat.db")
+            else:
+                self._chat_db = None
             self._project_loaded = True
             self._update_empty_hint()
             self._no_project_hint.setVisible(False)
@@ -573,7 +577,7 @@ class AgentPanel(QWidget):
             self.load_history()
 
     def save_history(self):
-        """将当前所有聊天记录写入 SQLite（全量覆盖当前项目）。"""
+        """将当前所有聊天记录写入 SQLite（仅 save_chat_history=true 时）。"""
         if not self._chat_db:
             return
         self._chat_db.save(self._chat_history)

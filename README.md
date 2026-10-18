@@ -92,7 +92,7 @@ src/novel_writer/
 ├── designsystem/            # 主题 token（四套色板 + 自定义）
 └── locales.py               # 中/英 i18n
 
-tests/                       # 280 个单元/回归测试
+tests/                       # 281 个单元/回归测试
 config/                      # agents/providers 配置
 data/                        # 用户数据（gitignore）
 ```
@@ -102,7 +102,7 @@ data/                        # 用户数据（gitignore）
 - **Python 3.10+**
 - **PySide6** — 跨平台 GUI 框架（LGPL）
 - **异步编程** — asyncio/await 提升并发性能
-- **SQLite** — 轻量级聊天记录存储
+- **SQLite（可选）** — 聊天记录默认不落盘；`save_chat_history=true` 才写 `chat.db`
 - **BM25** — 规划文档检索算法
 - **PyInstaller/Inno Setup** — 桌面应用打包
 
@@ -222,7 +222,7 @@ data/                        # 用户数据（gitignore）
 |------|------|
 | `data/config.json` | 全局配置（主题、语言、模型） |
 | `data/projects/*/meta.json` | 项目元信息（含目标章节数） |
-| `data/projects/*/chat.db` | 项目级聊天记录（SQLite） |
+| `data/projects/*/chat.db` | 可选：项目级聊天记录（仅 `save_chat_history=true` 时创建） |
 | `data/projects/*/world_state.json` | 大世界状态（人物/物品/地点/时间线） |
 | `data/projects/*/memory.json` | 长期记忆（11桶） |
 | `data/projects/*/canon/events.jsonl` | 正典事件（append-only，角色知识来源） |
@@ -252,7 +252,7 @@ logger.info("操作完成")
 ## 单元测试
 
 ```bash
-python -m pytest tests/ -q          # 全量：280 passed
+python -m pytest tests/ -q          # 全量：281 passed
 python -m pytest tests/test_workflow_runner.py -v
 python -m pytest tests/test_character_isolation.py -v
 ```
@@ -270,7 +270,7 @@ python -m pytest tests/test_character_isolation.py -v
 ```
 data/projects/{project_name}/
 ├── meta.json                 # 项目元信息（标题/题材/目标字数/目标章节数）
-├── chat.db                   # 项目级聊天记录 SQLite
+├── chat.db                   # 可选：聊天记录 SQLite（默认不创建）
 ├── world_state.json          # 大世界状态快照
 ├── memory.json               # 11 桶长期记忆
 ├── anti_patterns.json        # 反模式禁忌库

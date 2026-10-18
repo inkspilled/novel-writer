@@ -80,3 +80,24 @@ def test_workflow_bar_usage_label(qapp):
     assert "1.2k tok" in bar._usage_label.text()
     bar.set_usage({})
     assert not bar._usage_label.isVisible()
+
+
+def test_chat_db_is_opt_in(qapp, tmp_path):
+    from src.novel_writer.ui.agent.agent_panel import AgentPanel
+
+    panel = AgentPanel()
+    panel.set_config({"save_chat_history": False})
+    panel.set_project_db(tmp_path)
+    assert panel._chat_db is None
+    panel.add_user_message("hello")
+    panel.save_history()
+    assert not (tmp_path / "chat.db").exists()
+
+    panel2 = AgentPanel()
+    panel2.set_config({"save_chat_history": True})
+    panel2.set_project_db(tmp_path)
+    assert panel2._chat_db is not None
+    panel2.add_user_message("hello")
+    panel2.save_history()
+    assert (tmp_path / "chat.db").exists()
+    panel.close(); panel2.close()

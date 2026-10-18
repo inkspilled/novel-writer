@@ -203,15 +203,10 @@ class WorkflowMixin:
     def _on_wf_step_started(self, step_id: str, n: int, agent_title: str):
         self.agent_panel.on_workflow_step_started(step_id, n, agent_title)
         self.agent_panel.workflow_bar.set_current_step(step_id, agent_title, n, 0)
-        # 在聊天区显示工作流调用
-        self.agent_panel.add_user_message(f"[工作流] {step_id}" + (f" 第{n}章" if n > 1 else ""))
+        # 工作流日志只走 WorkflowMiniBar / runs，不写聊天记录，避免污染 chat.db
 
     def _on_wf_step_finished(self, step_id: str, n: int, agent_title: str, response: str):
         self.agent_panel.on_workflow_step_finished(step_id, n, agent_title)
-        # 将 Agent 响应添加到聊天记录
-        agent_name = self.agent_panel._find_agent_by_title(agent_title)
-        if agent_name and response:
-            self.agent_panel.add_agent_message(agent_name, response[:2000])
         # 章节步骤完成后刷新侧边栏
         if step_id == "chapter":
             self._refresh_chapters()
