@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 import threading
@@ -78,12 +79,68 @@ def _get_async_openai():
 
 
 def _is_invalid_request(e: Exception) -> bool:
-    """是否为参数不被接受（可去掉思考字段重试）。"""
+    """是否为参数不被接受（可去掉思考/tools 字段重试）。"""
     name = type(e).__name__
     if name in ("BadRequestError", "UnprocessableEntityError", "InvalidRequestError"):
         return True
     text = str(e).lower()
-    return any(s in text for s in ("extra_body", "enable_thinking", "reasoning_effort", "thinking", "unknown field", "unrecognized"))
+    return any(s in text for s in (
+        "extra_body", "enable_thinking", "reasoning_effort", "thinking",
+        "unknown field", "unrecognized", "tool_choice", "tools is not supported",
+        "does not support tools", "function calling",
+    ))
+
+
+def _serialize_messages(messages: list[LLMMessage]) -> list[dict]:
+    """把内部消息转成 OpenAI 请求体（保留 tool_calls / tool_call_id）。"""
+    out: list[dict] = []
+    for m in messages:
+        item: dict = {"role": m.role, "content": m.content or ""}
+        if m.tool_calls:
+            item["tool_calls"] = m.tool_calls
+            if not m.content:
+                item["content"] = None
+        if m.tool_call_id:
+            item["tool_call_id"] = m.tool_call_id
+        out.append(item)
+    return out
+
+
+def _as_arguments(value) -> str:
+    """OpenAI 协议要求 arguments 是 JSON 字符串。"""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value or {}, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "{}"
+
+
+def _serialize_tool_calls(raw_calls) -> list[dict]:
+    """把 SDK 的 tool_calls 规整成可回填历史的 dict。"""
+    calls: list[dict] = []
+    for i, tc in enumerate(raw_calls or []):
+        if isinstance(tc, dict):
+            fn = tc.get("function") or {}
+            calls.append({
+                "id": tc.get("id") or f"call_{i}",
+                "type": "function",
+                "function": {
+                    "name": fn.get("name", ""),
+                    "arguments": _as_arguments(fn.get("arguments", "{}")),
+                },
+            })
+            continue
+        fn = getattr(tc, "function", None)
+        calls.append({
+            "id": getattr(tc, "id", "") or f"call_{i}",
+            "type": "function",
+            "function": {
+                "name": getattr(fn, "name", "") if fn else "",
+                "arguments": _as_arguments(getattr(fn, "arguments", "{}") if fn else "{}"),
+            },
+        })
+    return calls
 
 
 def _delta_parts(delta) -> tuple[str, str]:
@@ -144,8 +201,10 @@ class LLMClient(BaseLLM):
         AsyncOpenAI = _get_async_openai()
         # 用 certifi 证书路径创建 httpx 客户端，避免 Windows 系统证书库卡顿
         # 超时显式设为 300s：httpx 默认 5s 对 LLM 生成太短，会触发无谓重试
+        import ssl
         import httpx, certifi
-        http_client = httpx.AsyncClient(verify=certifi.where(), timeout=httpx.Timeout(300.0, connect=15.0))
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        http_client = httpx.AsyncClient(verify=ssl_ctx, timeout=httpx.Timeout(300.0, connect=15.0))
         return AsyncOpenAI(
             api_key=self.api_key or "ollama",
             base_url=self.base_url or "https://api.openai.com/v1",
@@ -200,6 +259,7 @@ class LLMClient(BaseLLM):
         max_tokens: int = 4096,
         max_retries: int = 3,
         thinking: ThinkingMode = "auto",
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         self._sync_loop()
         last_exc: Exception | None = None
@@ -209,20 +269,29 @@ class LLMClient(BaseLLM):
                 await _global_limiter.acquire()
                 create_kwargs: dict = dict(
                     model=self.model,
-                    messages=[{"role": m.role, "content": m.content} for m in messages],
+                    messages=_serialize_messages(messages),
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
                 if extra:
                     create_kwargs["extra_body"] = extra
+                if tools:
+                    create_kwargs["tools"] = tools
+                    create_kwargs["tool_choice"] = "auto"
                 try:
                     resp = await self.client.chat.completions.create(**create_kwargs)
                 except Exception as e:
-                    # 思考字段不被该 API 认可时降级重试一次（不带 extra_body）
-                    if extra and attempt < max_retries and _is_invalid_request(e):
-                        logger.warning("思考开关被 %s 拒绝，去掉后重试: %s", self.base_url, e)
-                        extra = {}
-                        continue
+                    if attempt < max_retries and _is_invalid_request(e):
+                        # 思考字段不被该 API 认可时降级重试（不带 extra_body）
+                        if extra:
+                            logger.warning("思考开关被 %s 拒绝，去掉后重试: %s", self.base_url, e)
+                            extra = {}
+                            continue
+                        # 模型/网关不支持工具调用：退化为纯文本一次性调用
+                        if tools:
+                            logger.warning("工具调用被 %s 拒绝，退化为纯文本: %s", self.base_url, e)
+                            tools = None
+                            continue
                     raise
                 choice = resp.choices[0]
                 _think, content = _message_parts(choice.message)
@@ -233,6 +302,7 @@ class LLMClient(BaseLLM):
                         "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
                         "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
                     },
+                    tool_calls=_serialize_tool_calls(getattr(choice.message, "tool_calls", None)),
                 )
             except _get_retryable_errors() as e:
                 last_exc = e
@@ -257,7 +327,9 @@ class LLMClient(BaseLLM):
         max_tokens: int = 4096,
         max_retries: int = 3,
         thinking: ThinkingMode = "auto",
-    ) -> AsyncIterator[str]:
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[tuple[str, str]]:
+        # 流式 + 工具调用语义复杂，自由对话保持纯文本；工作流工具走 chat()
         self._sync_loop()
         last_exc: Exception | None = None
         extra = self._thinking_body(thinking)
@@ -267,7 +339,7 @@ class LLMClient(BaseLLM):
                 await _global_limiter.acquire()
                 create_kwargs: dict = dict(
                     model=self.model,
-                    messages=[{"role": m.role, "content": m.content} for m in messages],
+                    messages=_serialize_messages(messages),
                     temperature=temperature,
                     max_tokens=max_tokens,
                     stream=True,

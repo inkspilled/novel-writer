@@ -47,6 +47,7 @@ class MockAgent(BaseAgent):
         if any(kw in user_input for kw in self.fail_keywords):
             raise RuntimeError(f"模拟 API 故障: {user_input[:20]}")
         response = LLMResponse(content=self.content, usage={"total_tokens": 10})
+        self._record_usage(response.usage)
         # 与 BaseAgent.run 一致：仅 keep_history 时追加对话历史
         if keep_history:
             self.history.append(LLMMessage(role="user", content=user_input))
@@ -90,6 +91,10 @@ class TestResume:
     def test_done_step_skipped(self, project_dir):
         agent = make_agent("故事结构")
         runner = make_runner(project_dir, {"a": agent})
+        # 产出存在时，done 才算完成；文件缺失会自动重跑（见 TestStepCompletedOutputMissing）
+        out = project_dir / "planning" / "大纲.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("# 大纲", encoding="utf-8")
         wf = make_wf([WorkflowStep(id="outline", needs="故事结构", prompt="写大纲",
                                    output="planning/大纲.md")])
         progress = asyncio.run(runner.run(wf, {"outline": "done"}))
@@ -673,8 +678,9 @@ class TestUsageAndRotation:
         wf = make_wf([WorkflowStep(id="chapter", needs="正文写作", prompt="写第{n}章",
                                    output="chapters/{n}_chapter.txt", repeat=2)])
         progress = asyncio.run(runner.run(wf, {}))
-        assert progress["_usage"]["total_tokens"] == 20
-        assert runner.total_usage["total_tokens"] == 20
+        # 每章 1 次正文 + 1 次 LLM 沉淀，共 4 次调用；usage_sink 覆盖内置步骤
+        assert progress["_usage"]["total_tokens"] == 40
+        assert runner.total_usage["total_tokens"] == 40
 
     def test_find_agent_rotation_opt_in(self, project_dir):
         a1 = make_agent("正文写作", name="a1")
@@ -686,3 +692,25 @@ class TestUsageAndRotation:
         rotating = make_runner(project_dir, {"1": a1, "2": a2}, rotate_agents=True)
         picks = [rotating.find_agent("正文写作") for _ in range(4)]
         assert picks == [a1, a2, a1, a2]  # 轮换交替（cycle 从第一个开始）
+
+
+class TestStepCompletedOutputMissing:
+    """进度 done 但产出文件被删 → 视为未完成，允许重跑。"""
+
+    def test_done_without_output_file_reruns(self, tmp_path):
+        from src.novel_writer.core.workflow.runner import WorkflowRunner
+        from src.novel_writer.core.workflow.definition import WorkflowStep
+        step = WorkflowStep(id="chapter_outline", output="planning/章节细纲.md")
+        progress = {"chapter_outline": "done"}
+        assert WorkflowRunner._step_completed(step, progress, tmp_path) is False
+        # 写出文件后才算完成
+        out = tmp_path / "planning" / "章节细纲.md"
+        out.parent.mkdir(parents=True)
+        out.write_text("## 第1章", encoding="utf-8")
+        assert WorkflowRunner._step_completed(step, progress, tmp_path) is True
+
+    def test_done_without_output_path_keeps_done(self):
+        from src.novel_writer.core.workflow.runner import WorkflowRunner
+        from src.novel_writer.core.workflow.definition import WorkflowStep
+        step = WorkflowStep(id="toc", output="")
+        assert WorkflowRunner._step_completed(step, {"toc": "done"}, None) is True

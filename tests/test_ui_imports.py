@@ -28,6 +28,7 @@ MODULES = [
     "novel_writer.ui.settings.model_dialog",
     "novel_writer.ui.settings.appearance_dialog",
     "novel_writer.ui.shell.splash",
+    "novel_writer.ui.shell.about_dialog",
     "novel_writer.ui.app_shell.theme_mixin",
     "novel_writer.ui.app_shell.llm_mixin",
     "novel_writer.ui.app_shell.project_mixin",

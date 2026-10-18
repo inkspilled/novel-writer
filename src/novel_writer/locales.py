@@ -16,14 +16,17 @@ STRINGS = {
     # ── 一级菜单 ──
     "menu_model_agent": {"zh": "模型与智能体(&M)", "en": "Model & Agent(&M)"},
     "menu_appearance_open": {"zh": "外观设置", "en": "Appearance Settings"},
+    "menu_focus_mode": {"zh": "专注模式", "en": "Focus Mode"},
+    "status_focus_on": {"zh": "专注模式：只看正文（Ctrl+Shift+F 退出）", "en": "Focus mode: text only (Ctrl+Shift+F to exit)"},
+    "status_focus_off": {"zh": "已退出专注模式", "en": "Focus mode off"},
     "menu_model_open": {"zh": "模型设置", "en": "Model Settings"},
-    "menu_about": {"zh": "关于(&H)", "en": "About(&H)"},
     "menu_about_app": {"zh": "关于 Novel Writer", "en": "About Novel Writer"},
     "menu_help": {"zh": "帮助(&H)", "en": "Help(&H)"},
     "menu_settings": {"zh": "设置(&S)", "en": "Settings(&S)"},
     "menu_project_settings": {"zh": "项目设置", "en": "Project Settings"},
     "about_version": {"zh": "版本 0.1.0", "en": "Version 0.1.0"},
     "about_desc": {"zh": "多 Agent 协作的 AI 小说写作桌面应用", "en": "AI novel writing desktop app with multi-agent collaboration"},
+    "about_open_data": {"zh": "打开数据目录", "en": "Open data folder"},
 
     # ── Agent 面板 ──
     "settings_temperature": {"zh": "温度:", "en": "Temperature:"},
@@ -47,6 +50,14 @@ STRINGS = {
     # ── Agent 面板 ──
     "agent_select": {"zh": "选择一个智能体", "en": "Select an Agent"},
     "agent_ph_input": {"zh": "输入指令给智能体", "en": "Enter instructions for Agent"},
+    "agent_empty_hint": {
+        "zh": "选择上方智能体开始协作，或直接输入指令",
+        "en": "Pick an agent above, or type an instruction below",
+    },
+    "agent_empty_title": {"zh": "从这里开始", "en": "Start here"},
+    "agent_quick_outline": {"zh": "让策划补全大纲", "en": "Ask the planner for an outline"},
+    "agent_quick_continue": {"zh": "让写手续写下一章", "en": "Ask the writer for the next chapter"},
+    "agent_quick_review": {"zh": "让审核检查最近 3 章", "en": "Ask the reviewer to check the last 3 chapters"},
     "agent_send": {"zh": "发送", "en": "Send"},
     "agent_generating": {"zh": "生成中", "en": "Generating"},
     "agent_clear_chat": {"zh": "清空聊天", "en": "Clear Chat"},
@@ -137,6 +148,7 @@ STRINGS = {
     "menu_export_epub": {"zh": "导出为 EPUB", "en": "Export as EPUB"},
     "menu_export_pdf": {"zh": "导出为 PDF", "en": "Export as PDF"},
     "export_success": {"zh": "导出成功", "en": "Export Successful"},
+    "export_open_dir": {"zh": "打开所在目录", "en": "Open folder"},
     "export_failed": {"zh": "导出失败", "en": "Export Failed"},
     "export_no_project": {"zh": "请先打开或创建一个项目", "en": "Please open or create a project first"},
     "export_missing_dep": {"zh": "缺少依赖", "en": "Missing Dependency"},
@@ -144,7 +156,6 @@ STRINGS = {
     # ── 状态消息 ──
     "status_created": {"zh": "已创建项目: {}", "en": "Project created: {}"},
     "status_opened": {"zh": "已打开项目: {}", "en": "Project opened: {}"},
-    "status_saved": {"zh": "项目已保存: {}", "en": "Project saved: {}"},
     "status_settings_saved": {"zh": "设置已保存", "en": "Settings saved"},
     "status_agent_done": {"zh": "{} 完成", "en": "{} done"},
 
@@ -190,10 +201,6 @@ _current_lang = "zh"
 def set_language(lang: str):
     global _current_lang
     _current_lang = lang if lang in ("zh", "en") else "zh"
-
-
-def get_language() -> str:
-    return _current_lang
 
 
 def t(key: str, *args) -> str:

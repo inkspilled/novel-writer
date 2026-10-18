@@ -16,11 +16,10 @@ class ChatMessage(QFrame):
     apply_to_chapter = Signal(str)  # 发出正文
     copy_requested = Signal(str)
 
-    def __init__(self, role: str, content: str, agent_name: str = "", parent=None):
+    def __init__(self, role: str, content: str, parent=None):
         super().__init__(parent)
         self._role = role
         self._raw_content = content
-        self._agent_name = agent_name
         self.setFrameShape(QFrame.Shape.NoFrame)
 
         self._outer = QHBoxLayout(self)
@@ -59,7 +58,6 @@ class ChatMessage(QFrame):
         self._action_row_widget.setVisible(False)
         self._bubble_layout.addWidget(self._action_row_widget)
 
-        self._avatar = None
         if role == "user":
             self._outer.addStretch()
             self._outer.addWidget(self._bubble, 0)

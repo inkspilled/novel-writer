@@ -68,7 +68,7 @@ QTextEdit, QPlainTextEdit {{
     border: 1px solid {t['border']};
     border-radius: 12px;
     padding: 16px;
-    font-size: 15px;
+    font-size: 16px;
     selection-background-color: {t['accent_bg']};
 }}
 QTextEdit:focus, QPlainTextEdit:focus {{
@@ -80,6 +80,14 @@ QLabel {{
     color: {t['fg']};
     font-size: 13px;
     background: transparent;
+}}
+QToolTip {{
+    background-color: {t['elevated']};
+    color: {t['fg']};
+    border: 1px solid {t['border']};
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
 }}
 
 /* ──── 按钮 ──── */
@@ -215,12 +223,12 @@ QTabBar {{
 QTabBar::tab {{
     background: transparent;
     color: {t['fg2']};
-    padding: 10px 24px;
+    padding: 8px 14px;
     border: none;
     border-bottom: 2px solid transparent;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
-    min-width: 60px;
+    min-width: 48px;
 }}
 QTabBar::tab:hover {{
     color: {t['fg']};
@@ -267,6 +275,31 @@ QScrollBar::handle:horizontal {{
     background-color: {t['fg3']};
     border-radius: 3px;
     min-width: 40px;
+}}
+
+/* ──── 表单控件 ──── */
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
+    background-color: {t['surface']};
+    color: {t['fg']};
+    border: 1px solid {t['border']};
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 13px;
+    selection-background-color: {t['accent_bg']};
+}}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+    border-color: {t['accent']};
+}}
+QComboBox QAbstractItemView {{
+    background-color: {t['surface']};
+    color: {t['fg']};
+    border: 1px solid {t['border']};
+    selection-background-color: {t['accent_bg']};
+    selection-color: {t['accent']};
+    outline: none;
+}}
+QCheckBox {{
+    spacing: 6px;
 }}
 
 /* ──── 分组框 ──── */

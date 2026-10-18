@@ -65,10 +65,10 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── 办公室场景（小幅点缀，不抢聊天区） ──
+        # ── Agent 状态条（紧凑卡片，不抢聊天区） ──
         from .office_scene import OfficeScene
         self.office = OfficeScene()
-        self.office.setFixedHeight(160)
+        self.office.setMinimumHeight(OfficeScene.HEIGHT)
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
         layout.addWidget(self.office)
 
@@ -135,6 +135,42 @@ class AgentPanel(QWidget):
         self.chat_layout = QVBoxLayout(self.chat_container)
         self.chat_layout.setContentsMargins(12, 10, 12, 10)
         self.chat_layout.setSpacing(8)
+        self._empty_state = QWidget()
+        empty_layout = QVBoxLayout(self._empty_state)
+        empty_layout.setContentsMargins(28, 40, 28, 24)
+        empty_layout.setSpacing(8)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self._empty_title = QLabel(t("agent_empty_title"))
+        self._empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_title.setStyleSheet("font-size: 15px; font-weight: 600;")
+        empty_layout.addWidget(self._empty_title)
+
+        self._empty_hint_label = QLabel(t("agent_empty_hint"))
+        self._empty_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_hint_label.setWordWrap(True)
+        self._empty_hint_label.setStyleSheet("color: #8e8e9a; font-size: 12px;")
+        empty_layout.addWidget(self._empty_hint_label)
+
+        empty_layout.addSpacing(6)
+        self._empty_actions = []
+        for agent_key, text_key, prompt in (
+            ("planner", "agent_quick_outline",
+             "请根据现有立意补全故事大纲，保持分卷篇幅，不要压缩剧情。"),
+            ("writer", "agent_quick_continue",
+             "请续写下一章正文，先给出章节标题，再写正文。"),
+            ("reviewer", "agent_quick_review",
+             "请检查最近 3 章的剧情逻辑、人物一致性和节奏，列出问题与修改建议。"),
+        ):
+            btn = QPushButton(t(text_key))
+            btn.setMinimumHeight(34)
+            btn.clicked.connect(
+                lambda checked=False, a=agent_key, p=prompt: self._on_empty_action(a, p)
+            )
+            empty_layout.addWidget(btn)
+            self._empty_actions.append(btn)
+
+        self.chat_layout.addWidget(self._empty_state)
         self.chat_layout.addStretch()
         self.scroll_area.setWidget(self.chat_container)
         layout.addWidget(self.scroll_area, 1)
@@ -190,7 +226,6 @@ class AgentPanel(QWidget):
         emojis, colors = {}, {}
         for i, (name, info) in enumerate(agents_cfg.items()):
             emoji = info.get("emoji", "🤖")
-            title = info.get("title", name)
             color = COLOR_POOL[i % len(COLOR_POOL)]
             emojis[name] = emoji
             colors[name] = color
@@ -315,10 +350,29 @@ class AgentPanel(QWidget):
 
     # ── 消息管理 ──
 
+    def _update_empty_hint(self):
+        has_messages = bool(self._msg_widgets)
+        visible = self._project_loaded and not has_messages and not self._chat_locked
+        self._empty_state.setVisible(visible)
+        for btn in self._empty_actions:
+            btn.setEnabled(self._project_loaded and not self._chat_locked)
+
+    def _on_empty_action(self, agent_key: str, prompt: str):
+        """空状态快捷动作：切到对应智能体并发送预置指令。"""
+        if not self._project_loaded or self._chat_locked:
+            return
+        if agent_key not in self._agents_cfg:
+            agent_key = next(iter(self._agents_cfg), "")
+        if not agent_key:
+            return
+        self._on_agent_selected(agent_key)
+        self._send_quick_action(prompt)
+
     def add_user_message(self, text: str):
         msg = ChatMessage("user", text)
         self._msg_widgets.append(msg)
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg)
+        self._update_empty_hint()
         QTimer.singleShot(50, self._scroll_to_bottom)
 
         if self._current_agent not in self._chat_history:
@@ -326,9 +380,10 @@ class AgentPanel(QWidget):
         self._chat_history[self._current_agent].append({"type": "user", "text": text})
 
     def add_agent_message(self, agent_name: str, text: str):
-        msg = ChatMessage("agent", text, agent_name=agent_name)
+        msg = ChatMessage("agent", text)
         self._msg_widgets.append(msg)
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg)
+        self._update_empty_hint()
         QTimer.singleShot(50, self._scroll_to_bottom)
 
         if agent_name not in self._chat_history:
@@ -340,7 +395,7 @@ class AgentPanel(QWidget):
         """追加流式文本块。kind=thinking 时灰字显示，text 常规显示。"""
         if self._stream_widget is None:
             self._stream_agent = agent_name or self._current_agent
-            self._stream_widget = ChatMessage("agent", "", agent_name=self._stream_agent)
+            self._stream_widget = ChatMessage("agent", "")
             # 只在当前显示的是同一智能体时才插入 widget
             if self._stream_agent == self._current_agent:
                 self._msg_widgets.append(self._stream_widget)
@@ -455,8 +510,7 @@ class AgentPanel(QWidget):
             if m["type"] == "user":
                 msg = ChatMessage("user", m["text"])
             else:
-                msg = ChatMessage("agent", m["text"],
-                                  agent_name=m.get("agent_name", agent_name))
+                msg = ChatMessage("agent", m["text"])
             self._msg_widgets.append(msg)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, msg)
 
@@ -470,6 +524,7 @@ class AgentPanel(QWidget):
             self._msg_widgets.append(widget)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, widget)
 
+        self._update_empty_hint()
         QTimer.singleShot(50, self._scroll_to_bottom)
 
     def _clear_current_chat(self):
@@ -483,6 +538,7 @@ class AgentPanel(QWidget):
         for msg in self._msg_widgets:
             msg.deleteLater()
         self._msg_widgets.clear()
+        self._update_empty_hint()
         self.save_history()
 
     # ── 项目级聊天记录 ──
@@ -494,12 +550,14 @@ class AgentPanel(QWidget):
         if project_dir:
             self._chat_db = ChatHistory(project_dir / "chat.db")
             self._project_loaded = True
+            self._update_empty_hint()
             self._no_project_hint.setVisible(False)
             self.input_edit.setEnabled(True)
             self.btn_run.setEnabled(True)
         else:
             self._chat_db = None
             self._project_loaded = False
+            self._update_empty_hint()
             self._no_project_hint.setVisible(True)
             self.input_edit.setEnabled(False)
             self.btn_run.setEnabled(False)
@@ -561,6 +619,8 @@ class AgentPanel(QWidget):
             f"color: {fg3}; padding: 4px 16px; font-size: 12px;")
         self._hint_label.setStyleSheet(
             f"font-size: 11px; color: {fg3};")
+        self._empty_hint_label.setStyleSheet(
+            f"color: {colors.get('fg2', fg3)}; font-size: 12px;")
         self.btn_clear.setStyleSheet(f"""
             QPushButton {{
                 border-radius: 6px; font-size: 14px;
@@ -574,6 +634,7 @@ class AgentPanel(QWidget):
         """)
 
         self.indicator.update_theme(colors)
+        self.office.apply_theme(colors)
         self.workflow_bar.apply_theme(colors)
 
         self._apply_quick_style()
@@ -604,7 +665,7 @@ class AgentPanel(QWidget):
     def on_workflow_step_error(self, step_id: str, error: str):
         """工作流步骤出错。"""
         from .office_scene import AgentState
-        for slot in self.office._slots:
+        for slot in self.office.iter_slots():
             if slot.state == AgentState.WORKING:
                 self.office.set_agent_state(slot.name, AgentState.ERROR)
                 self.workflow_bar.append_log(f"✗ <b>{slot.title}</b> 出错: {error[:80]}")
@@ -615,7 +676,7 @@ class AgentPanel(QWidget):
 
     def on_workflow_started(self):
         from .office_scene import AgentState
-        for slot in self.office._slots:
+        for slot in self.office.iter_slots():
             if slot.state != AgentState.WORKING:
                 self.office.set_agent_state(slot.name, AgentState.WAITING)
         self.workflow_bar.set_running(True)
@@ -625,8 +686,7 @@ class AgentPanel(QWidget):
 
     def on_workflow_finished(self):
         from .office_scene import AgentState
-        for slot in self.office._slots:
-            self.office.set_agent_state(slot.name, AgentState.DONE)
+        self.office.reset_states(AgentState.DONE)
         self.workflow_bar.set_running(False)
         self.workflow_bar.append_log("── <b>工作流完成！</b> ──")
         self._set_chat_locked(False)
@@ -645,6 +705,7 @@ class AgentPanel(QWidget):
             self.btn_run.setEnabled(enabled)
             self.input_edit.setPlaceholderText(t("agent_ph_input"))
             self.btn_run.setText(t("agent_send"))
+        self._update_empty_hint()
 
     def _find_agent_by_title(self, title: str) -> str:
         """根据 agent 中文标题找到配置名。"""
@@ -661,3 +722,9 @@ class AgentPanel(QWidget):
         self.btn_run.setText(t("agent_send"))
         self._loading_label.setText(t("agent_thinking"))
         self._hint_label.setText(t("agent_send_hint"))
+        self._empty_title.setText(t("agent_empty_title"))
+        self._empty_hint_label.setText(t("agent_empty_hint"))
+        for btn, key in zip(self._empty_actions, (
+            "agent_quick_outline", "agent_quick_continue", "agent_quick_review",
+        )):
+            btn.setText(t(key))

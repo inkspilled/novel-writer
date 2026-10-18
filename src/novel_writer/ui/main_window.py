@@ -73,7 +73,7 @@ class MainWindow(
     # ── UI 构建 ──
 
     def _setup_ui(self):
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter = splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(1)
         splitter.setChildrenCollapsible(False)
         self.sidebar = Sidebar()

@@ -236,3 +236,106 @@ def build_review_aggregate_prompt(findings: list[str], total_chapters: int) -> s
         "## 修改建议\n（可操作的建议清单）\n\n"
         + "\n\n".join(f[:3000] for f in findings)
     )
+
+
+# ── 全书章节细纲（分批） ──
+
+CHAPTER_OUTLINE_BATCH = 15  # 每批生成的章数（防单次输出截断）
+
+
+def build_chapter_outline_batch_prompt(
+    planning_summary: str,
+    start_ch: int,
+    end_ch: int,
+    total_ch: int,
+    prior_beats: str = "",
+) -> str:
+    """生成一批章节的剧情骨架（每章 3–5 行，无细节）。"""
+    parts = [
+        f"你是小说结构策划。请为第 {start_ch}–{end_ch} 章（全书共 {total_ch} 章）编写**章节细纲**。",
+        "这是全书逐章剧情骨架：只写事件走向，不写对话、描写和心理活动。\n",
+        "【输出格式】每章严格用二级标题 + 三行要点：",
+        f"## 第X章 暂定标题",
+        "- 事件：本章发生什么（1句）",
+        "- 转折/冲突：本章的冲突升级或变化（1句）",
+        "- 章末钩子：留给下一章的悬念或承接点（1句）",
+        f"\n必须覆盖第 {start_ch} 章到第 {end_ch} 章，一章不漏，章号连续。\n",
+    ]
+    if planning_summary:
+        parts.append(f"=== 规划参考 ===\n{planning_summary}\n")
+    if prior_beats:
+        parts.append(f"=== 已完成的前文细纲（保持衔接） ===\n{prior_beats}\n")
+    parts.append(
+        f"【节奏约束】全书 {total_ch} 章。第 {start_ch}–{end_ch} 章处于进度 "
+        f"{int((start_ch - 1) / total_ch * 100)}%–{int(end_ch / total_ch * 100)}%，"
+        "剧情密度必须匹配该阶段，不要提前收束或拖延。\n"
+        f"只输出第 {start_ch}–{end_ch} 章的细纲，不要输出其他章节。"
+    )
+    return "\n".join(parts)
+
+
+OUTLINE_REVISE_WINDOW = 10  # 每轮只修订未来 10 章：单次输出可控，避免整书覆盖
+
+
+# ── 多审稿人并行会审（fan-out / fan-in） ──
+
+REVIEW_PANEL_LENSES = (
+    ("剧情逻辑", "只审剧情逻辑：因果链、动机可信度、转折是否生硬、有无降智/巧合推动。"),
+    ("人物一致性", "只审人物：性格与行为是否一致、台词是否符合声线、关系变化有无铺垫、有无工具人。"),
+    ("节奏爽点", "只审节奏与读者体验：场景是否拖沓、信息密度、爽点/微兑现是否到位、章末钩子是否有效。"),
+)
+
+
+def build_review_panel_prompt(lens: str, focus: str, chapter_text: str, n: int) -> str:
+    """单个审稿视角：只输出该视角的问题，避免三份报告互相复读。"""
+    return (
+        f"你是小说审稿人，负责【{lens}】视角。当前已写到第 {n} 章。\n"
+        f"审查要求：{focus}\n\n"
+        "输出格式：\n"
+        "## 结论（一句话）\n"
+        "## 问题（按严重度排序，每条给章节位置 + 原文证据 + 修法）\n"
+        "## 可保留的优点（最多 3 条）\n\n"
+        "只报你视角内的问题，不要面面俱到；没有问题时明确写「未发现」。\n\n"
+        f"=== 待审章节 ===\n{chapter_text}"
+    )
+
+
+def build_review_panel_aggregate_prompt(findings: list[str], start_ch: int, end_ch: int) -> str:
+    """把多视角发现合并成一份按优先级排序的修改清单。"""
+    return (
+        f"你是主编。以下是第 {start_ch}–{end_ch} 章的多视角会审记录。\n"
+        "请合并去重，输出一份可执行的修改清单：\n"
+        "## 总体判断（3 句内）\n"
+        "## 必须修（影响逻辑/人设/读者信任）\n"
+        "## 建议修（提升质感）\n"
+        "## 可以保留\n"
+        "每条注明章节与具体改法，不要重复不同视角的同一问题。\n\n"
+        + "\n\n".join(findings)
+    )
+
+
+def build_chapter_outline_revise_prompt(
+    existing_window: str,
+    recent_summaries: str,
+    n: int,
+    total_ch: int,
+    start_ch: int,
+    end_ch: int,
+) -> str:
+    """按实际走向修订未来一小段细纲（只输出 start–end，调用方负责拼接）。
+
+    不要求模型重写整本书：100 章细纲约 1.3 万字，远超单次输出上限；
+    要求「完整输出」必然截断，再把结果整文件覆盖就会丢后半本。
+    """
+    return (
+        f"你是小说结构策划。全书计划 {total_ch} 章，已写到第 {n} 章。\n"
+        f"请根据实际剧情，**只修订**第 {start_ch} 章到第 {end_ch} 章的章节细纲。\n\n"
+        "【规则】\n"
+        f"1. 只输出第 {start_ch}–{end_ch} 章，不要输出第 {n} 章及以前的任何内容\n"
+        "2. 已写章节的既成事实不得推翻；后续剧情必须能自然接上\n"
+        "3. 保持输出格式不变（## 第X章 暂定标题 + 三行要点：事件 / 转折冲突 / 章末钩子）\n"
+        f"4. 章号连续完整，必须覆盖 {start_ch}–{end_ch}，一章不漏\n\n"
+        f"=== 当前细纲（第 {start_ch}–{end_ch} 章，供你改写） ===\n{existing_window}\n\n"
+        f"=== 最近剧情（第 1–{n} 章摘要） ===\n{recent_summaries}\n\n"
+        f"请只输出第 {start_ch}–{end_ch} 章修订后的细纲。"
+    )

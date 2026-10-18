@@ -2,7 +2,6 @@
 
 锁定模板去重、内置步骤注册表、上下文压缩优先级与聊天记录持久化的行为。
 """
-import pytest
 
 from src.novel_writer.core.workflow import (
     BUILTIN_STEP_HANDLERS,
@@ -20,18 +19,20 @@ from src.novel_writer.core.workflow import (
 
 EXPECTED_DEFAULT_IDS = [
     "ideation", "outline", "characters", "world", "timeline",
-    "main_plot", "sub_plot", "foreshadow", "fix_titles",
-    "inspiration", "sim", "chapter", "chapter_summary", "world_state_update",
+    "main_plot", "sub_plot", "foreshadow", "chapter_outline", "fix_titles",
+    "inspiration", "sim", "pov_sim", "chapter", "chapter_summary", "world_state_update",
     "toc", "polish", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
+    "update_chapter_outline", "review_panel",
     "quality_check", "review",
 ]
 
 EXPECTED_CONTINUE_IDS = [
-    "fix_titles",
-    "inspiration", "sim", "chapter", "chapter_summary", "world_state_update",
+    "fix_titles", "chapter_outline",
+    "inspiration", "sim", "pov_sim", "chapter", "chapter_summary", "world_state_update",
     "toc", "polish", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
+    "update_chapter_outline", "review_panel",
     "quality_check", "review",
 ]
 
@@ -39,7 +40,7 @@ EXPECTED_VALIDATE_IDS = ["fix_titles", "toc", "review", "proofread"]
 
 EXPECTED_PLANNING_IDS = [
     "ideation", "outline", "characters", "world", "timeline",
-    "main_plot", "sub_plot", "foreshadow",
+    "main_plot", "sub_plot", "foreshadow", "chapter_outline",
 ]
 
 
@@ -60,10 +61,11 @@ class TestTemplateEquivalence:
         default_ids = [s["id"] for s in DEFAULT_WORKFLOW["steps"]]
         assert EXPECTED_PLANNING_IDS == default_ids[:len(EXPECTED_PLANNING_IDS)]
 
-    def test_continue_has_no_planning_steps(self):
+    def test_continue_only_reuses_chapter_outline(self):
+        """续写不重跑规划链，只允许补一份缺失的章节细纲。"""
         continue_ids = {s["id"] for s in CONTINUE_WORKFLOW["steps"]}
         planning_ids = {s["id"] for s in PLANNING_WORKFLOW["steps"]}
-        assert not (continue_ids & planning_ids)
+        assert continue_ids & planning_ids == {"chapter_outline"}
 
     def test_periodic_steps_preserved(self):
         """定时步骤的 every 间隔必须保持不变。"""
@@ -72,7 +74,8 @@ class TestTemplateEquivalence:
         assert by_id["sim"]["every"] == 1
         assert by_id["polish"]["every"] == 2
         assert by_id["summary"]["every"] == 5
-        for sid in ("update_outline", "update_characters", "update_foreshadow"):
+        for sid in ("update_outline", "update_characters", "update_foreshadow",
+                    "update_chapter_outline"):
             assert by_id[sid]["every"] == 5
             assert by_id[sid]["update_planning"] is True
 
@@ -112,6 +115,7 @@ class TestBuiltinStepHandlers:
         assert set(BUILTIN_STEP_HANDLERS) == {
             "toc", "fix_titles", "world_state_update", "chapter_summary", "quality_check",
             "proofread", "review",  # 批处理改造后由 handler 自行编排 LLM（分批校对/审核）
+            "chapter_outline", "update_chapter_outline", "review_panel", "pov_sim",
         }
 
     def test_tool_steps_have_no_needs(self):

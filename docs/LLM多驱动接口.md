@@ -26,7 +26,7 @@
 | Moonshot (Kimi) | `https://api.moonshot.cn/v1` |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` |
 | 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| Ollama (本地) | `http://localhost:11434` |
+| Ollama (本地) | `http://localhost:11434/v1` |
 | llama.cpp (本地) | `http://localhost:8080/v1` |
 | vLLM (本地) | `http://localhost:8000/v1` |
 | LM Studio (本地) | `http://localhost:1234/v1` |
@@ -49,11 +49,23 @@ class BaseLLM:
 
 Agent 层只依赖 `BaseLLM`，不感知后端差异。
 
+## 工具调用（tools）
+
+`chat(messages, …, tools=[...])` 支持 OpenAI function calling：
+
+- 请求体带 `tools` + `tool_choice="auto"`；
+- 响应解析 `message.tool_calls` 为 `{id,type,function:{name,arguments}}`，回填 `LLMResponse.tool_calls`；
+- 历史消息支持 `assistant.tool_calls` 与 `role="tool" + tool_call_id`；
+- 网关/模型拒绝 `tools` 时自动去掉该字段重试一次（`_is_invalid_request`），降级为纯文本；
+- 流式 `stream_chat` 不承载工具调用（自由对话纯文本），工具循环只走非流式 `chat`。
+
+其余三个驱动（Claude/Ollama/OpenAICompat）接受 `tools` 参数但当前未实现，工作流只装配 `LLMClient`。
+
 ## 性能红线
 
 | 约定 | 值 | 原因 |
 |------|-----|------|
-| 全局限流器间隔 | **0.3s** | 曾为 5s，8 步规划纯等 40s+ |
+| 全局限流器间隔 | **0.15s** | 曾为 5s，8 步规划纯等 40s+ |
 | 限流器锁 | `threading.Lock` | 调用方各自 `new_event_loop()`，`asyncio.Lock` 跨 loop 竞争即死锁 |
 | httpx 超时 | **300s**（连接 15s） | 曾为 5s，LLM 生成必超时→重试 |
 | HTTP 客户端 loop 绑定 | 每次调用 `_sync_loop()` | AgentWorker/WorkflowThread 各建 loop，httpx 客户端绑定创建时 loop，换 loop 须重建 |

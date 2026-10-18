@@ -6,11 +6,11 @@ from __future__ import annotations
 
 # ── 深夜墨 (Midnight) ──
 MIDNIGHT = {
-    "bg": "#0f0f14", "surface": "#16161d", "card": "#1c1c26", "elevated": "#242430",
-    "border": "rgba(255,255,255,0.06)", "divider": "rgba(255,255,255,0.04)",
-    "fg": "#e8e8ed", "fg2": "#8e8e9a", "fg3": "#5a5a66",
-    "accent": "#6e8efb", "accent_hover": "#8aa4ff", "accent_bg": "rgba(110,142,251,0.12)",
-    "shadow": "0 2px 12px rgba(0,0,0,0.4)",
+    "bg": "#0e0e13", "surface": "#1a1a23", "card": "#232330", "elevated": "#2d2d3c",
+    "border": "rgba(255,255,255,0.09)", "divider": "rgba(255,255,255,0.06)",
+    "fg": "#e9e9ef", "fg2": "#9a9aa8", "fg3": "#6b6b7a",
+    "accent": "#7a98ff", "accent_hover": "#94adff", "accent_bg": "rgba(122,152,255,0.16)",
+    "shadow": "0 2px 12px rgba(0,0,0,0.45)",
 }
 
 # ── 晨雾白 (Daybreak) ──

@@ -38,6 +38,7 @@ class WorkflowThread(QThread):
         self.runner.on_step_start = self._on_step_start
         self.runner.on_step_end = self._on_step_end
         self.runner.on_error = self._on_error
+        self.runner.on_event = self._on_event
 
         try:
             self.log_message.emit("工作流开始执行...")
@@ -46,6 +47,8 @@ class WorkflowThread(QThread):
             )
             result = self._loop.run_until_complete(self._task)
             self.progress = result
+            if self.runner.journal_path:
+                self.log_message.emit(f"运行日志: {self.runner.journal_path}")
             if self.runner._stop:
                 logger.info("工作流已被用户停止")
                 self.workflow_stopped.emit()
@@ -58,10 +61,28 @@ class WorkflowThread(QThread):
         except Exception as e:
             import traceback
             logger.error("工作流执行异常: %s", e, exc_info=True)
+            self.runner._journal_record("run_error", error=str(e))
             self.log_message.emit(f"错误: {e}\n{traceback.format_exc()}")
             self.workflow_stopped.emit()
         finally:
             self._loop.close()
+
+    def _on_event(self, kind: str, payload: dict):
+        """工具调用/重试等结构化事件 → 工作流日志（DSH 风格的 trajectory）。"""
+        try:
+            if kind == "tool_call":
+                args = payload.get("args") or {}
+                text = ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])
+                self.log_message.emit(f"  🔧 {payload.get('name')}({text})")
+            elif kind == "tool_result":
+                self.log_message.emit(f"  ↳ {payload.get('name')} 返回 {payload.get('chars', 0)} 字")
+            elif kind == "step_retry":
+                self.log_message.emit(
+                    f"  ↻ {payload.get('step')} 第{payload.get('attempt')}次重试"
+                    f"（{payload.get('delay', 0):.0f}s）"
+                )
+        except Exception:
+            logger.debug("工作流事件格式化失败（忽略）", exc_info=True)
 
     def _on_step_start(self, step_id, n, agent_title):
         self.step_started.emit(step_id, n, agent_title)

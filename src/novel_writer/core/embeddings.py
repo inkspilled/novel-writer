@@ -33,12 +33,13 @@ class EmbeddingClient:
     """
 
     def __init__(self, model: str, api_key: str = "", base_url: str = ""):
+        import ssl
         import httpx
         import certifi
 
         OpenAI = _get_sync_openai()
         http_client = httpx.Client(
-            verify=certifi.where(),
+            verify=ssl.create_default_context(cafile=certifi.where()),
             timeout=httpx.Timeout(60.0, connect=10.0),
         )
         self.model = model

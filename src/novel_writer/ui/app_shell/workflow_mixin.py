@@ -52,10 +52,12 @@ class WorkflowMixin:
         else:
             self._wf_def = WorkflowDef.from_dict(self._default_wf_data())
         self.agent_panel.workflow_bar.set_has_workflow(True)
-        # 计算已完成百分比
-        done = sum(1 for v in self._wf_progress.values() if v == "done")
-        total = len(self._wf_def.steps) if self._wf_def else 1
-        self.agent_panel.workflow_bar.set_progress(int(done / total * 100))
+        self.agent_panel.workflow_bar.set_progress(
+            self._wf_percent(self._wf_progress, self._wf_def)
+        )
+        self.agent_panel.workflow_bar.set_summary(
+            self._wf_summary(self._wf_progress), self._wf_body_percent()
+        )
 
     def _workflow_start(self):
         """开始执行工作流 — 先弹出模式选择对话框。"""
@@ -176,6 +178,7 @@ class WorkflowMixin:
             project_info=wf_def.project,
             max_context_tokens=max_context_tokens,
             rotate_agents=self.config.get("rotate_agents", False),
+            enable_tools=self.config.get("enable_tools", True),
         )
 
         self._wf_thread = WorkflowThread(
@@ -209,8 +212,8 @@ class WorkflowMixin:
         # 章节步骤完成后刷新侧边栏
         if step_id == "chapter":
             self._refresh_chapters()
-        # 规划步骤完成后刷新规划文档编辑器
-        if step_id in PLANNING_STEP_IDS:
+        # 规划步骤 / 规划反哺（含章节细纲）完成后刷新编辑器
+        if step_id in PLANNING_STEP_IDS or step_id.startswith("update_"):
             self.editor.refresh_planning()
 
     def _on_wf_step_error(self, step_id: str, error: str):
@@ -224,11 +227,56 @@ class WorkflowMixin:
         if self._wf_thread and self._wf_thread.isRunning():
             self._wf_thread.request_stop()
 
+    def _wf_summary(self, progress: dict | None = None) -> str:
+        """两段式摘要：规划完成数 + 正文完成数/目标数。"""
+        progress = progress or self._wf_progress or {}
+        steps = getattr(self._wf_def, "steps", None) or []
+        planning = [s for s in steps if s.id in PLANNING_STEP_IDS]
+        if planning:
+            done = sum(1 for s in planning if progress.get(s.id) == "done")
+            plan_text = f"规划 {done}/{len(planning)}"
+        else:
+            plan_text = "规划 —"
+        chapters = len(self.project.chapters)
+        target = self.project.target_chapters or 0
+        return f"{plan_text} · 正文 {chapters}/{target}" if target else f"{plan_text} · 正文 {chapters}"
+
+    def _wf_body_percent(self) -> int:
+        target = self.project.target_chapters or 0
+        if target <= 0:
+            return 0
+        return int(min(1.0, len(self.project.chapters) / target) * 100)
+
+    @staticmethod
+    def _wf_percent(progress: dict, wf_def) -> int:
+        """按步骤完成度计算百分比：循环步按 current/total 折算，周期键不参与。
+
+        旧实现只数 "done" 字符串，循环步是 dict 永远不计入；periodic 的
+        `sim_3=done` 之类的键又会虚增，进度条会乱跳/提前满格。
+        """
+        # 只统计主步骤（every==0）；周期步骤的完成键是 `id_n`，不进总进度
+        steps = [s for s in (getattr(wf_def, "steps", None) or []) if s.every == 0]
+        if not steps:
+            return 0
+        score = 0.0
+        for step in steps:
+            value = progress.get(step.id)
+            if step.repeat > 0:
+                if isinstance(value, dict):
+                    total = max(1, int(value.get("total") or step.repeat or 1))
+                    score += min(1.0, max(0.0, int(value.get("current") or 0) / total))
+            elif value == "done":
+                score += 1.0
+        return int(score / len(steps) * 100)
+
     def _on_wf_progress(self, progress: dict):
         self._wf_progress = progress
-        done = sum(1 for v in progress.values() if v == "done")
-        total = len(self._wf_def.steps) if self._wf_def else 1
-        self.agent_panel.on_workflow_progress(int(done / total * 100))
+        self.agent_panel.on_workflow_progress(
+            self._wf_percent(progress, self._wf_def)
+        )
+        self.agent_panel.workflow_bar.set_summary(
+            self._wf_summary(progress), self._wf_body_percent()
+        )
 
     def _on_wf_done(self):
         self._park_wf_thread()
@@ -245,6 +293,7 @@ class WorkflowMixin:
         self.agent_panel.workflow_bar.set_running(False)
         self.agent_panel.workflow_bar.append_log("── <b>工作流已停止</b> ──")
         self._refresh_chapters()
+        self.editor.refresh_planning()
         self.statusBar().showMessage(t("workflow_stopped"))
 
     def _park_wf_thread(self):

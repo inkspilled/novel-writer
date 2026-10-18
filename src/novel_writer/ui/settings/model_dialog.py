@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget,
@@ -10,7 +9,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QMessageBox, QSpinBox, QListWidget,
     QListWidgetItem, QInputDialog, QScrollArea,
 )
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 
 from ..common.workers import TestConnectionWorker, FetchModelsWorker
 from ...locales import t
@@ -37,7 +36,7 @@ class ModelDialog(QDialog):
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("settings_tab_model"))
-        self.setMinimumSize(720, 600)
+        self.setMinimumSize(780, 620)
         self.config = dict(config)
         self._providers = load_default_providers()
         # 加载自定义供应商
@@ -116,6 +115,7 @@ class ModelDialog(QDialog):
 
         # 右侧：配置编辑
         right = QWidget()
+        right.setMinimumWidth(460)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
@@ -123,6 +123,7 @@ class ModelDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
@@ -183,6 +184,7 @@ class ModelDialog(QDialog):
         embed_hint = QLabel(
             "配置 Embedding 模型后，RAG 历史章节检索改用语义向量（别名/近义可召回）；\n"
             "未配置或调用失败时自动回退关键词检索（BM25），不影响使用。")
+        embed_hint.setWordWrap(True)
         embed_hint.setStyleSheet("color: gray; font-size: 12px;")
         eg.addRow(embed_hint)
 

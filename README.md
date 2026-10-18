@@ -11,8 +11,13 @@
 - **智能上下文**：4 层分层架构 + RAG 检索，按需注入信息，避免 token 爆炸
 - **大世界状态**：像游戏存档一样追踪角色、物品、地点、时间线
 - **节奏控制**：根据目标章节数自动划分 7 个阶段，防止长篇节奏失控
-- **规划反哺**：每 10 章自动更新大纲、人物设定、伏笔清单
-- **质量检查**：11 项指标自动评估章节质量
+- **规划反哺**：每 5 章自动更新大纲、人物设定、伏笔、章节细纲
+- **质量检查**：10 维规则打分 + 总分，自动评估章节质量
+- **按需检索**：写作 Agent 可调用只读工具查规划/前文/记忆/世界状态/伏笔，不必全量塞上下文
+- **写作技能包**：开篇、对话、战斗、情感、悬念、连续性 6 套工艺指南，按需加载
+- **多视角会审**：每 10 章三视角并行审稿 + 主编聚合，输出可执行修改清单
+- **可观测长跑**：步骤级重试/超时/断点、`runs/*.jsonl` 运行日志、全量 token 计量
+- **角色隔离**：正典事件 `known_by` + 角色 POV 视图，角色只知道自己经历的事；死亡冻结知识、新角色不带入场前记忆
 
 ## 文档
 
@@ -55,49 +60,46 @@ pyinstaller novel-writer.spec
 
 ```
 src/novel_writer/
-├── core/                    # 核心业务逻辑
-│   ├── llm/                 # LLM 接口层
-│   │   ├── base.py          # 抽象基类
-│   │   ├── client.py        # OpenAI 兼容客户端
-│   │   ├── claude.py        # Claude 原生接口
-│   │   ├── ollama.py        # Ollama 本地模型
-│   │   └── openai_compat.py # OpenAI 兼容客户端
-│   ├── agents/              # Agent 系统
-│   │   └── base.py          # Agent 抽象基类
-│   ├── workflow.py          # 工作流引擎
-│   ├── quality_checker.py   # 质量检查模块
+├── core/                    # 纯 Python 内核（禁 Qt）
+│   ├── llm/                 # LLM 多驱动：base/client/claude/ollama/openai_compat/thinking
+│   ├── agents/              # base（usage_sink/run_with_tools）/ loop（工具循环）/ tools（只读工具）
+│   ├── workflow/            # definition/runner/context/prompts/builtin_steps/sediment/journal
+│   ├── canon/               # events.py：append-only 正典事件 + known_by/hash chain
+│   ├── characters/          # registry（分档/状态机）/ view（POV 隔离视图）
+│   ├── skills.py            # 技能包注册表（项目 > config > 内置）
+│   ├── quality_checker.py   # 10 维质量检查
 │   ├── reading_power.py     # 追读力系统
-│   ├── world_state.py       # 大世界状态
-│   ├── rag.py               # RAG 检索
-│   ├── exporter.py          # 导出功能
-│   ├── project_io.py        # 项目文件操作
-│   ├── memory.py            # 长期记忆
-│   ├── chapter_tracker.py   # 章节追踪
-│   ├── character_sim.py     # 角色推演
-│   └── anti_patterns.py     # 反模式追踪
-├── ui/                      # 用户界面
-│   ├── main_window.py       # 主窗口
-│   ├── agent_panel.py       # Agent 面板
-│   ├── editor_panel.py      # 编辑面板
-│   ├── sidebar.py           # 侧边栏
-│   ├── office_scene.py      # 智能体办公室
-│   ├── workflow_panel.py    # 工作流面板
-│   └── settings_dialog.py   # 设置对话框
-├── models/                  # 数据模型
-│   ├── project.py           # 项目模型
-│   ├── chapter.py           # 章节模型
-│   └── character.py         # 角色模型
-└── locales.py               # 国际化
+│   ├── world_state.py       # 大世界状态快照
+│   ├── rag.py               # BM25 + 可选语义检索
+│   ├── memory.py            # 11 桶长期记忆
+│   ├── chapter_tracker.py   # 四维追踪
+│   ├── character_sim.py     # 人物档案解析 / sim 缓存
+│   ├── anti_patterns.py     # 反模式禁忌库
+│   ├── exporter.py          # TXT/EPUB/PDF
+│   └── project_io.py        # 原子读写/项目目录
+├── ui/                      # PySide6 界面（按功能域分包）
+│   ├── main_window.py       # 主窗口骨架
+│   ├── app_shell/           # theme/llm/project/chat/settings/workflow Mixin
+│   ├── agent/               # agent_panel + 状态条(office_scene) + agent_dialog
+│   ├── editor/              # editor_panel（正文/规划两级导航）+ sidebar
+│   ├── workflow/            # WorkflowThread + 迷你进度条
+│   ├── project/             # 新建/打开/工作流模式对话框
+│   ├── settings/            # 模型/外观设置
+│   └── common/              # styles/workers/chat 渲染/控件
+├── skills/                  # 6 个内置写作技能包（.md）
+├── models/                  # Project / Chapter / Character
+├── designsystem/            # 主题 token（四套色板 + 自定义）
+└── locales.py               # 中/英 i18n
 
-tests/                       # 单元测试
-config/                      # 配置文件
-data/                        # 数据存储
+tests/                       # 256 个单元/回归测试
+config/                      # agents/providers 配置
+data/                        # 用户数据（gitignore）
 ```
 
 ## 技术栈
 
 - **Python 3.10+**
-- **PyQt6** — 跨平台 GUI 框架
+- **PySide6** — 跨平台 GUI 框架（LGPL）
 - **异步编程** — asyncio/await 提升并发性能
 - **SQLite** — 轻量级聊天记录存储
 - **BM25** — 规划文档检索算法
@@ -106,14 +108,17 @@ data/                        # 数据存储
 ## 界面布局
 
 ```
-┌──────────┬──────────────────┬───────────────────────────┐
-│  侧边栏   │     编辑区        │   智能体办公室（占 50%+）   │
-│          │                  │                           │
-│ 项目管理   │  正文 + 8个规划标签 │  办公室场景 + Agent 动画    │
-│ 章节树    │  实时字数统计      │  进度条（带百分比）+ 执行日志 │
-│ 字数统计   │  规划文档独立编辑   │  💬 对话区                │
-└──────────┴──────────────────┴───────────────────────────┘
+┌──────────┬──────────────────────────┬────────────────────────────┐
+│  侧边栏   │  编辑区                   │  协作区                     │
+│ 项目/章节 │  ┌ 正文 ┐ ┌ 规划 ┐       │  Agent 状态条（两行）        │
+│ 字数统计  │  正文编辑器               │  工作流进度（规划/正文两段）  │
+│          │  规划：左列表 + 右编辑器   │  对话 / 快捷动作             │
+└──────────┴──────────────────────────┴────────────────────────────┘
 ```
+
+- `Ctrl+Shift+F` 专注模式：只留正文，再按恢复；
+- 规划文档用左侧列表切换，不再有 10 个标签溢出；
+- 智能体状态条按 4 列两行展示，超过 8 个纵向滚动。
 
 ## 写作流程
 
@@ -131,7 +136,7 @@ data/                        # 数据存储
 
 | 模式 | 说明 | 步骤 |
 |------|------|------|
-| 📝 新书立意 | 只生成规划文档，不写正文 | 8 步（立意→大纲→人物→世界观→时间线→主线→支线→伏笔） |
+| 📝 新书立意 | 只生成规划文档，不写正文 | 9 步（立意→大纲→人物→世界观→时间线→主线→支线→伏笔→章节细纲） |
 | 📖 新书全流程 | 从立意到审校全流程 | 完整流程（可配置目标章节数） |
 | ✍️ 续写 | 从已有章节继续 | 自动检测起始章节 |
 | 🔍 查漏补缺 | 补写缺失或空章节 | 按需（自动扫描） |
@@ -141,17 +146,17 @@ data/                        # 数据存储
 
 每章执行顺序：
 1. 🔧 **标题校准**（首次）→ LLM 根据正文内容修正所有章节标题
-2. 💡 **灵感**（每3章）→ 提供创作方向
-3. 🎭 **推演**（每章）→ 角色行为推演
-4. ✍️ **写作**（每章）→ 正文写作
-5. 📝 **章节概要**（每章）→ 自动生成结构化概要卡片
-6. 🌍 **大世界状态更新**（每章）→ 更新人物/物品/地点/时间线
-7. 📑 **目录更新**（每章）→ 更新 planning/目录.md
-8. ✨ **润色**（每2章）→ 提升文笔
-9. 📝 **校验**（每章）→ 错别字检查
-10. 📋 **摘要**（每5章）→ 剧情摘要
-11. 🔄 **规划反哺**（每10章）→ 更新大纲/人物/伏笔
-12. 🔍 **审核**（最后）→ 剧情逻辑审查
+2. 📑 **章节细纲**（缺失时）→ 分批生成全书逐章骨架
+3. 💡 **灵感**（每3章）→ 提供创作方向
+4. 🎭 **作者侧推演**（每章）→ 全局视角的角色反应预测
+5. 👤 **POV 推演**（每5章，仅 auto_sim 角色）→ 角色隔离视图下的意图
+6. ✍️ **写作**（每章）→ 正文写作
+7. 📝 **章节概要 / 🌍 世界状态 / 📑 目录 / 🔍 校对**（每章）
+8. ✨ **润色**（每2章）
+9. 📋 **摘要 / 🔄 规划反哺 / 细纲修订**（每5章）
+10. 🧑‍⚖️ **多视角会审**（每10章）→ 三视角并行 + 主编聚合
+11. ✅ **质量检查**（每章）
+12. 🔍 **审核**（最后）→ 全书分批审校 + 聚合
 
 ## 智能上下文（4层分层架构）
 
@@ -216,6 +221,10 @@ data/                        # 数据存储
 | `data/projects/*/chat.db` | 项目级聊天记录（SQLite） |
 | `data/projects/*/world_state.json` | 大世界状态（人物/物品/地点/时间线） |
 | `data/projects/*/memory.json` | 长期记忆（11桶） |
+| `data/projects/*/canon/events.jsonl` | 正典事件（append-only，角色知识来源） |
+| `data/projects/*/canon/characters.json` | 角色注册表（分档/状态/知识冻结） |
+| `data/projects/*/runs/*.jsonl` | 工作流运行日志（步骤/耗时/token/工具） |
+| `data/projects/*/skills/` | 项目自定义技能包 |
 | `config/agents.json` | 智能体配置 |
 | `config/default_agents.json` | 智能体默认配置（重置用） |
 
@@ -238,56 +247,44 @@ logger.info("操作完成")
 
 ## 单元测试
 
-项目包含完整的单元测试，覆盖核心模块：
-
 ```bash
-# 运行所有测试
-python -m pytest tests/ -v
-
-# 运行特定测试
-python -m pytest tests/test_quality_checker.py -v
-python -m pytest tests/test_reading_power.py -v
-python -m pytest tests/test_workflow.py -v
-python -m pytest tests/test_exporter.py -v
+python -m pytest tests/ -q          # 全量：256 passed
+python -m pytest tests/test_workflow_runner.py -v
+python -m pytest tests/test_character_isolation.py -v
 ```
 
-**测试覆盖**：
-- 质量检查模块（21 个测试）
-- 追读力模块（16 个测试）
-- 工作流模块（20 个测试）
-- 导出功能（11 个测试）
+覆盖重点：
+
+- 工作流执行器（断点/重试/并发/工具/会审/细纲）
+- 角色隔离（正典 known_by、POV 视图、死亡冻结、批量死亡）
+- 质量检查、追读力、RAG、导出
+- 编辑器数据安全（切项目不丢章）
+- 主窗口布局/专注模式/两级导航
 
 ## 项目目录结构（单个小说）
 
-每个小说项目独立存储为一个目录：
-
 ```
 data/projects/{project_name}/
-├── meta.json                    # 项目元信息（标题、题材、风格、目标字数、目标章节数）
-├── chat.db                      # 聊天记录（项目级 SQLite）
-├── planning/                    # 规划文档（.md）
-│   ├── 立意.md
-│   ├── 大纲.md                  # 每10章自动反哺更新
-│   ├── 人物设定.md              # 每10章自动反哺更新
-│   ├── 世界观.md
-│   ├── 时间线.md
-│   ├── 主线.md
-│   ├── 支线.md
-│   ├── 伏笔.md                  # 每10章自动反哺更新
-│   └── 目录.md                  # 每章自动更新
-├── world_state.json             # 大世界状态（人物/物品/地点/时间线）
-├── chapters/                    # 章节正文（.txt）
-│   ├── 1_章节名.txt
-│   ├── 1_章节名.summary.md      # 章节概要（自动生成）
-│   ├── 1_章节名.bak.txt         # 章节备份（写入前自动备份）
-│   ├── 1_章节名.outline.md      # 细纲（可选，.md）
-│   └── ...
-├── inspiration/                 # 灵感记录（.md）
-│   └── 3_灵感.md
-├── review/                      # 审校产出（.md）
-│   ├── 审核报告.md
-│   └── 校对报告.md
-└── workflow.json                # 工作流进度（断点恢复用）
+├── meta.json                 # 项目元信息（标题/题材/目标字数/目标章节数）
+├── chat.db                   # 项目级聊天记录 SQLite
+├── world_state.json          # 大世界状态快照
+├── memory.json               # 11 桶长期记忆
+├── anti_patterns.json        # 反模式禁忌库
+├── reading_power.json        # 追读力数据
+├── rag_index.json            # BM25 索引（+ rag_vectors.json）
+├── workflow.json             # 工作流定义 + 进度（断点恢复）
+├── planning/                 # 9 个规划文档 + 目录.md
+│   ├── 立意.md / 大纲.md / 章节细纲.md / 人物设定.md
+│   ├── 世界观.md / 时间线.md / 主线.md / 支线.md / 伏笔.md
+│   └── 目录.md
+├── chapters/                 # {n}_{标题}.txt / .summary.md / .outline.md / .bak.txt
+├── canon/                    # events.jsonl（正典事件）/ characters.json（角色注册表）
+├── skills/                   # 项目自定义技能包
+├── runs/                     # 工作流 JSONL 运行日志
+├── review/                   # 审核/校对/质量/会审报告
+├── summary/                  # 剧情摘要
+├── inspiration/              # 灵感记录
+└── sim_cache/                # author 推演 + pov/{角色} 推演
 ```
 
 ## 快捷键

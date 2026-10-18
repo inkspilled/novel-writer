@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import partial
 
-from PySide6.QtWidgets import QLabel, QMessageBox
+from PySide6.QtWidgets import QLabel
 from PySide6.QtGui import QAction, QKeySequence, QPixmap
 from PySide6.QtCore import Qt, QTimer
 
@@ -81,12 +81,42 @@ class ThemeMixin:
         self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
         self._appearance_action.triggered.connect(self._open_appearance)
         self._settings_menu.addAction(self._appearance_action)
+        self._settings_menu.addSeparator()
+        self._focus_action = QAction(t("menu_focus_mode"), self)
+        self._focus_action.setCheckable(True)
+        self._focus_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
+        self._focus_action.triggered.connect(self._toggle_focus_mode)
+        self._settings_menu.addAction(self._focus_action)
 
         # ── 帮助 ──
         self._about_menu = menubar.addMenu(t("menu_help"))
         self._about_action = QAction(t("menu_about_app"), self)
         self._about_action.triggered.connect(self._show_about)
         self._about_menu.addAction(self._about_action)
+
+    def _toggle_focus_mode(self, checked: bool | None = None):
+        """专注模式：隐藏侧栏与协作栏，只留正文；再按一次恢复。"""
+        if not hasattr(self, "splitter"):
+            return
+        if checked is None:
+            checked = not getattr(self, "_focus_mode", False)
+        self._focus_mode = bool(checked)
+        if checked:
+            self._normal_sizes = self.splitter.sizes()
+            self.sidebar.setVisible(False)
+            self.agent_panel.setVisible(False)
+            self.statusBar().showMessage(t("status_focus_on"), 6000)
+        else:
+            self.sidebar.setVisible(True)
+            self.agent_panel.setVisible(True)
+            sizes = getattr(self, "_normal_sizes", None)
+            if sizes and len(sizes) == 3:
+                self.splitter.setSizes(sizes)
+            self.statusBar().showMessage(t("status_focus_off"), 3000)
+        if hasattr(self, "_focus_action"):
+            self._focus_action.blockSignals(True)
+            self._focus_action.setChecked(self._focus_mode)
+            self._focus_action.blockSignals(False)
 
     def _setup_menubar_icon(self):
         """在状态栏左侧显示应用小图标。"""
@@ -117,6 +147,7 @@ class ThemeMixin:
         self._settings_menu.setTitle(t("menu_settings"))
         self._settings_action.setText(t("menu_project_settings"))
         self._appearance_action.setText(t("menu_appearance_open"))
+        self._focus_action.setText(t("menu_focus_mode"))
         self._about_menu.setTitle(t("menu_help"))
         self._about_action.setText(t("menu_about_app"))
         self._workflow_menu.setTitle(t("workflow_menu"))
@@ -169,14 +200,8 @@ class ThemeMixin:
 
     def _show_about(self):
         """显示关于对话框。"""
-        QMessageBox.about(
-            self,
-            t("menu_about_app"),
-            f"<h2 style='margin-bottom:8px;'>Novel Writer</h2>"
-            f"<p>{t('about_version')}</p>"
-            f"<p>{t('about_desc')}</p>"
-            f"<p style='color:gray;font-size:12px;'>PySide6 · Python {'.'.join(map(str, __import__('sys').version_info[:3]))}</p>",
-        )
+        from ..shell.about_dialog import AboutDialog
+        AboutDialog(self).exec()
 
     # ── 配置与 LLM/Agent 初始化 ──
 

@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QMenu,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QBrush, QColor
 
 from ...locales import t
 
@@ -87,6 +87,14 @@ class Sidebar(QWidget):
             item.setText(0, f"{icon}  {ch.title or t('sidebar_unnamed_chapter')}")
             item.setData(0, Qt.ItemDataRole.UserRole, i)
             self.chapter_tree.addTopLevelItem(item)
+        if not chapters:
+            # 空项目不要留一块纯白：给“下一步”提示，避免用户以为界面坏了
+            for text in ("还没有章节", "点击下方「+ 添加章节」开始"):
+                item = QTreeWidgetItem([text])
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+                item.setForeground(0, QBrush(QColor("#8e8e9a")))
+                item.setTextAlignment(0, Qt.AlignmentFlag.AlignHCenter)
+                self.chapter_tree.addTopLevelItem(item)
         self.chapter_tree.setUpdatesEnabled(True)  # 重新启用更新
 
     def update_stats(self, total_words: int, target_words: int, chapter_count: int):

@@ -10,7 +10,7 @@
 |------|------|------|------|
 | Python | >= 3.10 | 运行时 | PSF |
 | PySide6 | >= 6.7 | GUI 框架 | LGPL-3.0（动态链接合规） |
-| Pydantic | >= 2.0 | 数据模型 | MIT |
+| dataclass | 标准库 | 数据模型（无 Pydantic 依赖） | PSF |
 | openai | >= 1.0 | OpenAI 兼容 LLM 接口 | Apache-2.0 |
 | anthropic | >= 0.40 | Claude 原生接口 | MIT |
 | httpx | >= 0.27 | HTTP 客户端 | BSD-3 |
@@ -59,6 +59,9 @@ novel-writer/
 │   ├── test_quality_checker.py
 │   ├── test_reading_power.py
 │   ├── test_workflow.py
+│   ├── test_workflow_runner.py
+│   ├── test_character_isolation.py
+│   ├── test_ui_layout.py
 │   ├── test_workflow_package.py
 │   ├── test_workflow_runner.py
 │   ├── test_rag.py
@@ -78,7 +81,15 @@ novel-writer/
     │   │   └── openai_compat.py    # OpenAICompatLLM
     │   ├── agents/
     │   │   ├── __init__.py         # load_agents() / save_agents()
-    │   │   └── base.py             # BaseAgent + AgentConfig
+    │   │   ├── base.py             # BaseAgent + AgentConfig（usage_sink / run_with_tools）
+    │   │   ├── loop.py             # 工具循环（轮数/预算/降级）
+    │   │   └── tools.py            # 只读工具集 NovelToolkit / ToolRegistry
+    │   ├── skills.py               # 技能包注册表（渐进披露）
+    │   ├── canon/
+    │   │   └── events.py           # append-only 正典事件（known_by/hidden/hash chain）
+    │   ├── characters/
+    │   │   ├── registry.py         # 角色档案/分档/状态机/知识冻结
+    │   │   └── view.py             # CharacterView（角色 POV 隔离视图）
     │   ├── project_io.py           # → docs/项目存储与文件格式.md
     │   ├── app_config.py           # 应用路径常量 + 用户配置读写
     │   ├── chat_history.py         # 聊天记录持久化（项目级 SQLite）
@@ -90,7 +101,8 @@ novel-writer/
     │   │   ├── prompts.py          # → docs/节奏控制与角色锚定算法.md
     │   │   ├── builtin_steps.py    # 特殊步骤处理器注册表
     │   │   ├── sediment.py         # → docs/写后沉淀算法.md
-    │   │   └── runner.py           # WorkflowRunner 执行器
+    │   │   ├── journal.py          # runs/*.jsonl 运行日志
+    │   │   └── runner.py           # WorkflowRunner（重试/超时/DAG/工具）
     │   ├── quality_checker.py      # → docs/质量检查算法.md
     │   ├── exporter.py             # 导出功能（TXT/EPUB/PDF）
     │   ├── reading_power.py        # → docs/追读力算法.md
@@ -100,6 +112,7 @@ novel-writer/
     │   ├── chapter_tracker.py      # → docs/章节四维追踪算法.md
     │   ├── character_sim.py        # → docs/角色推演算法.md
     │   └── text_signals.py         # 钩子/爽点/微兑现词表（唯一权威）
+    ├── skills/                     # 内置写作技能包（chapter-craft/dialogue/...）
     ├── models/
     │   ├── project.py              # Project（基于目录的存储）
     │   ├── chapter.py              # Chapter（文件 IO）
@@ -167,7 +180,11 @@ novel-writer/
 
 ### 工作流引擎 (`core/workflow/`) → [docs/工作流引擎算法.md](docs/工作流引擎算法.md)
 
-五模式（NEW_BOOK / NEW_BOOK_PLANNING / CONTINUE / FILL_GAPS / VALIDATE）由共享步骤列表组合。支持 `every` 定时、`repeat` 循环、断点恢复、智能跳过。特殊步骤（toc / fix_titles / chapter_summary / world_state_update / quality_check）走 `BUILTIN_STEP_HANDLERS` 注册表，不走标准 LLM 路径。
+五模式（NEW_BOOK / NEW_BOOK_PLANNING / CONTINUE / FILL_GAPS / VALIDATE）由共享步骤列表组合。支持 `every` 定时、`repeat` 循环、断点恢复、智能跳过，以及步骤级 `retry/timeout/depends_on`。特殊步骤（toc / fix_titles / chapter_summary / world_state_update / quality_check / proofread / review / review_panel / 细纲）走 `BUILTIN_STEP_HANDLERS` 注册表，不走标准 LLM 路径。
+
+### 智能体工具与技能 → [docs/智能体运行时与工具.md](docs/智能体运行时与工具.md)
+
+写作/润色等步骤可声明只读工具（`tools`）与技能包（`skills`）：`AgentLoop` 在受限轮数内执行「请求→工具→再请求」，工具结果回填，异常转文本；模型不支持 tools 时自动降级纯文本。技能包目录优先级：项目 `skills/` > `config/skills/` > 包内置。
 
 ### 上下文组装 (`core/workflow/context.py`) → [docs/分层上下文组装算法.md](docs/分层上下文组装算法.md)
 
@@ -193,7 +210,7 @@ novel-writer/
 
 ### 角色推演 (`core/character_sim.py`) → [docs/角色推演算法.md](docs/角色推演算法.md)
 
-人物设定 → 角色档案 → LLM 多视角推演 → 剧情建议；`sim_cache/sim_{n}.md` 注入写作上下文。
+`parse_characters` 解析人物设定角色档案；工作流 `sim` 步骤写 `sim_cache/sim_{n}.md`，`load_sim_cache` 带标记注入写作上下文。
 
 ### 导出功能 (`core/exporter.py`)
 
@@ -208,7 +225,7 @@ exporter.export_pdf()    # PDF（需 reportlab）
 ### UI 架构
 
 ```
-MainWindow (splitter: 220 / 560 / 620)
+MainWindow (splitter: 240 / 680 / 480)
 ├── Sidebar         # 项目管理、章节树、字数统计
 ├── EditorPanel     # 正文 + 8个规划文档标签页
 └── AgentPanel      # 办公室场景 + 工作流进度/日志 + 对话区
@@ -218,6 +235,8 @@ MainWindow (splitter: 220 / 560 / 620)
 - 工作流调用 Agent 时对话自动写入聊天记录
 - `AgentWorker(QThread)` 后台执行，信号驱动 UI
 - 流式输出按 Agent 隔离
+- 规划文档用「正文 / 规划」两级导航；Agent 区是 104–182px 状态条，不是假 3D 办公室
+- `Ctrl+Shift+F` 专注模式：隐藏左右栏，只留正文
 
 ### 菜单结构
 

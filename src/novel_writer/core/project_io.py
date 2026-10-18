@@ -43,7 +43,7 @@ WORKFLOW_FILE = "workflow.json"
 
 # planning/ 下的固定文件名
 PLANNING_FILES = [
-    "立意.md", "大纲.md", "人物设定.md", "世界观.md",
+    "立意.md", "大纲.md", "章节细纲.md", "人物设定.md", "世界观.md",
     "时间线.md", "主线.md", "支线.md", "伏笔.md",
 ]
 
@@ -372,25 +372,11 @@ def _cn_number(n: int) -> str:
 
 # ── Planning 文件 ──
 
-def planning_path(project_dir: Path, name: str) -> Path:
-    """获取 planning/ 下的文件路径。name 如 '立意', '大纲'。"""
-    return project_dir / PLANNING_DIR / f"{name}.md"
-
-
-def read_planning(project_dir: Path, name: str) -> str:
-    return read_md(planning_path(project_dir, name))
-
-
-def write_planning(project_dir: Path, name: str, content: str) -> None:
-    write_md(planning_path(project_dir, name), content)
-
-
 # ── 章节文件（正文用 .txt，细纲用 .md） ──
 
 # 章节文件名："3_黎明前夜.txt"。负向断言排除写前备份 "3_黎明前夜.bak.txt"——
 # 否则 iterdir/glob 的第一个命中可能是备份，润色/续写/上下文都会读错文件
 _CHAPTER_RE = re.compile(r"^(?!.*\.bak\.txt$)(\d+)_(.+)\.txt$")
-_CHAPTER_OUTLINE_RE = re.compile(r"^(\d+)_(.+)\.outline\.md$")
 
 
 def chapter_filename(number: int, title: str) -> str:
@@ -444,34 +430,12 @@ def scan_chapters(project_dir: Path) -> list[dict]:
 
 # ── 灵感文件 ──
 
-_INSPIRATION_RE = re.compile(r"^(\d+)_(.+)\.md$")
-
-
 def inspiration_filename(number: int, title: str) -> str:
     safe_title = title or "灵感"
     return f"{number}_{safe_title}.md"
 
 
-def scan_inspirations(project_dir: Path) -> list[dict]:
-    insp_dir = project_dir / INSPIRATION_DIR
-    if not insp_dir.exists():
-        return []
-    result = []
-    for f in sorted(insp_dir.iterdir()):
-        if not f.is_file():
-            continue
-        m = _INSPIRATION_RE.match(f.name)
-        if not m:
-            continue
-        result.append({"number": int(m.group(1)), "title": m.group(2), "path": f})
-    return result
-
-
 # ── Summary 文件 ──
-
-def summary_filename(n: int) -> str:
-    return f"第1-{n}章摘要.md"
-
 
 def latest_summary(project_dir: Path) -> str:
     """读取 summary/ 目录下最新的摘要文件内容（按覆盖到的最大章号排序，而非文件名字典序）。"""
@@ -491,18 +455,6 @@ def latest_summary(project_dir: Path) -> str:
 
 
 # ── Review 文件 ──
-
-def review_path(project_dir: Path, name: str) -> Path:
-    return project_dir / REVIEW_DIR / f"{name}.md"
-
-
-def read_review(project_dir: Path, name: str) -> str:
-    return read_md(review_path(project_dir, name))
-
-
-def write_review(project_dir: Path, name: str, content: str) -> None:
-    write_md(review_path(project_dir, name), content)
-
 
 # ── Workflow 进度 ──
 

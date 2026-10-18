@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from src.novel_writer.core.app_config import safe_project_dirname
 from src.novel_writer.core import project_io
@@ -58,6 +57,30 @@ class TestExtractChapterSection:
 
 
 # ── 章节重命名 ──
+
+class TestChapterOutlineExtract:
+    """章节细纲按章切片：## 第N章 格式 + n=1 不误匹配 11。"""
+
+    OUTLINE = (
+        "# 全书章节细纲\n\n"
+        "## 第1章 开端\n- 事件：觉醒\n- 转折：血脉\n- 章末钩子：追兵\n\n"
+        "## 第2章 逃亡\n- 事件：离村\n\n"
+        "## 第11章 试炼\n- 事件：大比\n"
+    )
+
+    def test_section_by_chapter(self):
+        s1 = extract_chapter_section(self.OUTLINE, 1)
+        assert "觉醒" in s1 and "逃亡" not in s1 and "试炼" not in s1
+        s11 = extract_chapter_section(self.OUTLINE, 11)
+        assert "试炼" in s11 and "觉醒" not in s11
+
+    def test_batch_prompt_covers_range(self):
+        from src.novel_writer.core.workflow.prompts import build_chapter_outline_batch_prompt
+        p = build_chapter_outline_batch_prompt("参考", 16, 30, 100, prior_beats="## 第15章")
+        assert "第 16–30 章" in p
+        assert "共 100 章" in p
+        assert "## 第15章" in p
+
 
 class TestRenameChapter:
     def test_rename_chapter_no_nameerror(self, tmp_path: Path):

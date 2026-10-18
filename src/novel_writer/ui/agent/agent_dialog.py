@@ -18,7 +18,7 @@ class AgentDialog(QDialog):
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("settings_tab_agent"))
-        self.setMinimumSize(640, 500)
+        self.setMinimumSize(640, 560)
         self.config = dict(config)
         self._agents = load_agents()
         self._saved_models: dict = self.config.get("saved_models", {})
@@ -102,7 +102,8 @@ class AgentDialog(QDialog):
 
         self.agent_prompt_input = QTextEdit()
         self.agent_prompt_input.setPlaceholderText(t("settings_ph_prompt"))
-        self.agent_prompt_input.setMaximumHeight(100)
+        self.agent_prompt_input.setMinimumHeight(100)
+        self.agent_prompt_input.setMaximumHeight(160)
         form.addRow(t("settings_agent_prompt"), self.agent_prompt_input)
 
         right_layout.addWidget(self.agent_detail_group)

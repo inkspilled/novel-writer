@@ -135,13 +135,12 @@ class _AIWorker(QThread):
 class NewProjectDialog(QDialog):
     """新建/编辑项目对话框。"""
 
-    def __init__(self, llm=None, parent=None, project_data=None, agents=None):
+    def __init__(self, parent=None, project_data=None, agents=None):
         super().__init__(parent)
         self.setWindowTitle("编辑项目" if project_data else t("dialog_new_project"))
-        self.setMinimumSize(640, 720)
-        self.resize(660, 760)
+        self.setMinimumSize(720, 760)
+        self.resize(720, 800)
         self._cover_path = ""
-        self._llm = llm
         self._agents = agents or {}  # Agent 实例字典
         self._workers: dict[str, _AIWorker] = {}  # field → worker（同时只跑一个）
         self._ai_busy = False  # 串行闸：True 时禁止再发润色请求
@@ -159,6 +158,7 @@ class NewProjectDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -332,7 +332,6 @@ class NewProjectDialog(QDialog):
         self._stream_view.setMinimumHeight(0)
         self._stream_view.setMaximumHeight(0)  # 初始收起，润色时展开
         self._stream_view.setStyleSheet("font-size: 12px;")
-        self._stream_buf = ""  # 兼容旧字段
         self._stream_chunks: list[tuple[str, str]] = []  # (kind, text)
         main_layout.addWidget(self._stream_view)
 

@@ -47,6 +47,9 @@ class BaseAgent(ABC):
         self.config = config
         self.llm = llm
         self.history: list[LLMMessage] = []
+        # 工作流/宿主可挂 usage 汇总回调：内置步骤绕过 runner._run_single，
+        # 没有这个钩子它们的 token 永远不会被计入。
+        self.usage_sink = None
 
     @property
     def name(self) -> str:
@@ -55,6 +58,13 @@ class BaseAgent(ABC):
     @property
     def title(self) -> str:
         return self.config.title
+
+    def _record_usage(self, usage: dict | None) -> None:
+        if usage and self.usage_sink:
+            try:
+                self.usage_sink(usage)
+            except Exception:
+                logger.debug("usage_sink 回调失败（忽略）", exc_info=True)
 
     def _build_messages(self, user_input: str, context: str = "") -> list[LLMMessage]:
         # 合并 system_prompt 和 context 为单条 system 消息，兼容 Qwen 等要求单一 system 的模板
@@ -113,6 +123,7 @@ class BaseAgent(ABC):
             self.name, mode, limit, keep_history, len(user_input), len(self.history),
         )
         response = await self.llm.chat(messages, self.config.temperature, limit, thinking=mode)
+        self._record_usage(response.usage)
         elapsed = _time.monotonic() - t0
         logger.info(
             "Agent.run 完成: agent=%s 耗时=%.1fs 回复=%d字 usage=%s",
@@ -122,6 +133,31 @@ class BaseAgent(ABC):
             self.history.append(LLMMessage(role="user", content=user_input))
             self.history.append(LLMMessage(role="assistant", content=response.content))
         return response
+
+    async def run_with_tools(
+        self,
+        toolkit,
+        user_input: str,
+        context: str = "",
+        thinking: ThinkingMode | None = None,
+        keep_history: bool = False,
+        max_rounds: int = 3,
+        on_event=None,
+    ) -> LLMResponse:
+        """带只读工具的运行：模型可按需拉取规划/前文/记忆/技能。
+
+        toolkit 是 ToolRegistry；max_rounds=0 时等价于一次普通 run（但会带
+        工具说明，不发工具 schema）。
+        """
+        from .loop import AgentLoop
+        loop = AgentLoop(
+            self, toolkit,
+            max_rounds=max_rounds,
+            on_event=on_event,
+        )
+        return await loop.run(
+            user_input, context=context, thinking=thinking, keep_history=keep_history
+        )
 
     async def stream_run(
         self,

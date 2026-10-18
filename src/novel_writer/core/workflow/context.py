@@ -174,6 +174,8 @@ STEP_CONTEXT_TIERS: dict[str, ContextTier] = {
     "main_plot": ContextTier.WORLD,
     "sub_plot": ContextTier.WORLD,
     "foreshadow": ContextTier.WORLD,
+    "chapter_outline": ContextTier.WORLD,
+    "update_chapter_outline": ContextTier.NARRATIVE,
     # 推演（需要角色设定，不需要叙事细节）
     "sim": ContextTier.WORLD,
     # 大世界状态更新（需要当前状态）
@@ -290,6 +292,12 @@ class ContextBuilder:
             section = extract_chapter_section(outline_text, n) if outline_text else ""
             if section:
                 middle.append(f"=== 本章大纲 ===\n{section}")
+            # 全书章节细纲：只注入本章骨架，避免整份灌入
+            beats_path = self.project_dir / "planning" / "章节细纲.md"
+            beats_text = project_io.read_md(beats_path) if beats_path.exists() else ""
+            beats = extract_chapter_section(beats_text, n) if beats_text else ""
+            if beats:
+                middle.append(f"=== 本章细纲 ===\n{beats}")
 
         # 规划文档：RAG 片段
         if planning_docs_for_rag:

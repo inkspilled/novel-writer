@@ -37,6 +37,10 @@ class WorkflowError(Exception):
     pass
 
 
+class ChapterWriteRejected(Exception):
+    """章正文写入被拒（校验失败/空内容），不得推进断点。"""
+
+
 class WorkflowRunner:
     """工作流执行器 — 技能匹配 + 文件传递。"""
 
@@ -47,11 +51,15 @@ class WorkflowRunner:
         project_info: dict,
         max_context_tokens: int = 48_000,
         rotate_agents: bool = False,
+        enable_tools: bool = True,
     ):
         self.agents = agents
         self.project_dir = project_dir
         self.project_info = project_info
         self.max_context_tokens = max_context_tokens
+        # 只读工具（规划/前文/记忆/技能）开关；模型不支持时自动降级为纯文本
+        self.enable_tools = enable_tools
+        self._skill_registry = None
         # 同技能多 Agent 轮换开关：默认关闭。规划链（大纲→人物→世界观）
         # 依赖同一 Agent 实例的对话历史传递，轮换会打断该机制，故需显式开启
         self.rotate_agents = rotate_agents
@@ -60,6 +68,7 @@ class WorkflowRunner:
         self._build_skill_index()
         self._stop = False
         self.total_usage: dict[str, int] = {}  # 本次运行累计 token 用量
+        self._journal = None  # RunJournal（run_start 时创建）
         self._context_builder = ContextBuilder(project_dir, project_info, max_context_tokens)
         # 周期步骤触发时机（章前/章后）；未声明的自定义周期步骤默认按章后执行
         self._pre_ids = set(PRE_CHAPTER_PERIODIC_IDS)
@@ -68,12 +77,93 @@ class WorkflowRunner:
         self.on_step_start: Callable[[str, int, str], None] | None = None  # (step_id, n, agent_title)
         self.on_step_end: Callable[[str, int, str, str], None] | None = None  # (step_id, n, agent_title, output)
         self.on_error: Callable[[str, str], None] | None = None  # (step_id, error)
+        # 结构化事件（工具调用/重试/阶段），UI 可转日志或进度
+        self.on_event: Callable[[str, dict], None] | None = None
 
     def _build_skill_index(self):
         for agent in self.agents.values():
             for skill in agent.config.skills:
                 self._agent_by_skill.setdefault(skill, []).append(agent)
+            # 所有 Agent 的用量都汇总到 runner（含内置步骤与工具循环）
+            agent.usage_sink = self._record_usage
         self._skill_cycles = {skill: itertools.cycle(items) for skill, items in self._agent_by_skill.items()}
+
+    def _record_usage(self, usage: dict | None) -> None:
+        for k, v in (usage or {}).items():
+            if isinstance(v, (int, float)):
+                self.total_usage[k] = int(self.total_usage.get(k, 0) + v)
+
+    def _emit_event(self, kind: str, **payload) -> None:
+        self._journal_record(kind, **payload)
+        if self.on_event:
+            try:
+                self.on_event(kind, payload)
+            except Exception:
+                logger.debug("on_event 回调失败（忽略）", exc_info=True)
+
+    def _usage_delta(self, before: dict) -> dict:
+        return {
+            k: int(v - before.get(k, 0))
+            for k, v in self.total_usage.items()
+            if int(v - before.get(k, 0)) != 0
+        }
+
+    def _journal_record(self, event: str, **fields) -> None:
+        if self._journal is not None:
+            self._journal.record(event, **fields)
+
+    @property
+    def journal_path(self) -> str:
+        return str(self._journal.path) if self._journal is not None else ""
+
+    def _skill_text(self, names: list[str]) -> str:
+        if not names:
+            return ""
+        if self._skill_registry is None:
+            from ..skills import SkillRegistry
+            self._skill_registry = SkillRegistry(self.project_dir)
+        skills = self._skill_registry.select(names)
+        if not skills:
+            return ""
+        parts = ["=== 写作技能包 ==="]
+        for skill in skills:
+            parts.append(f"【{skill.name}】\n{skill.body}")
+        return "\n\n".join(parts)
+
+    async def _execute_step(self, step: WorkflowStep, project: dict, n: int, progress: dict):
+        """单步执行 + 超时 + 指数退避重试。配置错误/写盘被拒不重试。"""
+        attempts = max(1, step.retry + 1)
+        import time as _time
+        for attempt in range(attempts):
+            t0 = _time.monotonic()
+            usage_before = dict(self.total_usage)
+            self._journal_record("step_start", step=step.id, n=n, attempt=attempt + 1,
+                                 phase=step.phase or None, tools=step.tools or None)
+            try:
+                coro = self._run_single(step, project, n, progress)
+                if step.timeout and step.timeout > 0:
+                    result = await asyncio.wait_for(coro, timeout=step.timeout)
+                else:
+                    result = await coro
+                self._journal_record("step_end", step=step.id, n=n,
+                                     duration_s=round(_time.monotonic() - t0, 2),
+                                     usage=self._usage_delta(usage_before))
+                return result
+            except (WorkflowError, ChapterWriteRejected, asyncio.CancelledError) as e:
+                self._journal_record("step_error", step=step.id, n=n, error=str(e),
+                                     duration_s=round(_time.monotonic() - t0, 2),
+                                     usage=self._usage_delta(usage_before))
+                raise
+            except Exception as e:
+                if attempt >= attempts - 1:
+                    self._journal_record("step_error", step=step.id, n=n, error=str(e),
+                                         duration_s=round(_time.monotonic() - t0, 2),
+                                         usage=self._usage_delta(usage_before))
+                    raise
+                delay = max(0.0, step.retry_delay) * (2 ** attempt)
+                logger.warning("步骤 %s 第%d次失败，%.1fs 后重试: %s", step.id, attempt + 1, delay, e)
+                self._emit_event("step_retry", step=step.id, n=n, attempt=attempt + 1, delay=delay, error=str(e))
+                await asyncio.sleep(delay)
 
     def find_agent(self, skill: str) -> BaseAgent | None:
         candidates = self._agent_by_skill.get(skill, [])
@@ -97,6 +187,10 @@ class WorkflowRunner:
         self._stop = False
         if progress is None:
             progress = {}
+        from .journal import RunJournal
+        self._journal = RunJournal(self.project_dir, workflow.name)
+        self._journal_record("run_start", workflow=workflow.name,
+                             steps=len(workflow.steps), resumed=bool(progress))
 
         # 预处理：分离定时步骤和普通步骤
         periodic_steps = [s for s in workflow.steps if s.every > 0]
@@ -108,13 +202,7 @@ class WorkflowRunner:
                 logger.warning("周期步骤 %s 未声明章前/章后触发时机，默认按章后执行", ps.id)
                 self._post_ids.add(ps.id)
 
-        # 将 normal_steps 按 parallel_ok 分组：连续的 parallel_ok 步骤归为一组并发执行
-        step_groups: list[list[WorkflowStep]] = []
-        for step in normal_steps:
-            if step.parallel_ok and step_groups and step_groups[-1] and step_groups[-1][0].parallel_ok:
-                step_groups[-1].append(step)
-            else:
-                step_groups.append([step])
+        step_groups = self._build_step_groups(normal_steps)
 
         for group in step_groups:
             if self._stop:
@@ -122,16 +210,19 @@ class WorkflowRunner:
             if len(group) == 1:
                 # 断点恢复：已完成（或循环已跑满）的步骤直接跳过，不重复烧 LLM 调用
                 step = group[0]
-                if self._step_completed(step, progress):
+                if self._step_completed(step, progress, self.project_dir):
                     logger.info("[跳过] 步骤 %s 已完成（断点恢复）", step.id)
                     continue
                 await self._run_step_or_repeat(group[0], workflow.project, progress, periodic_steps)
             else:
                 # 并发执行独立步骤（如规划阶段的人物/世界观/时间线/主线/支线/伏笔）
                 logger.info("并发执行 %d 个独立步骤: %s", len(group), [s.id for s in group])
-                # 固定「步骤 ↔ 任务」映射：任务完成后 progress 可能已写成 done，
-                # 不能再按 progress 过滤后 zip results，否则会错位（失败被标成 done）
-                pending_steps = [s for s in group if progress.get(s.id, "pending") != "done"]
+                # 固定「步骤 ↔ 任务」映射：先算出待跑列表再 gather/zip，
+                # 避免任务完成后 progress 变 done 导致错位
+                pending_steps = [
+                    s for s in group
+                    if not self._step_completed(s, progress, self.project_dir)
+                ]
                 tasks = [
                     self._run_step_or_repeat(s, workflow.project, progress, periodic_steps)
                     for s in pending_steps
@@ -147,18 +238,63 @@ class WorkflowRunner:
                         progress[s.id] = "done"
                         self._save_progress(progress)
 
+        self._journal_record("run_end", workflow=workflow.name, usage=self.total_usage,
+                             errors=progress.get("_errors", []), stopped=self._stop)
         logger.info(
-            "工作流执行完成: %s (累计 token 用量: %s)",
+            "工作流执行完成: %s (累计 token 用量: %s, 日志: %s)",
             workflow.name,
             self.total_usage or "未上报",
+            self.journal_path,
         )
         return progress
 
+    def _build_step_groups(self, steps: list[WorkflowStep]) -> list[list[WorkflowStep]]:
+        """普通步骤分组。
+
+        未声明 depends_on 时保持原语义：连续 parallel_ok 步骤并发；
+        任一步声明 depends_on 时切换为拓扑分层，同层并发、层间串行。
+        """
+        if not any(s.depends_on for s in steps):
+            groups: list[list[WorkflowStep]] = []
+            for step in steps:
+                if step.parallel_ok and groups and groups[-1] and groups[-1][0].parallel_ok:
+                    groups[-1].append(step)
+                else:
+                    groups.append([step])
+            return groups
+
+        ids = {s.id for s in steps}
+        for step in steps:
+            for dep in step.depends_on:
+                if dep not in ids:
+                    raise WorkflowError(f"步骤 {step.id} 依赖未知步骤 {dep}")
+        remaining = list(steps)
+        done: set[str] = set()
+        groups = []
+        while remaining:
+            ready = [s for s in remaining if all(d in done for d in s.depends_on)]
+            if not ready:
+                raise WorkflowError("工作流存在循环依赖: " + ", ".join(s.id for s in remaining))
+            groups.append(ready)
+            for s in ready:
+                done.add(s.id)
+            remaining = [s for s in remaining if s.id not in done]
+        return groups
+
     @staticmethod
-    def _step_completed(step: WorkflowStep, progress: dict) -> bool:
-        """步骤是否已完成（普通步骤看 done；循环步骤看 current 是否跑满）。"""
+    def _step_completed(step: WorkflowStep, progress: dict, project_dir=None) -> bool:
+        """步骤是否已完成（普通步骤看 done；循环步骤看 current 是否跑满）。
+
+        标成 done 但产出文件已被删除/清空时视为未完成，允许自动重跑
+        （例如用户删了 planning/章节细纲.md 想重新生成）。
+        """
         prog = progress.get(step.id, "pending")
         if prog == "done":
+            if project_dir and step.output and "{" not in step.output:
+                out_path = Path(project_dir) / step.output
+                if not out_path.exists() or out_path.stat().st_size == 0:
+                    logger.info("步骤 %s 产出 %s 缺失，将重跑", step.id, step.output)
+                    return False
             return True
         if isinstance(prog, dict):
             return prog.get("current", 0) >= prog.get("total", step.repeat or 1)
@@ -183,6 +319,9 @@ class WorkflowRunner:
                 start = default_start
             gaps = project.get("_gaps", [])
             chapters_to_write = gaps if gaps else list(range(start, step.repeat + 1))
+            # 首个写盘被拒的章：后续章可以继续写，但 current 不得越过这个洞，
+            # 否则断点恢复会直接从 n+1 开始，把失败章永久跳过。
+            blocked_at: int | None = None
             for n in chapters_to_write:
                 if self._stop:
                     break
@@ -199,7 +338,15 @@ class WorkflowRunner:
                         if progress.get(f"{ps.id}_{n}") != "done":
                             await self._run_periodic(ps, project, n, progress)
                 try:
-                    await self._run_single(step, project, n, progress)
+                    await self._execute_step(step, project, n, progress)
+                except ChapterWriteRejected as e:
+                    # 内容校验失败/写盘被拒：章文件仍是旧版本，不能标成已完成，
+                    # 否则断点恢复会跳过这一章。_write_output 已回调过 on_error。
+                    logger.error("第%d章写入被拒（不推进进度）: %s", n, e)
+                    progress.setdefault("_errors", []).append(f"第{n}章: {e}")
+                    if blocked_at is None:
+                        blocked_at = n
+                    continue
                 except WorkflowError:
                     raise  # 配置类错误（如找不到智能体），继续重试无意义
                 except Exception as e:
@@ -209,8 +356,6 @@ class WorkflowRunner:
                     if self.on_error:
                         self.on_error(step.id, f"第{n}章写作失败: {e}")
                     continue
-                progress[step.id] = {"current": n, "total": step.repeat}
-                self._save_progress(progress)
                 for ps in periodic_steps:
                     if self._stop:
                         break
@@ -220,13 +365,24 @@ class WorkflowRunner:
                 # 写后沉淀：等全部章后步骤（含润色改写正文）跑完后，
                 # 从最终落盘正文提取记忆——草稿不是正典，润色前的文本不入账
                 await self._run_sediment(n, progress)
+                if self._stop:
+                    # 章后步骤被停止打断：不推进 current，恢复时补跑本章章后链路
+                    break
+                # current 必须等章后链路全部跑完才落盘：否则在章后步骤/沉淀中途
+                # 崩溃或停止，恢复会从 n+1 开始，第 n 章的记忆与报告永久缺失。
+                if blocked_at is None:
+                    progress[step.id] = {"current": n, "total": step.repeat}
+                    self._save_progress(progress)
+            if blocked_at is not None:
+                logger.warning("第%d章写盘被拒，进度停在 %d，恢复时会重试该章",
+                               blocked_at, blocked_at - 1)
             errors = progress.get("_errors")
             if errors:
                 logger.warning("工作流循环完成，共 %d 章失败: %s", len(errors), "；".join(errors))
                 if self.on_error:
                     self.on_error(step.id, f"共 {len(errors)} 章失败: {'；'.join(errors[-5:])}")
         else:
-            await self._run_single(step, project, 1, progress)
+            await self._execute_step(step, project, 1, progress)
             progress[step.id] = "done"
             self._save_progress(progress)
 
@@ -234,7 +390,7 @@ class WorkflowRunner:
         """执行章前/章后定时步骤 — 失败降级为记录错误并继续，不终止整跑。"""
         ps_key = f"{ps.id}_{n}"
         try:
-            await self._run_single(ps, project, n, progress)
+            await self._execute_step(ps, project, n, progress)
         except Exception as e:
             logger.error("定时步骤失败（跳过继续）: %s 第%d章 - %s", ps.id, n, e, exc_info=True)
             progress[ps_key] = "error"  # 恢复时 != "done" 会自动重试
@@ -330,6 +486,9 @@ class WorkflowRunner:
             self.on_step_start(step.id, n, agent.title)
 
         context = self._context_builder.build(step.input_files, n, step_id=step.id)
+        skill_text = self._skill_text(step.skills)
+        if skill_text:
+            context = f"{context}\n\n{skill_text}" if context else skill_text
         prompt = self._format_prompt(step.prompt, project, n)
 
         # 注入节奏控制
@@ -353,15 +512,33 @@ class WorkflowRunner:
                 "off" if step.id in NO_THINKING_STEP_IDS else "auto"
             )
             keep_history = step.id not in NO_HISTORY_STEP_IDS
-            response = await agent.run(
-                prompt,
-                context=context,
-                thinking=thinking,
-                keep_history=keep_history,
-            )
-            for k, v in (response.usage or {}).items():
-                if isinstance(v, (int, float)):
-                    self.total_usage[k] = int(self.total_usage.get(k, 0) + v)
+            use_tools = self.enable_tools and bool(step.tools) and step.tool_rounds > 0
+            if use_tools:
+                from ..agents.tools import NovelToolkit
+                toolkit = NovelToolkit(
+                    self.project_dir, self.project_info, n, self._skill_registry
+                ).build(step.tools)
+
+                def _on_tool(kind: str, payload: dict):
+                    self._emit_event(kind, step=step.id, n=n, **payload)
+
+                response = await agent.run_with_tools(
+                    toolkit,
+                    prompt,
+                    context=context,
+                    thinking=thinking,
+                    keep_history=keep_history,
+                    max_rounds=step.tool_rounds,
+                    on_event=_on_tool,
+                )
+            else:
+                response = await agent.run(
+                    prompt,
+                    context=context,
+                    thinking=thinking,
+                    keep_history=keep_history,
+                )
+            # usage 由 BaseAgent.usage_sink 汇总（含内置步骤与工具循环）
             logger.info("步骤完成: %s (第%d章)", step.id, n)
         except Exception as e:
             logger.error("步骤执行失败: %s (第%d章) - %s", step.id, n, e, exc_info=True)
@@ -374,13 +551,12 @@ class WorkflowRunner:
         if output:
             written = self._write_output(step, n, output, response.content, agent)
             if not written:
+                # 章节正文被拒：抛给循环层，记录后不推进 current。
+                # 反模式回灌已移入 builtin 的 _run_review（review 走内置分发，
+                # 本函数后半段对 review 不可达）。
+                if step.id == "chapter":
+                    raise ChapterWriteRejected(f"第{n}章正文未通过校验，未写入")
                 return
-
-        # 审稿后：提取反模式
-        if step.id == "review" and response:
-            from ..anti_patterns import AntiPatternTracker
-            tracker = AntiPatternTracker(self.project_dir)
-            tracker.add_from_review(response.content, n)
 
         if self.on_step_end:
             self.on_step_end(step.id, n, agent.title, response.content)

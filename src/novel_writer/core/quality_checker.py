@@ -135,13 +135,12 @@ class QualityChecker:
         # 检查是否有明显的开头、发展、结尾
         if len(content) > 1000:
             first_part = content[:len(content)//3]
-            middle_part = content[len(content)//3:2*len(content)//3]
             last_part = content[2*len(content)//3:]
-            
+
             # 检查开头是否有吸引力
             if any(kw in first_part for kw in ['？', '?', '！', '!', '突然', '忽然']):
                 score += 10
-            
+
             # 检查结尾是否有钩子
             if any(kw in last_part for kw in ['？', '?', '！', '!', '然而', '但是', '却']):
                 score += 10

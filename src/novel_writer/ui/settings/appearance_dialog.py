@@ -93,7 +93,7 @@ class AppearanceDialog(QDialog):
     def __init__(self, config: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("settings_tab_appearance"))
-        self.resize(560, 640)
+        self.resize(560, 560)
         self.config = dict(config)
         self._setup_ui()
         self._load_config()
@@ -163,8 +163,7 @@ class AppearanceDialog(QDialog):
         self.custom_group.setVisible(False)
 
         self._apply_btn = QPushButton(t("settings_apply_now"))
-        self._apply_btn.setObjectName("primary")
-        self._apply_btn.setFixedHeight(40)
+        self._apply_btn.setFixedHeight(38)
         self._apply_btn.clicked.connect(self._apply_theme_now)
         tg.addWidget(self._apply_btn)
         layout.addWidget(theme_group)

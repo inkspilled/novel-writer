@@ -28,10 +28,12 @@ class OpenAICompatLLM(BaseLLM):
     def __init__(self, model: str, api_key: str, base_url: str = "https://api.openai.com/v1", **kwargs):
         super().__init__(model, api_key, base_url, **kwargs)
         AsyncOpenAI = _get_async_openai()
+        import ssl
         import httpx, certifi
         # httpx 默认 5s 对 LLM 生成太短
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         http_client = httpx.AsyncClient(
-            verify=certifi.where(), timeout=httpx.Timeout(300.0, connect=15.0)
+            verify=ssl_ctx, timeout=httpx.Timeout(300.0, connect=15.0)
         )
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
         logger.info("OpenAI 兼容客户端初始化: model=%s, base_url=%s", model, base_url)
@@ -56,6 +58,7 @@ class OpenAICompatLLM(BaseLLM):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         create_kwargs: dict = dict(
             model=self.model,
@@ -87,6 +90,7 @@ class OpenAICompatLLM(BaseLLM):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         create_kwargs: dict = dict(
             model=self.model,

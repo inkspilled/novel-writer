@@ -4,7 +4,6 @@ import json
 import struct
 from pathlib import Path
 
-from src.novel_writer.core import rag as rag_mod
 from src.novel_writer.core.rag import RAGRetriever, configure_embedding
 
 

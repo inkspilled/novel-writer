@@ -85,6 +85,7 @@ class OllamaLLM(BaseLLM):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         """使用共享客户端进行 HTTP 调用，避免频繁创建连接。"""
         try:
@@ -115,6 +116,7 @@ class OllamaLLM(BaseLLM):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         """流式输出，逐块返回 (kind, text)。"""
         try:

@@ -1,19 +1,49 @@
-"""办公室场景 — 智能体们在虚拟办公室里工作、摸鱼、等待。"""
+"""Agent 状态条 — 紧凑、主题感知的智能体状态总览。
+
+原先是 QPainter 绘制的假 3D 办公室（窗户/桌子/显示器/小人）。现改为
+固定高度约 104px 的横向卡片状态条：
+
+    ┌────────────────────────┐  ┌────────────────────────┐
+    │ 📋  主编               │  │ ✍️  写手               │
+    │ ● 待命                 │  │ ● 写作中               │
+    │ 章节规划 #2            │  │ 正文写作 #3            │
+    └────────────────────────┘  └────────────────────────┘
+
+卡片全部由 QWidget/QLabel 组合，颜色只来自 apply_theme(colors) 传入的
+主题 token；卡片过多时外层 QScrollArea 横向滚动，不裁切。
+
+对外仍保留 OfficeScene / AgentState / AgentSlot 以及原有方法签名。
+"""
 from __future__ import annotations
 
-import math
-import random
 import sys
 from dataclasses import dataclass
 from enum import Enum
 
-from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QTimer, Signal, QPointF, QRectF
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QRadialGradient
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 # 跨平台字体
 _EMOJI_FONT = "Segoe UI Emoji" if sys.platform == "win32" else "Apple Color Emoji"
 _TEXT_FONT = "Microsoft YaHei" if sys.platform == "win32" else "PingFang SC"
+
+# 状态条尺寸（AgentPanel 直接用 OfficeScene.HEIGHT 设置固定高度）
+_HEIGHT = 104
+# 110px：默认 480px 宽的 Agent 面板可完整显示 4 张卡片，更多时横向滚动
+_CARD_WIDTH = 110
+_CARD_HEIGHT = 72
+_MAX_TASK_CHARS = 8
+_COLUMNS = 4
 
 
 class AgentState(Enum):
@@ -23,425 +53,448 @@ class AgentState(Enum):
     DONE = "done"
     ERROR = "error"
     SLACKING = "slacking"
-    GONE = "gone"
 
 
-class IdleBehavior(Enum):
-    COFFEE = "coffee"
-    NAP = "nap"
-    PHONE = "phone"
-    STARE = "stare"
-    STRETCH = "stretch"
-    WANDER = "wander"
+# 状态文案：待命/写作中/等待/完成/错误/摸鱼
+_STATE_TEXT = {
+    AgentState.IDLE: "待命",
+    AgentState.WORKING: "写作中",
+    AgentState.WAITING: "等待",
+    AgentState.DONE: "完成",
+    AgentState.ERROR: "错误",
+    AgentState.SLACKING: "摸鱼",
+}
 
 
 @dataclass
 class AgentSlot:
+    """一个智能体的状态数据（卡片只负责显示，数据保存在这里）。"""
+
     name: str
     emoji: str
     title: str
     color: str
     state: AgentState = AgentState.IDLE
-    behavior: IdleBehavior = IdleBehavior.STARE
-    desk_x: float = 0.0
-    desk_y: float = 0.0
-    frame: int = 0
-    behavior_timer: int = 0
-    behavior_duration: int = 300
-    offset_x: float = 0.0
-    offset_y: float = 0.0
-    target_offset_x: float = 0.0
-    target_offset_y: float = 0.0
     selected: bool = False
-    escaped: bool = False
-    escape_timer: int = 0
-    # M-09 修复：预计算屏幕线条宽度，避免 paintEvent 中使用随机数
-    screen_line_widths: list = None
-
-    def __post_init__(self):
-        if self.screen_line_widths is None:
-            self.screen_line_widths = [random.randint(8, 18) for _ in range(4)]
     # 当前正在执行的任务描述
     task_desc: str = ""
 
 
+def _truncate_task(text: str, limit: int = _MAX_TASK_CHARS) -> str:
+    """压缩空白并截断任务描述，总长度（含省略号）不超过 limit。"""
+    text = " ".join((text or "").split())
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _rgba(color: str, alpha: float, fallback: str = "transparent") -> str:
+    """把颜色转成 rgba(...)；不引入任何新的硬编码色值。"""
+    c = QColor(color or "")
+    if not c.isValid():
+        c = QColor(fallback or "")
+    if not c.isValid():
+        return "transparent"
+    return f"rgba({c.red()},{c.green()},{c.blue()},{alpha:.2f})"
+
+
+class _AgentCard(QFrame):
+    """单个 Agent 卡片：emoji + 名称/标题 + 状态点/文案 + 当前任务。"""
+
+    clicked = Signal(str)
+
+    def __init__(self, slot: AgentSlot, theme: dict, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._slot = slot
+        self._theme = theme or {}
+
+        self.setObjectName("agentCard")
+        self.setFixedSize(_CARD_WIDTH, _CARD_HEIGHT)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 7, 8, 7)
+        layout.setSpacing(2)
+
+        # ── 第一行：emoji + 名称/标题 ──
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(4)
+
+        self.emoji_label = QLabel(self)
+        self.emoji_label.setObjectName("agentEmoji")
+        self.emoji_label.setFixedSize(22, 20)
+        self.emoji_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top_row.addWidget(self.emoji_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.title_label = QLabel(self)
+        self.title_label.setObjectName("agentTitle")
+        self.title_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        top_row.addWidget(self.title_label, 1, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(top_row)
+
+        # ── 第二行：状态点 + 状态文案 ──
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(5)
+
+        self.dot_label = QLabel(self)
+        self.dot_label.setObjectName("agentDot")
+        self.dot_label.setFixedSize(7, 7)
+        status_row.addWidget(self.dot_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.status_label = QLabel(self)
+        self.status_label.setObjectName("agentStatus")
+        status_row.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        status_row.addStretch(1)
+        layout.addLayout(status_row)
+
+        # ── 第三行：当前任务 ──
+        self.task_label = QLabel(self)
+        self.task_label.setObjectName("agentTask")
+        self.task_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        layout.addWidget(self.task_label)
+
+        # 点击整张卡片都能选中 Agent（文字不拦截鼠标）
+        for label in (self.emoji_label, self.title_label,
+                      self.status_label, self.task_label, self.dot_label):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        self.update_view(slot, self._theme)
+
+    # ── 数据刷新 ──
+
+    def update_view(self, slot: AgentSlot, theme: dict):
+        self._slot = slot
+        self._theme = theme or {}
+        state_text = _STATE_TEXT.get(slot.state, "")
+        task_text = _truncate_task(slot.task_desc)
+
+        self.emoji_label.setText(slot.emoji or "🤖")
+        self.title_label.setText(slot.title or slot.name)
+        self.status_label.setText(state_text)
+        self.task_label.setText(task_text or "—")
+
+        tooltip = f"{slot.emoji or '🤖'} {slot.title or slot.name}"
+        if slot.name and slot.name != slot.title:
+            tooltip += f"（{slot.name}）"
+        tooltip += f"\n状态：{state_text}"
+        if slot.task_desc:
+            tooltip += f"\n当前任务：{slot.task_desc}"
+        self.setToolTip(tooltip)
+        self.setAccessibleName(f"{slot.title or slot.name} {state_text}")
+
+        self._restyle()
+
+    # ── 主题样式 ──
+
+    def _tok(self, key: str, fallback: str) -> str:
+        value = self._theme.get(key)
+        return value if value else fallback
+
+    def _restyle(self):
+        surface = self._tok("surface", self._tok("card", "transparent"))
+        elevated = self._tok("elevated", surface)
+        border = self._tok("border", self._tok("divider", "transparent"))
+        fg = self._tok("fg", "inherit")
+        fg2 = self._tok("fg2", fg)
+        fg3 = self._tok("fg3", fg2)
+        accent = self._tok("accent", fg)
+        accent_hover = self._tok("accent_hover", accent)
+        accent_bg = self._tok("accent_bg", "transparent")
+
+        slot = self._slot
+        state = slot.state
+        selected = slot.selected
+        working = state == AgentState.WORKING
+
+        # 卡片底色 / 边框：选中和 WORKING 都用 accent 强调
+        if selected:
+            bg, border_color, border_width = accent_bg, accent, 2
+        elif working:
+            bg, border_color, border_width = accent_bg, accent, 1
+        else:
+            bg, border_color, border_width = surface, border, 1
+
+        if selected or working:
+            hover_bg, hover_border = bg, accent
+        else:
+            hover_bg, hover_border = elevated, fg3
+
+        title_color = accent if working else fg
+        if state == AgentState.WORKING:
+            status_color = accent
+        elif state == AgentState.ERROR:
+            status_color = fg
+        elif state == AgentState.SLACKING:
+            status_color = fg3
+        else:
+            status_color = fg2
+        task_color = fg2 if slot.task_desc else fg3
+
+        # 状态点颜色只从主题 token（以及传入的 Agent 自身颜色）取
+        if state == AgentState.WORKING:
+            dot_color = accent
+        elif state == AgentState.WAITING:
+            dot_color = accent_hover
+        elif state == AgentState.DONE:
+            dot_color = accent
+        elif state == AgentState.ERROR:
+            dot_color = slot.color or accent
+        else:  # IDLE / SLACKING
+            dot_color = fg3
+
+        if state == AgentState.WAITING:
+            dot_bg, dot_border = "transparent", f"1px solid {dot_color}"
+        else:
+            dot_bg, dot_border = dot_color, "none"
+
+        emoji_bg = _rgba(slot.color, 0.14, accent)
+
+        self.setStyleSheet(f"""
+            QFrame#agentCard {{
+                background-color: {bg};
+                border: {border_width}px solid {border_color};
+                border-radius: 10px;
+            }}
+            QFrame#agentCard:hover {{
+                background-color: {hover_bg};
+                border-color: {hover_border};
+            }}
+            QLabel#agentEmoji {{
+                background-color: {emoji_bg};
+                border-radius: 7px;
+                font-family: "{_EMOJI_FONT}";
+                font-size: 15px;
+            }}
+            QLabel#agentTitle {{
+                color: {title_color};
+                font-family: "{_TEXT_FONT}";
+                font-size: 12px;
+                font-weight: 600;
+                background: transparent;
+            }}
+            QLabel#agentStatus {{
+                color: {status_color};
+                font-family: "{_TEXT_FONT}";
+                font-size: 11px;
+                background: transparent;
+            }}
+            QLabel#agentTask {{
+                color: {task_color};
+                font-family: "{_TEXT_FONT}";
+                font-size: 11px;
+                background: transparent;
+            }}
+            QLabel#agentDot {{
+                background-color: {dot_bg};
+                border: {dot_border};
+                border-radius: 3px;
+            }}
+        """)
+
+    # ── 交互 ──
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._slot.name)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class OfficeScene(QWidget):
-    """办公室场景画布。"""
+    """Agent 状态条：横向排列的 Agent 卡片，超出宽度时横向滚动。"""
+
+    #: 状态条固定高度（96–110px），AgentPanel 用同一个值设置高度
+    HEIGHT = _HEIGHT
 
     agent_clicked = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._slots: list[AgentSlot] = []
-        self._frame_counter = 0
-        self._hover_slot: AgentSlot | None = None
-        self.setMouseTracking(True)
+        self._cards: dict[str, _AgentCard] = {}
+        self._theme: dict = {}
 
-        # M-08/M-10 修复：预创建常用绘图对象，避免 paintEvent 中反复创建
-        self._pen_no = Qt.PenStyle.NoPen
-        self._brush_clear = QColor(255, 255, 255, 20)
-        self._pen_window = QPen(QColor("#2a2a4a"), 2)
-        self._pen_floor = QPen(QColor("#ffffff"), 1)
-        self._pen_desk = QPen(QColor("#2a2a4a"), 1)
-        self._brush_desk = QColor("#1c1c2e")
-        self._pen_monitor = QPen(QColor("#3a3a5a"), 1)
-        self._brush_monitor_work = QColor("#0a2a4a")
-        self._brush_monitor_idle = QColor("#12121e")
-        self._brush_monitor_slack = QColor("#1a1a3a")
-        self._pen_screen_line = QPen(QColor("#4da6ff"), 1)
-        self._pen_stand = QPen(QColor("#3a3a5a"), 1)
-        self._pen_keyboard = QPen(QColor("#2a2a3a"), 1)
-        self._brush_keyboard = QColor("#18182a")
-        self._pen_title = QPen(QColor("#8e8e9a"), 1)
-        self._pen_clock = QPen(QColor("#4a4a6a"), 1)
-        self._brush_clock = QColor("#16161d")
-        self._pen_clock_hand = QPen(QColor("#8e8e9a"), 2)
-        self._pen_area = QPen(QColor("#2a2a4a"), 1)
-        self._brush_area = QColor("#16161d")
-        self._pen_arc = QPen(QColor(Qt.GlobalColor.white), 2)  # 会被 slot.color 覆盖
-        self._font_emoji_12 = QFont(_EMOJI_FONT, 12)
-        self._font_emoji_20 = QFont(_EMOJI_FONT, 20)
-        self._font_emoji_24 = QFont(_EMOJI_FONT, 24)
-        self._font_text_7 = QFont(_TEXT_FONT, 7)
-        self._font_text_8 = QFont(_TEXT_FONT, 8)
+        self.setObjectName("agentStatusBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(self.HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._tick)
-        self._timer.start(200)  # 5fps：动画更缓，避免左右闪
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("agentStatusScroll")
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self._content = QWidget()
+        self._content.setObjectName("agentStatusContent")
+        self._layout = QGridLayout(self._content)
+        self._layout.setContentsMargins(6, 6, 6, 6)
+        self._layout.setHorizontalSpacing(6)
+        self._layout.setVerticalSpacing(6)
+        for col in range(_COLUMNS):
+            self._layout.setColumnStretch(col, 0)
+
+        self._scroll.setWidget(self._content)
+        outer.addWidget(self._scroll)
+
+        self.apply_theme({})
+
+    # ── 主题 ──
+
+    def apply_theme(self, colors: dict):
+        """按主题 token 刷新状态条与所有卡片。"""
+        self._theme = dict(colors or {})
+        self._apply_shell_style()
+        for slot in self._slots:
+            card = self._cards.get(slot.name)
+            if card is not None:
+                card.update_view(slot, self._theme)
+
+    def _tok(self, key: str, fallback: str) -> str:
+        value = self._theme.get(key)
+        return value if value else fallback
+
+    def _apply_shell_style(self):
+        bg = self._tok("bg", self._tok("surface", "transparent"))
+        fg3 = self._tok("fg3", self._tok("fg2", "inherit"))
+
+        self.setStyleSheet(f"""
+            QWidget#agentStatusBar {{
+                background-color: {bg};
+            }}
+            QScrollArea#agentStatusScroll {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollArea#agentStatusScroll > QWidget {{
+                background: transparent;
+            }}
+            QWidget#agentStatusContent {{
+                background: transparent;
+            }}
+            QScrollBar:horizontal {{
+                height: 6px;
+                background: transparent;
+                margin: 0px 8px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background-color: {fg3};
+                border-radius: 3px;
+                min-width: 24px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background-color: {self._tok("fg2", fg3)};
+            }}
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {{
+                width: 0px;
+                background: transparent;
+            }}
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {{
+                background: transparent;
+            }}
+        """)
+
+    # ── 外部 API（保持原有行为） ──
 
     def setup_agents(self, agents_cfg: dict, colors: dict):
+        """按智能体配置重建卡片。colors 为各 Agent 的标识色。"""
+        self._clear_cards()
         self._slots.clear()
-        count = len(agents_cfg)
-        if count == 0:
-            return
-        margin = 0.06
-        usable = 1.0 - 2 * margin
-        for i, (name, info) in enumerate(agents_cfg.items()):
+        self._cards.clear()
+
+        for name, info in (agents_cfg or {}).items():
             slot = AgentSlot(
                 name=name,
                 emoji=info.get("emoji", "🤖"),
                 title=info.get("title", name),
-                color=colors.get(name, "#6e8efb"),
-                desk_x=margin + usable * (i + 0.5) / count,
-                desk_y=0.45,
-                behavior_duration=random.randint(200, 500),
+                color=colors.get(name, "") if colors else "",
             )
             self._slots.append(slot)
+
+            card = _AgentCard(slot, self._theme, self._content)
+            card.clicked.connect(self.agent_clicked)
+            index = len(self._cards)
+            self._layout.addWidget(card, index // _COLUMNS, index % _COLUMNS)
+            self._cards[name] = card
+
+        self._layout.activate()
+        rows = max(1, (len(self._cards) + _COLUMNS - 1) // _COLUMNS)
+        # 一行 104px；每多一行 +78px。最多展示两行（8 个），更多则纵向滚动，
+        # 避免 Agent 数量增长把聊天区无限压缩。
+        full_height = 104 + (rows - 1) * 78
+        max_height = 104 + 78
+        self._content.setMinimumHeight(max(0, full_height - 12))
+        self._scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if full_height > max_height else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.setFixedHeight(min(full_height, max_height))
         self.update()
 
-    def set_agent_state(self, agent_name: str, state: AgentState, task_desc: str = ""):
+    def set_agent_state(self, agent_name: str, state: AgentState,
+                        task_desc: str = ""):
         for slot in self._slots:
             if slot.name == agent_name:
                 slot.state = state
-                slot.frame = 0
-                slot.behavior_timer = 0
-                slot.offset_x = 0
-                slot.offset_y = 0
                 slot.task_desc = task_desc
-                if state == AgentState.IDLE:
-                    slot.behavior = random.choice(list(IdleBehavior))
-                    slot.behavior_duration = random.randint(200, 500)
-                if state != AgentState.SLACKING:
-                    slot.escaped = False
-                self.update()
+                self._refresh_card(slot)
                 return
 
     def set_selected(self, agent_name: str):
         for slot in self._slots:
             slot.selected = (slot.name == agent_name)
-        self.update()
+            self._refresh_card(slot)
+        card = self._cards.get(agent_name)
+        if card is not None:
+            self._ensure_visible(card)
 
-    # ── 动画驱动 ──
-
-    def _tick(self):
-        self._frame_counter += 1
+    def reset_states(self, state: AgentState = AgentState.IDLE):
+        """把所有 Agent 置为同一状态并清空任务（供工作流结束等场景使用）。"""
         for slot in self._slots:
-            slot.frame += 1
-            if slot.state == AgentState.IDLE and not slot.escaped:
-                slot.behavior_timer += 1
-                if slot.behavior_timer >= slot.behavior_duration:
-                    slot.behavior_timer = 0
-                    slot.behavior_duration = random.randint(200, 500)
-                    if random.random() < 0.03:
-                        slot.state = AgentState.SLACKING
-                        slot.escaped = True
-                        slot.escape_timer = random.randint(300, 600)
-                    else:
-                        slot.behavior = random.choice(list(IdleBehavior))
-                if slot.behavior == IdleBehavior.WANDER:
-                    # 闲置只做极轻微漂移，禁止左右大幅走动
-                    dx = slot.target_offset_x - slot.offset_x
-                    dy = slot.target_offset_y - slot.offset_y
-                    if abs(dx) < 0.005 and abs(dy) < 0.005:
-                        slot.target_offset_x = random.uniform(-0.008, 0.008)
-                        slot.target_offset_y = random.uniform(-0.004, 0.004)
-                    else:
-                        slot.offset_x += 0.0006 * (1 if dx > 0 else -1)
-                        slot.offset_y += 0.0004 * (1 if dy > 0 else -1)
-            elif slot.state == AgentState.SLACKING and slot.escaped:
-                # 走开：只向右，速度放慢
-                slot.offset_x += 0.0015
-                slot.escape_timer -= 1
-                if slot.escape_timer <= 0:
-                    slot.state = AgentState.IDLE
-                    slot.escaped = False
-                    slot.behavior = random.choice(list(IdleBehavior))
-            elif slot.state == AgentState.DONE:
-                if slot.frame > 20:
-                    slot.state = AgentState.IDLE
-                    slot.behavior = random.choice(list(IdleBehavior))
-        self.update()
+            slot.state = state
+            slot.task_desc = ""
+            self._refresh_card(slot)
 
-    # ── 绘制 ──
+    def iter_slots(self) -> tuple[AgentSlot, ...]:
+        """返回当前 AgentSlot 的快照，替代外部直接访问 _slots。"""
+        return tuple(self._slots)
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        self._draw_background(painter, w, h)
-        for slot in self._slots:
-            self._draw_desk(painter, slot, w, h)
-            self._draw_agent(painter, slot, w, h)
-            self._draw_status_effect(painter, slot, w, h)
-        # 最后绘制工作中的高亮（在最上层）
-        for slot in self._slots:
-            if slot.state == AgentState.WORKING:
-                self._draw_working_highlight(painter, slot, w, h)
-        painter.end()
+    # ── 内部 ──
 
-    def _draw_background(self, painter: QPainter, w: int, h: int):
-        painter.fillRect(0, 0, w, h, QColor("#1a1a2e"))
-        # 窗户
-        win_y = int(h * 0.02)
-        win_h = int(h * 0.16)
-        painter.fillRect(int(w * 0.12), win_y, int(w * 0.76), win_h, QColor("#0a1628"))
-        painter.setPen(self._pen_window)
-        painter.drawRect(int(w * 0.12), win_y, int(w * 0.76), win_h)
-        painter.drawLine(int(w * 0.5), win_y, int(w * 0.5), win_y + win_h)
-        # 云
-        cx = (self._frame_counter * 2) % (w + 100) - 50
-        painter.setPen(self._pen_no)
-        painter.setBrush(self._brush_clear)
-        painter.drawEllipse(cx, win_y + 8, 40, 12)
-        painter.drawEllipse(cx + 15, win_y + 4, 30, 12)
-        painter.drawEllipse(cx + 200, win_y + 14, 35, 10)
-        # 地板线
-        painter.setPen(self._pen_floor)
-        painter.setOpacity(0.03)
-        for i in range(8):
-            painter.drawLine(0, int(h * 0.25 + i * h * 0.1), w, int(h * 0.25 + i * h * 0.1))
-        painter.setOpacity(1.0)
-        # 植物
-        px, py = int(w * 0.03), int(h * 0.22)
-        painter.setBrush(QColor("#8B4513"))
-        painter.setPen(self._pen_no)
-        painter.drawRoundedRect(px, py + 15, 16, 12, 3, 3)
-        painter.setBrush(QColor("#2d6a4f"))
-        painter.drawEllipse(px + 2, py, 12, 18)
-        painter.drawEllipse(px - 2, py + 3, 10, 14)
-        # 时钟
-        cx2, cy2 = int(w * 0.94), int(h * 0.06)
-        painter.setPen(self._pen_clock)
-        painter.setBrush(self._brush_clock)
-        painter.drawEllipse(cx2 - 12, cy2 - 12, 24, 24)
-        painter.setPen(self._pen_clock_hand)
-        a = (self._frame_counter % 360) * 0.1
-        painter.drawLine(cx2, cy2, cx2 + int(6 * math.sin(a)), cy2 - int(6 * math.cos(a)))
-        # 茶水间 & 健身角
-        painter.setFont(self._font_emoji_12)
-        painter.setPen(self._pen_area)
-        painter.setBrush(self._brush_area)
-        painter.drawRoundedRect(int(w * 0.87), int(h * 0.72), 50, 30, 4, 4)
-        painter.drawText(int(w * 0.88), int(h * 0.74) + 12, "☕🍵")
-        painter.drawRoundedRect(int(w * 0.02), int(h * 0.72), 45, 30, 4, 4)
-        painter.drawText(int(w * 0.03), int(h * 0.74) + 12, "🏋️🏃")
+    def _refresh_card(self, slot: AgentSlot):
+        card = self._cards.get(slot.name)
+        if card is not None:
+            card.update_view(slot, self._theme)
 
-    def _draw_desk(self, painter: QPainter, slot: AgentSlot, w: int, h: int):
-        # 桌子位置固定，不随 agent 移动
-        x = int(slot.desk_x * w)
-        y = int(slot.desk_y * h)
-        # 桌子
-        dw, dh = 60, 30
-        desk = QRectF(x - dw / 2, y - dh / 2, dw, dh)
-        painter.setPen(self._pen_desk)
-        painter.setBrush(self._brush_desk)
-        painter.drawRoundedRect(desk, 4, 4)
-        # 显示器
-        mw, mh = 28, 18
-        mon = QRectF(x - mw / 2, y - dh / 2 - mh - 2, mw, mh)
-        if slot.state == AgentState.WORKING:
-            painter.setBrush(self._brush_monitor_work)
-        elif slot.state == AgentState.SLACKING and slot.behavior == IdleBehavior.PHONE:
-            painter.setBrush(self._brush_monitor_slack)
-        else:
-            painter.setBrush(self._brush_monitor_idle)
-        painter.setPen(self._pen_monitor)
-        painter.drawRoundedRect(mon, 2, 2)
-        # 屏幕内容
-        if slot.state == AgentState.WORKING:
-            painter.setPen(self._pen_screen_line)
-            for line in range(4):
-                ly = int(mon.top() + 4 + line * 4)
-                lx = int(mon.left() + 3)
-                bw = slot.screen_line_widths[line] if slot.screen_line_widths and line < len(slot.screen_line_widths) else 12
-                painter.drawLine(lx, ly, lx + bw, ly)
-        # 底座
-        painter.setPen(self._pen_stand)
-        painter.drawLine(x, int(mon.bottom()), x, int(desk.top()))
-        # 键盘
-        kb = QRectF(x - 12, y - 5, 24, 7)
-        painter.setPen(self._pen_keyboard)
-        painter.setBrush(self._brush_keyboard)
-        painter.drawRoundedRect(kb, 1, 1)
+    def _ensure_visible(self, card: _AgentCard):
+        self._layout.activate()
+        self._scroll.ensureWidgetVisible(card, 8, 0)
 
-    def _draw_agent(self, painter: QPainter, slot: AgentSlot, w: int, h: int):
-        x = int(slot.desk_x * w + slot.offset_x * w)
-        y = int(slot.desk_y * h + slot.offset_y * h)
-
-        if slot.escaped:
-            painter.setFont(self._font_emoji_12)
-            painter.drawText(x - 6, y + 28, "💨")
-            # 逃跑时仍显示名字，避免像「缺名字的智能体」
-            painter.setPen(self._pen_title)
-            painter.setFont(self._font_text_7)
-            painter.drawText(QRectF(x - 24, y + 38, 48, 12), Qt.AlignmentFlag.AlignCenter, slot.title)
-            return
-
-        # 选中光圈
-        if slot.selected:
-            painter.setPen(self._pen_no)
-            painter.setBrush(QColor(slot.color))
-            painter.setOpacity(0.2)
-            painter.drawEllipse(QPointF(x, y + 20), 26, 26)
-            painter.setOpacity(1.0)
-
-        self._draw_agent_emoji(painter, slot, x, y)
-
-        # 标题
-        painter.setPen(self._pen_title)
-        painter.setFont(self._font_text_7)
-        painter.drawText(QRectF(x - 24, y + 38, 48, 12), Qt.AlignmentFlag.AlignCenter, slot.title)
-
-    def _draw_agent_emoji(self, painter: QPainter, slot: AgentSlot, x: int, y: int) -> None:
-        """纯代码绘制的小人（emoji + 位移动画）。"""
-        emoji_size = 24 if slot.state == AgentState.WORKING else 20
-        painter.setFont(self._font_emoji_24 if emoji_size == 24 else self._font_emoji_20)
-        er = QRectF(x - 14, y + 8, 28, 28)
-
-        if slot.state == AgentState.WORKING:
-            jitter = math.sin(slot.frame * 0.6) * 2
-            er.moveTop(er.top() + jitter)
-        elif slot.state == AgentState.DONE:
-            bounce = abs(math.sin(slot.frame * 0.3)) * 5
-            er.moveTop(er.top() - bounce)
-        elif slot.state == AgentState.ERROR:
-            shake = math.sin(slot.frame * 0.9) * 3
-            er.moveLeft(er.left() + shake)
-
-        painter.drawText(er, Qt.AlignmentFlag.AlignCenter, slot.emoji)
-
-    def _draw_working_highlight(self, painter: QPainter, slot: AgentSlot, w: int, h: int):
-        """工作中的 Agent — 大光圈 + 脉冲 + 任务标签。"""
-        x = int(slot.desk_x * w + slot.offset_x * w)
-        y = int(slot.desk_y * h + slot.offset_y * h)
-
-        # 脉冲光圈（大范围，明显）
-        pulse = (math.sin(slot.frame * 0.15) + 1) / 2  # 0~1
-        radius = 30 + pulse * 12
-        gradient = QRadialGradient(QPointF(x, y + 18), radius)
-        c = QColor(slot.color)
-        c.setAlpha(int(40 + pulse * 40))
-        gradient.setColorAt(0, c)
-        c2 = QColor(slot.color)
-        c2.setAlpha(0)
-        gradient.setColorAt(1, c2)
-        painter.setPen(self._pen_no)
-        painter.setBrush(gradient)
-        painter.drawEllipse(QPointF(x, y + 18), int(radius), int(radius))
-
-        # 旋转弧线
-        painter.setPen(QPen(QColor(slot.color), 2))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        start_angle = (slot.frame * 8) % 360 * 16
-        painter.drawArc(int(x - 22), int(y + 18 - 22), 44, 44, start_angle, 120 * 16)
-
-        # 任务标签（气泡）
-        if slot.task_desc:
-            painter.setFont(self._font_text_8)
-            fm = painter.fontMetrics()
-            text = slot.task_desc[:12] + "..." if len(slot.task_desc) > 12 else slot.task_desc
-            tw = fm.horizontalAdvance(text) + 12
-            th = 18
-            bx = x - tw / 2
-            by = y - 20
-            painter.setPen(QPen(QColor(slot.color), 1))
-            painter.setBrush(QColor("#1a1a2e"))
-            painter.drawRoundedRect(int(bx), int(by), tw, th, 8, 8)
-            painter.setPen(QColor("#ffffff"))
-            painter.drawText(int(bx), int(by), tw, th, Qt.AlignmentFlag.AlignCenter, text)
-
-    def _draw_status_effect(self, painter: QPainter, slot: AgentSlot, w: int, h: int):
-        x = int(slot.desk_x * w + slot.offset_x * w)
-        y = int(slot.desk_y * h + slot.offset_y * h)
-        if slot.escaped:
-            return
-
-        painter.setFont(self._font_emoji_12)
-
-        if slot.state == AgentState.WORKING:
-            # 敲键盘粒子
-            for i in range(4):
-                px = x - 10 + (slot.frame * 7 + i * 9) % 20
-                py = y + 3 + abs(math.sin(slot.frame * 0.4 + i)) * 10
-                painter.setPen(self._pen_no)
-                painter.setBrush(QColor(slot.color))
-                painter.setOpacity(0.5 + 0.3 * math.sin(slot.frame * 0.2 + i))
-                painter.drawEllipse(int(px), int(py), 3, 3)
-            painter.setOpacity(1.0)
-
-        elif slot.state == AgentState.DONE:
-            painter.drawText(x + 16, y + 10, "👍")
-
-        elif slot.state == AgentState.ERROR:
-            painter.drawText(x + 16, y + 10, "❗")
-
-        elif slot.state == AgentState.IDLE:
-            if slot.behavior == IdleBehavior.NAP:
-                phase = (slot.frame // 3) % 3
-                painter.setPen(QPen(QColor("#6e6e73"), 1))
-                painter.setFont(QFont("monospace", 9))
-                painter.drawText(x + 14, y + 6, "Z" + "z" * phase)
-            elif slot.behavior == IdleBehavior.COFFEE:
-                painter.drawText(x + 16, y + 10, "☕")
-            elif slot.behavior == IdleBehavior.PHONE:
-                painter.drawText(x + 16, y + 10, "📱")
-
-        elif slot.state == AgentState.WAITING:
-            painter.drawText(x + 16, y + 10, "⏳")
-
-    # ── 鼠标交互 ──
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
-            return
-        slot = self._slot_at(event.position().x(), event.position().y())
-        if slot:
-            self.agent_clicked.emit(slot.name)
-
-    def mouseMoveEvent(self, event):
-        slot = self._slot_at(event.position().x(), event.position().y())
-        if slot != self._hover_slot:
-            self._hover_slot = slot
-            self.setCursor(Qt.CursorShape.PointingHandCursor if slot else Qt.CursorShape.ArrowCursor)
-
-    def _slot_at(self, mx: float, my: float) -> AgentSlot | None:
-        w, h = self.width(), self.height()
-        for slot in self._slots:
-            if slot.escaped:
-                continue
-            sx = slot.desk_x * w + slot.offset_x * w
-            sy = slot.desk_y * h + slot.offset_y * h
-            dx, dy = mx - sx, my - (sy + 18)
-            if dx * dx + dy * dy < 28 * 28:
-                return slot
-        return None
+    def _clear_cards(self):
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()

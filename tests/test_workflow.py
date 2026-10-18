@@ -1,6 +1,5 @@
 """workflow 模块的单元测试。"""
 import pytest
-from pathlib import Path
 from src.novel_writer.core.workflow import (
     WorkflowMode, ContextTier, WorkflowStep, WorkflowDef,
     WorkflowRunner, WorkflowError, build_workflow,
@@ -23,7 +22,6 @@ def project_info():
 @pytest.fixture
 def agents():
     """模拟智能体。"""
-    from unittest.mock import MagicMock
     from src.novel_writer.core.agents.base import BaseAgent, AgentConfig
     from src.novel_writer.core.llm.base import LLMResponse
 

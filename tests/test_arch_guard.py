@@ -10,7 +10,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "novel_writer"
 UI_ROOT = SRC / "ui"

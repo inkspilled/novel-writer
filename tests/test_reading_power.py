@@ -1,7 +1,5 @@
 """reading_power 模块的单元测试。"""
 import pytest
-import json
-from pathlib import Path
 from src.novel_writer.core.reading_power import (
     ReadingPowerTracker, ChapterReadingPower,
     HOOK_TYPES, HOOK_LABELS, COOL_POINTS, MICRO_PAYOFFS

@@ -1,6 +1,5 @@
 """quality_checker 模块的单元测试。"""
 import pytest
-from pathlib import Path
 from src.novel_writer.core.quality_checker import QualityChecker, QualityReport
 
 

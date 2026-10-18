@@ -1,7 +1,6 @@
 """exporter 模块的单元测试。"""
 import pytest
 import json
-from pathlib import Path
 from src.novel_writer.core.exporter import Exporter
 
 

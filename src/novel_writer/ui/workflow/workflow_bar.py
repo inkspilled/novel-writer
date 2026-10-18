@@ -30,7 +30,7 @@ class WorkflowMiniBar(QWidget):
         row.setSpacing(6)
 
         self._title_label = QLabel(t("workflow_title"))
-        self._title_label.setStyleSheet("font-size: 10px; font-weight: 600;")
+        self._title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
         row.addWidget(self._title_label)
 
         self._progress_bar = QProgressBar()
@@ -86,6 +86,12 @@ class WorkflowMiniBar(QWidget):
         self._log_expanded = not self._log_expanded
         self._log_area.setVisible(self._log_expanded)
 
+    def set_summary(self, text: str, percent: int | None = None):
+        """标题位显示两段式进度（规划/正文）；percent 给正文进度时覆盖进度条。"""
+        self._title_label.setText(text or t("workflow_title"))
+        if percent is not None:
+            self._progress_bar.setValue(max(0, min(100, int(percent))))
+
     def set_progress(self, percent: int, step_text: str = ""):
         self._progress_bar.setValue(percent)
         if step_text:
@@ -120,7 +126,7 @@ class WorkflowMiniBar(QWidget):
         fg3 = colors.get("fg3", "#5a5a66")
         self._progress_bar.setStyleSheet(
             f"QProgressBar {{ background: {elevated}; border-radius: 6px; border: none; "
-            f"color: #ffffff; font-size: 9px; font-weight: bold; text-align: center; }}"
+            f"color: {colors.get('fg', '#ffffff')}; font-size: 9px; font-weight: bold; text-align: center; }}"
             f"QProgressBar::chunk {{ background: {accent}; border-radius: 6px; }}"
         )
         self._status_label.setStyleSheet(f"font-size: 10px; color: {fg3};")

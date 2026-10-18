@@ -42,7 +42,7 @@ class SettingsMixin:
             "cover": self.project.cover,
             "_project_dir": str(self.project.project_dir) if self.project.project_dir else "",
         }
-        dialog = NewProjectDialog(llm=self.llm, parent=self, project_data=project_data, agents=self.agents)
+        dialog = NewProjectDialog(parent=self, project_data=project_data, agents=self.agents)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
             # 更新项目信息

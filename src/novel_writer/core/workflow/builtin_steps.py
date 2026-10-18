@@ -5,11 +5,19 @@ runner 通过注册表分发，替代原先的 if/elif 长链。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .. import project_io
+from ..agents.base import AgentConfig, BaseAgent
+from ..characters.registry import CharacterRegistry
+from ..characters.view import (
+    CharacterViewBuilder,
+    build_character_system_prompt,
+    validate_knowledge_used,
+)
 from ..json_extract import extract_json_object
 from ..logger import get_logger
 from ..quality_checker import QualityChecker
@@ -17,11 +25,18 @@ from ..world_state import WorldState
 from .constants import SKILL_PROOFREAD, SKILL_REVIEW, SKILL_TYPO_CHECK
 from .context import estimate_tokens
 from .prompts import (
+    CHAPTER_OUTLINE_BATCH,
+    OUTLINE_REVISE_WINDOW,
+    REVIEW_PANEL_LENSES,
+    build_chapter_outline_batch_prompt,
+    build_chapter_outline_revise_prompt,
     build_chapter_summary_prompt,
     build_fix_titles_prompt,
     build_proofread_batch_prompt,
     build_review_aggregate_prompt,
     build_review_batch_prompt,
+    build_review_panel_aggregate_prompt,
+    build_review_panel_prompt,
     build_world_state_prompt,
 )
 
@@ -400,7 +415,451 @@ async def _run_review(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
         logger.warning("审核汇总调用失败，直接落盘各批发现: %s", e)
         report = "\n\n".join(findings)
     project_io.write_md(out_path, report)
+    # 审稿 → 反模式禁忌库（原先在 runner 标准路径里，review 改内置后成了死代码）
+    try:
+        from ..anti_patterns import AntiPatternTracker
+        last_n = max(c["number"] for c in chapters)
+        AntiPatternTracker(runner.project_dir).add_from_review(report, last_n)
+    except Exception as e:
+        logger.warning("审核报告反模式入库失败（忽略）: %s", e)
     msg = f"全书审核完成（{len(batches)} 批 / {len(chapters)} 章）"
+    logger.info(msg)
+    if runner.on_step_end:
+        runner.on_step_end(step.id, n, agent.title, msg)
+
+
+# ── 多审稿人并行会审（fan-out / fan-in） ──
+
+_REVIEW_PANEL_CHAPTERS = 3
+_REVIEW_PANEL_CHAPTER_CAP = 6000
+
+
+@handler("review_panel")
+async def _run_review_panel(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """三个视角并行审最近几章，再由主编聚合为一份修改清单。
+
+    对标 DSH workflow 的 `parallel()` + `pipeline()`：子任务互不依赖，
+    并行扇出；聚合步骤依赖全部子结果，天然是 fan-in。
+    """
+    chapters = _scan_nonempty_chapters(runner)
+    if not chapters:
+        return
+    focus = chapters[-_REVIEW_PANEL_CHAPTERS:]
+    start_ch, end_ch = focus[0]["number"], focus[-1]["number"]
+    chapter_text = "\n\n".join(
+        f"### 第{c['number']}章 {c['title']}\n"
+        f"{project_io.read_md(c['content_path'])[:_REVIEW_PANEL_CHAPTER_CAP]}"
+        for c in focus
+    )
+
+    base_agent = runner.find_agent(step.needs) if step.needs else None
+    base_agent = base_agent or _fallback_agent(runner, (SKILL_REVIEW, SKILL_TYPO_CHECK))
+    if not base_agent:
+        logger.info("多视角会审跳过：没有可用智能体")
+        return
+    if runner.on_step_start:
+        runner.on_step_start(step.id, n, base_agent.title)
+
+    # 清一次历史，避免把上一轮审稿内容带进本次三个视角
+    base_agent.clear_history()
+    tasks = []
+    for lens, focus_text in REVIEW_PANEL_LENSES:
+        prompt = build_review_panel_prompt(lens, focus_text, chapter_text, end_ch)
+        tasks.append(base_agent.run(prompt, thinking="auto", keep_history=False))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    findings: list[str] = []
+    for (lens, _), result in zip(REVIEW_PANEL_LENSES, results):
+        if isinstance(result, Exception):
+            logger.warning("会审视角 %s 失败（跳过）: %s", lens, result)
+            continue
+        text = (result.content or "").strip()
+        if text:
+            findings.append(f"## 【{lens}】\n{text}")
+    if not findings:
+        logger.warning("多视角会审：所有视角均无有效输出")
+        return
+
+    # fan-in：主编聚合
+    editor = runner.find_agent("立意规划") or base_agent
+    editor.clear_history()
+    aggregate_prompt = build_review_panel_aggregate_prompt(findings, start_ch, end_ch)
+    try:
+        resp = await editor.run(aggregate_prompt, thinking="auto", keep_history=False)
+        report = (resp.content or "").strip() or "\n\n".join(findings)
+    except Exception as e:
+        logger.warning("会审聚合失败，直接落盘分视角发现: %s", e)
+        report = "\n\n".join(findings)
+
+    out_path = runner.project_dir / "review" / f"会审报告_第{start_ch}-{end_ch}章.md"
+    header = f"# 多视角会审 · 第{start_ch}–{end_ch}章\n\n"
+    project_io.write_md(out_path, header + report)
+    try:
+        from ..anti_patterns import AntiPatternTracker
+        AntiPatternTracker(runner.project_dir).add_from_review(report, end_ch)
+    except Exception as e:
+        logger.warning("会审反模式入库失败（忽略）: %s", e)
+
+    msg = f"多视角会审完成：第{start_ch}–{end_ch}章（{len(findings)} 个视角）"
+    logger.info(msg)
+    if runner.on_step_end:
+        runner.on_step_end(step.id, n, base_agent.title, msg)
+
+
+# ── 角色 POV 推演（隔离视图，不读大纲/全局状态） ──
+
+_POV_SIM_MAX_CHARS = 4
+_POV_SIM_MAX_TOKENS = 1200
+
+
+@handler("pov_sim")
+async def _run_pov_sim(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """对已启用 auto_sim 的角色做隔离 POV 推演。
+
+    与 `sim` 的区别：`sim` 是作者侧全知预演；本步骤只给角色自己的
+    CharacterView，不读大纲/人物设定/world_state/memory，也不给工具。
+    """
+    registry = CharacterRegistry(runner.project_dir)
+    cast = registry.simulatable(limit=_POV_SIM_MAX_CHARS)
+    if not cast:
+        logger.debug("POV 推演跳过：没有 auto_sim 角色")
+        return
+
+    base_agent = runner.find_agent(step.needs) if step.needs else None
+    base_agent = base_agent or _fallback_agent(runner, (SKILL_REVIEW,))
+    if not base_agent or not getattr(base_agent, "llm", None):
+        logger.warning("POV 推演跳过：没有可用的 LLM")
+        return
+    if runner.on_step_start:
+        runner.on_step_start(step.id, n, base_agent.title)
+
+    builder = CharacterViewBuilder(runner.project_dir, registry=registry)
+    written: list[str] = []
+    for rec in cast:
+        if runner._stop:
+            break
+        try:
+            view = builder.build(rec, n)
+            cfg = AgentConfig(
+                name=rec.id,
+                role="character",
+                title=rec.name,
+                system_prompt=build_character_system_prompt(rec),
+                skills=[],
+                temperature=0.8,
+                max_tokens=_POV_SIM_MAX_TOKENS,
+            )
+            char_agent = BaseAgent(cfg, base_agent.llm)
+            prompt = (
+                f"现在是此刻。你在{rec.location or '当前场景'}。\n"
+                "根据你已知的信息，决定你此刻想做什么。只输出 JSON：\n"
+                "{\n"
+                '  "intent": "你的真实目的（一句话）",\n'
+                '  "action": "你准备做的具体动作",\n'
+                '  "dialogue": "你要说的话（没有就空字符串）",\n'
+                '  "expected_effects": ["你预期会造成的变化"],\n'
+                '  "knowledge_used": ["你依据的【你记得的事】方括号里的 ID"],\n'
+                '  "confidence": 0.0\n'
+                "}"
+            )
+            resp = await char_agent.run(
+                prompt, context=view.text, thinking="off", keep_history=False
+            )
+            proposal = extract_json_object(resp.content or "")
+            if not proposal:
+                logger.warning("POV 推演 %s 返回非 JSON，跳过", rec.name)
+                continue
+            ok, reason = validate_knowledge_used(proposal, view)
+            if not ok:
+                logger.warning("POV 推演 %s 未通过知识校验（%s），跳过", rec.name, reason)
+                continue
+            proposal["_character"] = rec.id
+            proposal["_character_name"] = rec.name
+            proposal["_chapter"] = n
+            proposal["_view_event_ids"] = sorted(view.event_ids)
+            out = runner.project_dir / "sim_cache" / "pov" / rec.id / f"sim_{n}.json"
+            project_io.write_json(out, proposal)
+            written.append(rec.name)
+            logger.info("POV 推演完成: %s（依据 %d 条感知）", rec.name, len(view.event_ids))
+        except Exception as e:
+            logger.error("POV 推演失败（%s）: %s", rec.name, e, exc_info=True)
+
+    msg = f"POV 推演完成：{', '.join(written) if written else '无有效提案'}"
+    logger.info(msg)
+    if runner.on_step_end:
+        runner.on_step_end(step.id, n, base_agent.title, msg)
+
+
+# ── 全书章节细纲 ──
+
+_OUTLINE_DOC = "planning/章节细纲.md"
+
+
+def _resolve_total_chapters(runner: "WorkflowRunner") -> int:
+    """目标总章数。
+
+    优先在运行时重读立意.md（新书立意流程里 ideation 刚写完，分卷章数最准），
+    解析不到再退回工作流构建时的 target_chapters。
+    """
+    try:
+        from .definition import _parse_expected_chapters
+        parsed = _parse_expected_chapters(runner.project_dir)
+        if parsed:
+            return parsed
+    except Exception:
+        pass
+    total = int(runner.project_info.get("target_chapters") or 0)
+    return total if total > 0 else 100
+
+
+def _planning_brief(runner: "WorkflowRunner", cap: int = 3500) -> str:
+    """取规划文档摘要，供细纲生成对齐主线/伏笔。"""
+    parts = []
+    for name in ("立意.md", "大纲.md", "主线.md", "支线.md", "伏笔.md"):
+        text = project_io.read_md(runner.project_dir / "planning" / name)
+        if text:
+            parts.append(f"【{name[:-3]}】\n{text[:800]}")
+    return "\n\n".join(parts)[:cap]
+
+
+def _prior_beats_block(text: str, before: int, cap: int = 1500) -> str:
+    """截取已生成细纲中第 before 章之前的末尾片段，保证批间衔接。"""
+    if not text or before <= 1:
+        return ""
+    lines = text.split("\n")
+    cut = []
+    for line in lines:
+        m = re.match(r"^##\s*第\s*(\d+)\s*章", line)
+        if m and int(m.group(1)) >= before:
+            break
+        cut.append(line)
+    tail = "\n".join(cut).strip()
+    return tail[-cap:] if tail else ""
+
+
+_CHAPTER_HEADING_RE = re.compile(r"^##\s*第\s*(\d+)\s*章")
+
+
+def parse_outline_sections(text: str) -> tuple[str, dict[int, str]]:
+    """把细纲解析为 (前言, {章号: 完整条目})。
+
+    只认 `## 第N章` 二级标题；其余内容归入前言。解析失败返回空映射，
+    调用方据此拒绝覆盖，避免把整份细纲写成半截。
+    """
+    preamble: list[str] = []
+    sections: dict[int, str] = {}
+    current: int | None = None
+    buf: list[str] = []
+
+    def _flush():
+        if current is not None:
+            block = "\n".join(buf).strip()
+            if block:
+                sections[current] = block
+
+    for line in text.splitlines():
+        m = _CHAPTER_HEADING_RE.match(line)
+        if m:
+            _flush()
+            current = int(m.group(1))
+            buf = [line]
+        elif current is None:
+            preamble.append(line)
+        else:
+            buf.append(line)
+    _flush()
+    return "\n".join(preamble).strip(), sections
+
+
+def clean_outline_text(text: str) -> str:
+    """只保留 `## 第N章` 条目，丢弃模型夹带的英文思考/计划/前言。
+
+    模型偶尔会在正文前后输出 "Now I need to plan..." 之类的推理；直接落盘
+    会污染细纲，也会让按章切片的结果变得不可预测。
+    """
+    _, sections = parse_outline_sections(text)
+    parts: list[str] = []
+    for num in sorted(sections):
+        lines = sections[num].splitlines()
+        heading = lines[0] if lines else f"## 第{num}章"
+        bullets = [
+            line for line in lines[1:]
+            if line.strip().startswith(("-", "*", "•", "·"))
+        ]
+        parts.append("\n".join([heading] + bullets))
+    return "\n\n".join(parts).strip()
+
+
+def outline_window(text: str, start: int, end: int) -> str:
+    """取出 [start, end] 章区间的细纲文本。"""
+    _, sections = parse_outline_sections(text)
+    return "\n\n".join(
+        sections[n] for n in sorted(sections) if start <= n <= end
+    )
+
+
+def splice_outline(existing: str, start: int, end: int, revision: str) -> str:
+    """把修订后的 [start, end] 章拼回原文，保留区间外条目。
+
+    Raises:
+        ValueError: 修订结果覆盖不足（少于区间 80%）或原细纲无法解析。
+    """
+    preamble, old = parse_outline_sections(existing)
+    _, new = parse_outline_sections(revision)
+    if not old:
+        raise ValueError("原细纲无法解析出任何 ## 第N章 条目")
+    required = set(range(start, end + 1))
+    got = required & set(new)
+    need = max(1, int(len(required) * 0.8))
+    if len(got) < need:
+        raise ValueError(
+            f"修订覆盖不足：{len(got)}/{len(required)} 章（至少 {need} 章）"
+        )
+    merged = dict(old)
+    for num in got:
+        merged[num] = new[num]
+    body = "\n\n".join(merged[n] for n in sorted(merged))
+    return (preamble + "\n\n" + body).strip() + "\n" if preamble else body.strip() + "\n"
+
+
+@handler("chapter_outline")
+async def _run_chapter_outline(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """全书逐章剧情骨架：按批写入 planning/章节细纲.md。"""
+    out_path = runner.project_dir / _OUTLINE_DOC
+    if out_path.exists() and out_path.stat().st_size > 0 and not step.update_planning:
+        logger.info("章节细纲已存在，跳过（删除 %s 后可重新生成）", _OUTLINE_DOC)
+        return
+    agent = runner.find_agent(step.needs) if step.needs else None
+    agent = agent or _fallback_agent(runner, (SKILL_REVIEW,))
+    if not agent:
+        if step.optional:
+            return
+        raise RuntimeError(f"没有智能体承担步骤 {step.id}（{step.needs}）")
+    total = _resolve_total_chapters(runner)
+    if total < 1:
+        return
+    if runner.on_step_start:
+        runner.on_step_start(step.id, n, agent.title)
+
+    brief = _planning_brief(runner)
+    chunks: list[str] = []
+    start = 1
+    # 断点续跑：上一轮被停止时已把完成批次写到 .partial.md
+    partial_path = out_path.with_suffix(".partial.md")
+    if partial_path.exists():
+        _, done_sections = parse_outline_sections(
+            project_io.read_md(partial_path)
+        )
+        if done_sections:
+            chunks = [done_sections[n] for n in sorted(done_sections)]
+            start = max(done_sections) + 1
+            logger.info("章节细纲从断点续跑：已完成 %d 章", len(done_sections))
+
+    batches = []
+    while start <= total:
+        end = min(start + CHAPTER_OUTLINE_BATCH - 1, total)
+        batches.append((start, end))
+        start = end + 1
+
+    for i, (a, b) in enumerate(batches, 1):
+        if runner._stop:
+            break
+        prior = _prior_beats_block("\n\n".join(chunks), a)
+        prompt = build_chapter_outline_batch_prompt(brief, a, b, total, prior_beats=prior)
+        agent.clear_history()
+        # 15 章 × 4 行 ≈ 2–3k 字；显式放宽到 8192，防 provider 默认值过低截断
+        resp = await agent.run(prompt, thinking="off", keep_history=False, max_tokens=8192)
+        raw = (resp.content or "").strip()
+        text = clean_outline_text(raw)
+        if text:
+            chunks.append(text)
+            # 每批落一次中间产物：停止/崩溃后不必从第 1 章重跑
+            project_io.write_md(partial_path, "\n\n".join(chunks) + "\n")
+            _, got = parse_outline_sections(text)
+            missing = [n for n in range(a, b + 1) if n not in got]
+            if missing:
+                logger.warning("章节细纲批 %d 缺章 %s（已保留其余）", i, missing[:10])
+            if len(raw) - len(text) > 200:
+                logger.info("章节细纲批 %d 清理了 %d 字非条目内容", i, len(raw) - len(text))
+        else:
+            logger.warning("章节细纲批 %d 无有效条目，已丢弃", i)
+        logger.info("章节细纲进度: 第 %d–%d 章（批 %d/%d）", a, b, i, len(batches))
+
+    if runner._stop:
+        logger.info("章节细纲被停止，已完成批次保存在 %s", partial_path.name)
+        return
+    if not chunks:
+        return
+    project_io.write_md(out_path, "\n\n".join(chunks) + "\n")
+    try:
+        partial_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    msg = f"章节细纲已生成（{total} 章 / {len(batches)} 批本轮）"
+    logger.info(msg)
+    if runner.on_step_end:
+        runner.on_step_end(step.id, n, agent.title, msg)
+
+
+@handler("update_chapter_outline")
+async def _run_update_chapter_outline(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """根据前 n 章实际走向，修订第 n+1 章起的章节细纲。"""
+    out_path = runner.project_dir / _OUTLINE_DOC
+    existing = project_io.read_md(out_path) if out_path.exists() else ""
+    if not existing.strip():
+        logger.info("无既有章节细纲，跳过修订")
+        return
+    total = _resolve_total_chapters(runner)
+    revise_from = n + 1
+    if revise_from > total:
+        logger.info("已到末章，无需修订细纲")
+        return
+
+    # 只改未来一小段：单次输出可控，区间外原样保留（绝不整文件覆盖）
+    revise_to = min(total, revise_from + OUTLINE_REVISE_WINDOW - 1)
+    existing_window = outline_window(existing, revise_from, revise_to)
+
+    agent = runner.find_agent(step.needs) if step.needs else None
+    agent = agent or _fallback_agent(runner, (SKILL_REVIEW,))
+    if not agent:
+        return
+    # 最近剧情：优先概要，回退正文摘要
+    recent_parts = []
+    for ch in _scan_nonempty_chapters(runner)[-5:]:
+        summary = project_io.read_md(
+            project_io.chapter_summary_path(
+                runner.project_dir, ch["number"], ch["title"]
+            )
+        )
+        if summary:
+            recent_parts.append(f"第{ch['number']}章《{ch['title']}》\n{summary[:400]}")
+        else:
+            body = project_io.read_md(ch["content_path"])[:300]
+            if body:
+                recent_parts.append(f"第{ch['number']}章《{ch['title']}》\n{body}")
+    recent = "\n\n".join(recent_parts)[:2500]
+    if runner.on_step_start:
+        runner.on_step_start(step.id, n, agent.title)
+    prompt = build_chapter_outline_revise_prompt(
+        existing_window, recent, n, total, revise_from, revise_to
+    )
+    try:
+        agent.clear_history()
+        resp = await agent.run(prompt, thinking="off", keep_history=False, max_tokens=8192)
+        text = (resp.content or "").strip()
+        if not text:
+            logger.warning("章节细纲修订返回空内容，保留原文件")
+            return
+        merged = splice_outline(existing, revise_from, revise_to, text)
+    except ValueError as e:
+        logger.warning("章节细纲修订未通过校验，保留原文件: %s", e)
+        return
+    except Exception as e:
+        logger.error("章节细纲修订失败（保留原文件）: %s", e)
+        return
+
+    project_io.write_md(out_path, merged)
+    msg = f"细纲已修订（第{revise_from}–{revise_to}章，其余保留）"
     logger.info(msg)
     if runner.on_step_end:
         runner.on_step_end(step.id, n, agent.title, msg)

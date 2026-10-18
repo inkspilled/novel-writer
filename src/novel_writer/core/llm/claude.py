@@ -26,9 +26,11 @@ class ClaudeLLM(BaseLLM):
     def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str = "", **kwargs):
         super().__init__(model, api_key, **kwargs)
         anthropic = _get_anthropic()
+        import ssl
         import httpx, certifi
         # 显式超时：httpx 默认 5s 对 LLM 生成太短
-        http_client = httpx.AsyncClient(verify=certifi.where(), timeout=httpx.Timeout(300.0, connect=15.0))
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        http_client = httpx.AsyncClient(verify=ssl_ctx, timeout=httpx.Timeout(300.0, connect=15.0))
         self.client = anthropic.AsyncAnthropic(api_key=api_key, http_client=http_client)
         logger.info("Claude LLM 初始化: model=%s", model)
 
@@ -52,6 +54,7 @@ class ClaudeLLM(BaseLLM):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         # M-05 修复：多条 system 消息拼接，不静默丢失
         system_parts = []
@@ -88,6 +91,7 @@ class ClaudeLLM(BaseLLM):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         # M-05 修复：多条 system 消息拼接，不静默丢失
         system_parts = []

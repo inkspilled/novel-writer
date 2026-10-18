@@ -107,19 +107,23 @@ class WorkflowModeDialog(QDialog):
         self._chapter_group = QGroupBox("章节范围")
         chapter_layout = QHBoxLayout(self._chapter_group)
 
-        chapter_layout.addWidget(QLabel("从第"))
+        self._start_label = QLabel("从第")
+        chapter_layout.addWidget(self._start_label)
         self._start_spin = QSpinBox()
         self._start_spin.setRange(1, 99999)
         self._start_spin.setValue(1)
         chapter_layout.addWidget(self._start_spin)
-        chapter_layout.addWidget(QLabel("章"))
+        self._start_suffix = QLabel("章")
+        chapter_layout.addWidget(self._start_suffix)
 
-        chapter_layout.addWidget(QLabel("到第"))
+        self._end_label = QLabel("到第")
+        chapter_layout.addWidget(self._end_label)
         self._end_spin = QSpinBox()
         self._end_spin.setRange(1, 99999)
         self._end_spin.setValue(default_end_chapter)
         chapter_layout.addWidget(self._end_spin)
-        chapter_layout.addWidget(QLabel("章"))
+        self._end_suffix = QLabel("章")
+        chapter_layout.addWidget(self._end_suffix)
 
         layout.addWidget(self._chapter_group)
 
@@ -156,24 +160,26 @@ class WorkflowModeDialog(QDialog):
                 end_spin.setValue(target)
             start_spin.setEnabled(False)  # 锁死起始章节
             end_spin.setEnabled(True)
+            self._chapter_group.setVisible(True)
             self._chapter_group.setTitle("续写范围")
+            self._set_start_visible(False)
         elif mode == WorkflowMode.NEW_BOOK:
             start_spin.setValue(1)
             start_spin.setEnabled(False)
             end_spin.setEnabled(True)
+            self._chapter_group.setVisible(True)
             self._chapter_group.setTitle("目标章节数")
+            self._set_start_visible(False)
         elif mode == WorkflowMode.NEW_BOOK_PLANNING:
-            self._chapter_group.setTitle("无需设置章节范围")
-            start_spin.setEnabled(False)
-            end_spin.setEnabled(False)
+            self._chapter_group.setVisible(False)
         elif mode == WorkflowMode.FILL_GAPS:
-            start_spin.setEnabled(False)
-            end_spin.setEnabled(False)
-            self._chapter_group.setTitle("自动检测缺失章节")
+            self._chapter_group.setVisible(False)
         elif mode == WorkflowMode.VALIDATE:
-            start_spin.setEnabled(False)
-            end_spin.setEnabled(False)
-            self._chapter_group.setTitle("校验全部章节")
+            self._chapter_group.setVisible(False)
+
+    def _set_start_visible(self, visible: bool):
+        for w in (self._start_label, self._start_spin, self._start_suffix):
+            w.setVisible(visible)
 
     def get_result(self) -> tuple[WorkflowMode, int, int]:
         """返回 (mode, start_ch, end_ch)。"""

@@ -5,6 +5,8 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtWidgets import QInputDialog, QMessageBox, QDialog
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 
 from ..editor.editor_panel import PLANNING_DOCS
 from ..project.project_dialogs import OpenProjectDialog
@@ -26,7 +28,7 @@ class ProjectMixin:
             self._save_project()
 
         from ..project.new_project_dialog import NewProjectDialog
-        dialog = NewProjectDialog(llm=self.llm, parent=self, agents=self.agents)
+        dialog = NewProjectDialog(parent=self, agents=self.agents)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -51,6 +53,8 @@ class ProjectMixin:
             shutil.copy2(src, dst)
             cover_rel = f"cover{ext}"
 
+        # 先卸下旧项目的当前章节，避免 clear() 触发 content_changed 把旧章写空
+        self.editor.detach_chapter()
         self.project = Project(
             title=title,
             genre=data["genre"],
@@ -107,6 +111,8 @@ class ProjectMixin:
     def _load_project_from_dir(self, path: Path):
         """从项目目录加载项目。"""
         try:
+            # 先卸下旧项目的当前章节，避免 clear() 触发 content_changed 把旧章写空
+            self.editor.detach_chapter()
             self.project = Project.load(path)
             self.agent_panel.set_project_db(path)
             self._load_workflow_for_project()
@@ -119,11 +125,21 @@ class ProjectMixin:
             )
             self.editor.clear()
             self.editor.set_project_dir(self.project.project_dir)
+            self._select_initial_chapter()
             self.statusBar().showMessage(t("status_opened", self.project.title))
             logger.info("项目已加载: %s (%s)", self.project.title, path)
         except Exception as e:
             logger.error("加载项目失败: %s - %s", path, e, exc_info=True)
             QMessageBox.critical(self, t("dialog_error"), t("msg_open_fail", e))
+
+    def _select_initial_chapter(self):
+        """打开项目后默认载入最后一章，避免“有章节却提示选择章节”的空窗。"""
+        if not self.project.chapters:
+            return
+        tree = self.sidebar.chapter_tree
+        item = tree.topLevelItem(len(self.project.chapters) - 1)
+        if item is not None:
+            tree.setCurrentItem(item)
 
     def _add_chapter(self):
         if not self.project.title:
@@ -139,6 +155,21 @@ class ProjectMixin:
                 self.project.target_words,
                 len(self.project.chapters),
             )
+
+    def _show_export_success(self, path: Path):
+        """导出完成：给路径 + 一个“打开所在目录”的动作。"""
+        box = QMessageBox(self)
+        box.setWindowTitle(t("export_success"))
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"{t('export_success')}\n{path}")
+        open_btn = box.addButton(t("export_open_dir"), QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            try:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+            except Exception:
+                pass
 
     def _on_chapter_selected(self, index: int):
         if 0 <= index < len(self.project.chapters):
@@ -157,6 +188,8 @@ class ProjectMixin:
     def _save_project(self):
         if not self.project.title:
             return
+        # 规划文档（含章节细纲）未落盘的编辑一并保存
+        saved_docs = self.editor.flush_planning_autosave()
         # 如果还没有项目目录（兼容旧流程），创建一个
         if not self.project.project_dir:
             safe_name = safe_project_dirname(self.project.title)
@@ -167,14 +200,15 @@ class ProjectMixin:
             self.project.save()
             n_ch = len(self.project.chapters)
             # 正文本来就是实时落盘的，这里说清楚「保存项目」到底写了什么
-            self._show_toast(f"已保存书目信息 · {n_ch} 章正文已是实时保存")
+            extra = f" · 规划文档 {len(saved_docs)} 份" if saved_docs else ""
+            self._show_toast(f"已保存书目信息 · {n_ch} 章正文已是实时保存{extra}")
             self.statusBar().showMessage(f"书目信息已保存（{n_ch} 章）", 3000)
         except Exception as e:
             self._show_toast(f"保存失败: {e}", error=True)
             logger.error("项目保存失败: %s", e)
 
     def _on_planning_save(self, doc_name: str):
-        """保存规划文档。"""
+        """保存规划文档（手动，带提示）。"""
         if not self.project.project_dir:
             return
         from ..editor.editor_panel import PLANNING_DOCS
@@ -184,6 +218,8 @@ class ProjectMixin:
                 fpath = self.project.project_dir / rel_path
                 try:
                     project_io.write_md(fpath, content)
+                    # 清掉脏标记，避免自动保存再写一遍
+                    self.editor._planning_dirty.discard(label)
                     self._show_toast(f"已保存: {doc_name}")
                     logger.info("规划文档已保存: %s", fpath)
                 except Exception as e:
@@ -195,6 +231,7 @@ class ProjectMixin:
         """从磁盘重新加载章节列表到侧边栏。"""
         if not self.project.project_dir:
             return
+        had_current = getattr(self.editor, "_current_chapter", None) is not None
         # 重新扫描章节文件
         scanned = project_io.scan_chapters(self.project.project_dir)
         # 更新 Project 对象的 chapters 列表
@@ -207,6 +244,8 @@ class ProjectMixin:
                 ch.title = item["title"]
                 ch._content_path = str(item["content_path"].resolve())
                 ch._outline_path = str(item["outline_path"].resolve()) if item["outline_path"] else ""
+                # 工作流可能刚改写了磁盘正文：让下一次读取回源，避免显示旧缓存
+                ch._content_cache = None
             else:
                 from ...models.chapter import Chapter
                 ch = Chapter(
@@ -224,6 +263,8 @@ class ProjectMixin:
             self.project.target_words,
             len(self.project.chapters),
         )
+        if not had_current:
+            self._select_initial_chapter()
 
     def _export(self, fmt: str):
         """导出当前项目（txt/epub/pdf）。"""
@@ -239,7 +280,7 @@ class ProjectMixin:
                 "pdf": exporter.export_pdf,
             }
             output_path = exporters[fmt]()
-            QMessageBox.information(self, t("export_success"), f"{output_path}")
+            self._show_export_success(Path(output_path))
         except ImportError as e:
             deps = {"pdf": "reportlab"}
             if fmt in deps:
