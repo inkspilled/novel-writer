@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
+import gc
 
 from PySide6.QtCore import Signal, QThread
 
@@ -30,15 +32,38 @@ class WorkflowThread(QThread):
         self._task = None
         _register_worker(self)  # 防止 run() 未结束就被 GC
 
+    def _weak_callback(self, name: str):
+        """弱引用绑定，避免 runner ↔ QThread 的强引用环让 GC 在子线程里 traverse QThread。"""
+        ref = weakref.WeakMethod(getattr(self, name))
+
+        def callback(*args, **kwargs):
+            fn = ref()
+            if fn is not None:
+                return fn(*args, **kwargs)
+            return None
+
+        return callback
+
     def run(self):
+        # PySide6 的 QThread 包装器在子线程里被 Python GC traverse 会偶发 SIGSEGV。
+        # 工作流执行期间关闭自动 GC，结束回到主线程后再恢复（对象生命周期由 Qt/引用计数管理）。
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            self._run()
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+
+    def _run(self):
         logger.info("WorkflowThread 开始执行")
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
-        self.runner.on_step_start = self._on_step_start
-        self.runner.on_step_end = self._on_step_end
-        self.runner.on_error = self._on_error
-        self.runner.on_event = self._on_event
+        self.runner.on_step_start = self._weak_callback("_on_step_start")
+        self.runner.on_step_end = self._weak_callback("_on_step_end")
+        self.runner.on_error = self._weak_callback("_on_error")
+        self.runner.on_event = self._weak_callback("_on_event")
 
         try:
             self.log_message.emit("工作流开始执行...")
@@ -65,7 +90,17 @@ class WorkflowThread(QThread):
             self.log_message.emit(f"错误: {e}\n{traceback.format_exc()}")
             self.workflow_stopped.emit()
         finally:
-            self._loop.close()
+            # 断开 runner → callback → thread 的引用，避免线程结束后 GC 再 traverse 已销毁的 QThread
+            for attr in ("on_step_start", "on_step_end", "on_error", "on_event"):
+                try:
+                    setattr(self.runner, attr, None)
+                except Exception:
+                    pass
+            try:
+                self._loop.close()
+            finally:
+                self._loop = None
+                self._task = None
 
     def _on_event(self, kind: str, payload: dict):
         """工具调用/重试等结构化事件 → 工作流日志（DSH 风格的 trajectory）。"""

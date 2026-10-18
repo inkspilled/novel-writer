@@ -58,7 +58,8 @@ class SettingsMixin:
                 src = Path(data["cover"])
                 ext = src.suffix or ".png"
                 dst = self.project.project_dir / f"cover{ext}"
-                shutil.copy2(src, dst)
+                if src.resolve() != dst.resolve():
+                    shutil.copy2(src, dst)
                 self.project.cover = f"cover{ext}"
             self._save_project()
             self.sidebar.set_project_title(self.project.title)

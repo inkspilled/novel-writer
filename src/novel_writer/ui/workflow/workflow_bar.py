@@ -81,7 +81,7 @@ class WorkflowMiniBar(QWidget):
         self._log_area.setMinimumHeight(80)
         self._log_area.setMaximumHeight(180)
         self._log_area.setStyleSheet(
-            "font-size: 10px; font-family: Consolas, monospace; "
+            "font-size: 10px; font-family: Menlo, Consolas, monospace; "
             "background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06); "
             "border-radius: 6px; padding: 4px;"
         )
