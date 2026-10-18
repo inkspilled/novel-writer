@@ -202,7 +202,7 @@ async def _run_world_state_update(runner: "WorkflowRunner", step: "WorkflowStep"
                 ))
             except Exception as e:
                 logger.warning("世界状态事件入正典失败（快照仍更新）: %s", e)
-            logs = gs.apply_llm_update(update)
+            logs = gs.apply_llm_update(update, chapter=n)
             gs.save()
             msg = f"大世界状态已更新: {', '.join(logs)}"
             logger.info(msg)

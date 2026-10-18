@@ -67,7 +67,7 @@ def project_world_state(project_dir: Path, save: bool = True) -> dict:
         update = (event.payload or {}).get("update")
         if isinstance(update, dict):
             try:
-                ws.apply_llm_update(update)
+                ws.apply_llm_update(update, chapter=event.chapter)
             except Exception as e:
                 logger.warning("重放世界状态事件 %s 失败: %s", event.id, e)
 

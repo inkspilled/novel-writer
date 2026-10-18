@@ -56,6 +56,7 @@ class WorldState:
             "characters": {},
             "items_catalog": {},
             "timeline": [],
+            "location_log": [],
         }
 
     # ── 世界 ──
@@ -67,6 +68,26 @@ class WorldState:
     @property
     def locations(self) -> dict:
         return self.world.setdefault("locations", {})
+
+    @property
+    def location_log(self) -> list:
+        return self._data.setdefault("location_log", [])
+
+    def record_location_event(self, chapter: int, character: str, action: str,
+                              location: str, from_location: str = "") -> None:
+        """记录地点流水：谁、什么时候、进入/离开哪个地点。"""
+        if not character or not location:
+            return
+        self.location_log.append({
+            "chapter": int(chapter or 0),
+            "date": str(self.world.get("current_date") or ""),
+            "character": character,
+            "action": action,  # enter / leave
+            "location": location,
+            "from": from_location,
+        })
+        if len(self.location_log) > 2000:
+            del self.location_log[:len(self.location_log) - 2000]
 
     def add_location(self, name: str, info: dict) -> None:
         """地点是唯一实体：同名合并描述，不覆盖旧字段。"""
@@ -80,6 +101,9 @@ class WorldState:
         for c in self.characters.values():
             if isinstance(c, dict) and c.get("location"):
                 names.add(str(c["location"]))
+        for ev in self.location_log:
+            if isinstance(ev, dict) and ev.get("location"):
+                names.add(str(ev["location"]))
         for item in self.items_catalog.values():
             if not isinstance(item, dict):
                 continue
@@ -227,6 +251,13 @@ class WorldState:
                 levels = " → ".join(w["power_system"]["levels"])
                 parts.append(f"修炼等级: {levels}")
 
+        if self.location_log:
+            lines = []
+            for ev in self.location_log[-8:]:
+                action = "进入" if ev.get("action") == "enter" else "离开"
+                lines.append(f"- 第{ev.get('chapter', 0)}章 {ev.get('character', '')} {action} {ev.get('location', '')}")
+            parts.append("=== 地点流水（近期） ===\n" + "\n".join(lines))
+
         # 角色状态
         for name, char in self.characters.items():
             lines = [f"【{name}】"]
@@ -271,7 +302,7 @@ class WorldState:
 
     # ── LLM 结构化更新 ──
 
-    def apply_llm_update(self, update_json: dict) -> list[str]:
+    def apply_llm_update(self, update_json: dict, chapter: int = 0) -> list[str]:
         """应用 LLM 返回的状态更新 JSON。
 
         格式示例:
@@ -297,17 +328,25 @@ class WorldState:
         logs = []
 
         # 更新角色
+        chapter = int(chapter or update_json.get("_chapter") or 0)
         characters = update_json.get("characters") or {}
         if isinstance(characters, dict):
             for name, updates in characters.items():
                 if not isinstance(updates, dict):
                     continue
+                old_loc = str((self.characters.get(name) or {}).get("location") or "")
                 if name in self.characters:
                     self.update_character(name, updates)
                     logs.append(f"更新角色 {name}")
                 else:
                     self.add_character(name, updates)
                     logs.append(f"新增角色 {name}")
+                new_loc = str((self.characters.get(name) or {}).get("location") or "")
+                if old_loc != new_loc:
+                    if old_loc:
+                        self.record_location_event(chapter, name, "leave", old_loc, new_loc)
+                    if new_loc:
+                        self.record_location_event(chapter, name, "enter", new_loc, old_loc)
 
         # 物品操作（LLM 输出不可信，逐键取缺省）
         items = update_json.get("items") or {}

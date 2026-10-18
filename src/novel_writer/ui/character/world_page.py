@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QStackedWidget, QPlainTextEdit, QPushButton,
+    QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QStackedWidget, QPlainTextEdit, QPushButton,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -160,6 +160,8 @@ class LocationPage(_WorldBase):
         self.desc = QPlainTextEdit(); self.desc.setMaximumHeight(110); self.form.addRow("描述", self.desc)
         self.occupants = QLabel(""); self.occupants.setWordWrap(True); self.form.addRow("在场角色", self.occupants)
         self.items = QLabel(""); self.items.setWordWrap(True); self.form.addRow("地面物品", self.items)
+        self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(160)
+        self.form.addRow("地点流水", self.log)
         self.people_hint = QLabel("人物所在地点请在「人物」页修改"); self.people_hint.setStyleSheet("font-size: 11px; color: gray;")
         self.form_layout.addWidget(self.people_hint)
 
@@ -173,13 +175,25 @@ class LocationPage(_WorldBase):
     def _load(self, name):
         if not self.gs: return
         if not name:
-            self.name_label.setText("还没有地点"); self.occupants.setText(""); self.items.setText(""); return
+            self.name_label.setText("还没有地点"); self.occupants.setText(""); self.items.setText("")
+            self.log.setPlainText(""); return
         self.gs.locations.setdefault(name, {})
         loc = self.gs.locations.get(name) or {}
         self.name_label.setText(name); self.type.setText(str(loc.get("type") or "")); self.desc.setPlainText(str(loc.get("description") or ""))
         people = self.gs.characters_at(name); items = self.gs.items_at(name)
         self.occupants.setText("、".join(people) or "（无人）")
         self.items.setText("、".join(items) or "（无）")
+        events = [e for e in self.gs.location_log if isinstance(e, dict) and e.get("location") == name]
+        lines = []
+        for e in reversed(events[-100:]):
+            action = "进入" if e.get("action") == "enter" else "离开"
+            src = e.get("from") or ""
+            suffix = f"（来自 {src}）" if action == "进入" and src else (f"（前往 {src}）" if action == "离开" and src else "")
+            when = f"第{e.get('chapter', 0)}章"
+            if e.get("date"):
+                when += f" · {e['date']}"
+            lines.append(f"{when}  {e.get('character', '')}  {action}{suffix}")
+        self.log.setPlainText("\n".join(lines) or "（暂无进出记录）")
 
     def _sync(self):
         if not self.gs or self.name_label.text() in ("还没有地点", "打开项目后管理"): return

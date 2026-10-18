@@ -142,7 +142,7 @@ def build_world_state_prompt(n: int, gs_summary: str, content: str) -> str:
         f'  "timeline": [{{"event": "事件描述", "location": "地点"}}],\n' 
         f'  "date": "时间"\n'
         f'}}\n\n'
-        f"只输出本章发生变化的部分，没变化的字段不要输出。"
+        f"只输出本章发生变化的部分，没变化的字段不要输出。角色位置变化必须写 location，系统会据此生成地点进出流水。"
     )
 
 
