@@ -536,13 +536,19 @@ class WorkflowRunner:
                 parts: list[str] = []
                 # 思考会先占用输出预算：正文流式至少给 8192，避免 reasoning 吃完后没有 text
                 stream_limit = max(int(step.max_tokens or 0), 8192)
+                first_text = True
                 async for kind, chunk in agent.stream_run(
                     prompt, context=context, thinking=thinking, keep_history=keep_history,
                     max_tokens=stream_limit,
                 ):
+                    if chunk:
+                        # thinking 也通知 UI，让编辑区显示“思考中”，不是空白
+                        self.on_chunk(step.id, n, kind, chunk)
                     if kind == "text" and chunk:
                         parts.append(chunk)
-                        self.on_chunk(step.id, n, kind, chunk)
+                        if first_text:
+                            logger.info("第%d章流式首字到达", n)
+                            first_text = False
                 if not parts:
                     logger.warning("流式未返回正文，回退非流式: %s (第%d章)", step.id, n)
                     response = await agent.run(

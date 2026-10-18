@@ -202,12 +202,18 @@ class WorkflowMixin:
         self._wf_thread.start()
 
     def _on_wf_chapter_chunk(self, step_id: str, n: int, kind: str, text: str):
-        if step_id != "chapter" or kind != "text" or not text:
+        if step_id != "chapter":
             return
-        self.editor.append_stream_chapter(n, text)
+        if kind == "thinking":
+            self.editor.set_stream_status("思考中…")
+            return
+        if kind == "text" and text:
+            self.editor.append_stream_chapter(n, text)
 
     def _on_wf_step_started(self, step_id: str, n: int, agent_title: str):
         self.agent_panel.on_workflow_step_started(step_id, n, agent_title)
+        if step_id == "chapter":
+            self.editor.start_stream_chapter(n)
         self.agent_panel.workflow_bar.set_current_step(step_id, agent_title, n, 0)
         # 工作流日志只走 WorkflowMiniBar / runs，不写聊天记录，避免污染 chat.db
 

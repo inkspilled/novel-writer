@@ -503,7 +503,8 @@ class EditorPanel(QWidget):
         self.load_chapter(preview)
         self._stream_preview = True
         self.content_edit.setReadOnly(True)
-        self.chapter_title.setText(f"第{number}章 正在生成…")
+        self.content_edit.setPlaceholderText("模型思考中…")
+        self.chapter_title.setText(f"第{number}章 正在生成… 思考中")
 
     def append_stream_chapter(self, number: int, text: str):
         if not text:
@@ -511,6 +512,8 @@ class EditorPanel(QWidget):
         if (not self._stream_preview or self._current_chapter is None
                 or getattr(self._current_chapter, "number", 0) != number):
             self.start_stream_chapter(number)
+        self.content_edit.setPlaceholderText("")
+        self.chapter_title.setText(f"第{number}章 正在生成…")
         edit = self.content_edit
         edit.blockSignals(True)
         cursor = edit.textCursor()
@@ -520,9 +523,14 @@ class EditorPanel(QWidget):
         edit.blockSignals(False)
         self._update_word_count()
 
+    def set_stream_status(self, text: str):
+        if self._stream_preview and self._current_chapter is not None:
+            self.chapter_title.setText(f"第{self._current_chapter.number}章 {text}")
+
     def end_stream_chapter(self):
         self._stream_preview = False
         self.content_edit.setReadOnly(False)
+        self.content_edit.setPlaceholderText("")
 
     def load_chapter(self, chapter):
         logger.info("编辑器加载章节: 第%s章 %s", getattr(chapter, "number", "?"), getattr(chapter, "title", ""))
