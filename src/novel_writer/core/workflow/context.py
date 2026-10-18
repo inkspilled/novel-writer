@@ -355,6 +355,7 @@ class ContextBuilder:
             if w.get("power_system", {}).get("levels"):
                 world_brief += f" | 等级: {' → '.join(w['power_system']['levels'])}"
             parts.append(f"=== 世界设定 ===\n{world_brief}")
+        gs.sync_locations()
         locs = gs.locations or {}
         if locs:
             lines = []

@@ -214,7 +214,7 @@ class ChatMixin:
             QMessageBox.information(self, t("menu_character_manage"), t("msg_no_project"))
             return
         self.editor.tab_bar.setCurrentIndex(2)
-        self.editor.world_page.tabs.setCurrentIndex(0)
+        self.editor.world_page.list.setCurrentRow(0)
 
     def _open_agent_manage(self):
         """打开 Agent 管理对话框。"""

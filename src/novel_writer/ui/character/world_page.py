@@ -5,8 +5,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
+    QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMessageBox, QStackedWidget, QPlainTextEdit, QPushButton,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -63,6 +63,7 @@ class _WorldBase(QWidget):
     def reload(self):
         if not self.gs:
             self.list.clear(); self.name_label.setText("打开项目后管理"); return
+        self.gs.load()
         self.list.blockSignals(True); self.list.clear()
         for name in self._names():
             item = QListWidgetItem(self._label(name)); item.setData(Qt.ItemDataRole.UserRole, name); self.list.addItem(item)
@@ -110,8 +111,10 @@ class ItemPage(_WorldBase):
         super()._setup_ui()
         self.type = QLineEdit(); self.form.addRow("类型", self.type)
         self.effect = QLineEdit(); self.form.addRow("效果", self.effect)
-        self.location = QComboBox(); self.location.setEditable(True); self.form.addRow("位置", self.location)
-        self.holder = QComboBox(); self.holder.setEditable(True); self.form.addRow("持有者", self.holder)
+        self.location = QLineEdit(); self.location.setPlaceholderText("输入地点，如：药圃")
+        self.form.addRow("位置", self.location)
+        self.holder = QLineEdit(); self.holder.setPlaceholderText("输入持有者；留空=在地面")
+        self.form.addRow("持有者", self.holder)
         self.desc = QPlainTextEdit(); self.desc.setMaximumHeight(100); self.form.addRow("描述", self.desc)
 
     def _names(self): return sorted((self.gs.items_catalog or {}).keys())
@@ -121,19 +124,18 @@ class ItemPage(_WorldBase):
         return f"{name}   {it.get('type','')} / {pos}"
 
     def _load(self, name):
-        self.location.clear(); self.holder.clear()
         if not self.gs: return
-        self.location.addItems(sorted(self.gs.locations.keys()))
-        self.holder.addItems(list(self.gs.characters.keys()))
-        self.location.setEditText(""); self.holder.setEditText("")
         if not name:
-            self.name_label.setText("还没有物品"); return
+            self.name_label.setText("还没有物品")
+            self.type.setText(""); self.effect.setText(""); self.location.setText("")
+            self.holder.setText(""); self.desc.setPlainText("")
+            return
         it = self.gs.items_catalog.get(name) or {}
         self.name_label.setText(name)
         self.type.setText(str(it.get("type") or ""))
         self.effect.setText(str(it.get("effect") or ""))
-        self.location.setEditText(str(it.get("location") or ""))
-        self.holder.setEditText(str(it.get("holder") or ""))
+        self.location.setText(str(it.get("location") or ""))
+        self.holder.setText(str(it.get("holder") or ""))
         self.desc.setPlainText(str(it.get("description") or ""))
 
     def _sync(self):
@@ -142,8 +144,8 @@ class ItemPage(_WorldBase):
         if not isinstance(it, dict): return
         it.update({"type": self.type.text().strip(), "effect": self.effect.text().strip(),
                    "description": self.desc.toPlainText().strip()})
-        self.gs.set_item_position(name, location=self.location.currentText().strip(),
-                                  holder=self.holder.currentText().strip())
+        self.gs.set_item_position(name, location=self.location.text().strip(),
+                                  holder=self.holder.text().strip())
 
     def _create(self, name): self.gs.add_item(name, {"type": "", "effect": "", "description": ""})
     def _remove(self, name): self.gs.items_catalog.pop(name, None)
@@ -161,7 +163,9 @@ class LocationPage(_WorldBase):
         self.people_hint = QLabel("人物所在地点请在「人物」页修改"); self.people_hint.setStyleSheet("font-size: 11px; color: gray;")
         self.form_layout.addWidget(self.people_hint)
 
-    def _names(self): return sorted((self.gs.locations or {}).keys())
+    def _names(self):
+        self.gs.sync_locations()
+        return self.gs.referenced_locations()
     def _label(self, name):
         loc = (self.gs.locations.get(name) or {})
         return f"{name}   {loc.get('type','')} · {len(self.gs.characters_at(name))}人"
@@ -170,6 +174,7 @@ class LocationPage(_WorldBase):
         if not self.gs: return
         if not name:
             self.name_label.setText("还没有地点"); self.occupants.setText(""); self.items.setText(""); return
+        self.gs.locations.setdefault(name, {})
         loc = self.gs.locations.get(name) or {}
         self.name_label.setText(name); self.type.setText(str(loc.get("type") or "")); self.desc.setPlainText(str(loc.get("description") or ""))
         people = self.gs.characters_at(name); items = self.gs.items_at(name)
@@ -178,7 +183,9 @@ class LocationPage(_WorldBase):
 
     def _sync(self):
         if not self.gs or self.name_label.text() in ("还没有地点", "打开项目后管理"): return
-        name = self.name_label.text(); loc = self.gs.locations.get(name)
+        name = self.name_label.text()
+        self.gs.locations.setdefault(name, {})
+        loc = self.gs.locations.get(name)
         if not isinstance(loc, dict): return
         loc.update({"type": self.type.text().strip(), "description": self.desc.toPlainText().strip()})
 
@@ -192,18 +199,33 @@ class LocationPage(_WorldBase):
 
 
 class WorldPage(QWidget):
-    """世界一级页：人物 / 物品 / 地点。"""
+    """世界一级页：左侧 人物/物品/地点 菜单，右侧内容。"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0)
-        self.tabs = QTabWidget(); self.tabs.setDocumentMode(True)
+        layout = QHBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
+        self.list = QListWidget()
+        self.list.setObjectName("planningList")
+        self.list.setFixedWidth(152)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.character_page = CharacterPage()
         self.item_page = ItemPage()
         self.location_page = LocationPage()
-        self.tabs.addTab(self.character_page, "人物")
-        self.tabs.addTab(self.item_page, "物品")
-        self.tabs.addTab(self.location_page, "地点")
-        layout.addWidget(self.tabs)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.character_page)
+        self.stack.addWidget(self.item_page)
+        self.stack.addWidget(self.location_page)
+        for label, idx in (("人物", 0), ("物品", 1), ("地点", 2)):
+            item = QListWidgetItem(label); item.setData(Qt.ItemDataRole.UserRole, idx); self.list.addItem(item)
+        self.list.currentRowChanged.connect(self.select)
+        layout.addWidget(self.list); layout.addWidget(self.stack, 1)
+        self.list.setCurrentRow(0)
+
+    def select(self, index: int):
+        if 0 <= index < self.stack.count():
+            self.stack.setCurrentIndex(index)
+            page = self.stack.widget(index)
+            if page is not None:
+                page.reload()
 
     def set_project_dir(self, project_dir):
         self.character_page.set_project_dir(project_dir)

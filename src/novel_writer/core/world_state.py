@@ -74,6 +74,29 @@ class WorldState:
         if isinstance(info, dict):
             loc.update(info)
 
+    def referenced_locations(self) -> list[str]:
+        """人物所在地 + 物品所在地/持有者所在地，去重排序。"""
+        names: set[str] = set(self.locations.keys())
+        for c in self.characters.values():
+            if isinstance(c, dict) and c.get("location"):
+                names.add(str(c["location"]))
+        for item in self.items_catalog.values():
+            if not isinstance(item, dict):
+                continue
+            if item.get("location"):
+                names.add(str(item["location"]))
+            holder = item.get("holder")
+            if holder:
+                loc = (self.characters.get(holder) or {}).get("location")
+                if loc:
+                    names.add(str(loc))
+        return sorted(n for n in names if n)
+
+    def sync_locations(self) -> None:
+        """把人物/物品引用到、但 locations 里缺的地点补成空记录。"""
+        for name in self.referenced_locations():
+            self.locations.setdefault(name, {})
+
     def characters_at(self, location: str) -> list[str]:
         """地点当前有哪些人（从角色 location 反查，多对多只存一边）。"""
         return [n for n, c in self.characters.items()

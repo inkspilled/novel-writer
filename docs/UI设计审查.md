@@ -26,7 +26,7 @@
 
 ![世界页 · 人物](assets/ui/characters-page.png)
 
-**物品 / 地点子页**
+**物品 / 地点（世界页左侧菜单）**
 
 ![物品](assets/ui/world-item.png)
 
