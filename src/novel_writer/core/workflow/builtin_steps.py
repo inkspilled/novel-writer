@@ -883,10 +883,14 @@ async def _run_chapter_outline(runner: "WorkflowRunner", step: "WorkflowStep", n
     # 规划模式（还没有正文）仍按目标总章数生成。
     written = len(_scan_nonempty_chapters(runner))
     total = written if written > 0 else _resolve_total_chapters(runner)
+    if step.max_chapters:
+        total = min(total, step.max_chapters)
     if total < 1:
         return
     if written:
         logger.info("章节细纲按已写 %d 章生成（文末补全）", written)
+    else:
+        logger.info("章节细纲预生成前 %d 章（后续每 5 章滚动补齐）", total)
     if runner.on_step_start:
         runner.on_step_start(step.id, n, agent.title)
 

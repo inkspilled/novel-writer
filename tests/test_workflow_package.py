@@ -19,21 +19,21 @@ from src.novel_writer.core.workflow import (
 
 EXPECTED_DEFAULT_IDS = [
     "ideation", "outline", "characters", "world", "timeline",
-    "main_plot", "sub_plot", "foreshadow", "fix_titles",
+    "main_plot", "sub_plot", "foreshadow", "chapter_outline", "fix_titles",
     "inspiration", "sim", "character_panel", "chapter", "chapter_summary", "world_state_update",
     "toc", "polish", "percept_extract", "seal_chapter", "offscreen_tick", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel",
-    "quality_check", "review", "chapter_outline",
+    "quality_check", "review",
 ]
 
 EXPECTED_CONTINUE_IDS = [
-    "fix_titles",
+    "fix_titles", "chapter_outline",
     "inspiration", "sim", "character_panel", "chapter", "chapter_summary", "world_state_update",
     "toc", "polish", "percept_extract", "seal_chapter", "offscreen_tick", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel",
-    "quality_check", "review", "chapter_outline",
+    "quality_check", "review",
 ]
 
 EXPECTED_VALIDATE_IDS = ["fix_titles", "toc", "review", "proofread"]

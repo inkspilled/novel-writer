@@ -47,6 +47,7 @@ class WorkflowStep:
     retry_delay: float = 2.0  # 重试基础退避秒数（指数）
     timeout: float = 0.0  # 单步超时秒数，0=不限
     max_tokens: int = 0  # 本步输出上限，0=用 Agent 默认（4096）
+    max_chapters: int = 0  # 细纲类步骤一次最多生成多少章，0=全部
     tools: list[str] = field(default_factory=list)  # 本步可用的只读工具白名单
     tool_rounds: int = 2  # 工具调用最大轮数（0=不给工具）
     skills: list[str] = field(default_factory=list)  # 直接注入上下文的技能包
@@ -83,6 +84,7 @@ class WorkflowDef:
                 retry_delay=s.get("retry_delay", 2.0),
                 timeout=s.get("timeout", 0.0),
                 max_tokens=s.get("max_tokens", 0),
+                max_chapters=s.get("max_chapters", 0),
                 tools=s.get("tools", []) or [],
                 tool_rounds=s.get("tool_rounds", 2),
                 skills=s.get("skills", []) or [],
@@ -118,6 +120,7 @@ class WorkflowDef:
                     "retry_delay": s.retry_delay,
                     "timeout": s.timeout,
                     "max_tokens": s.max_tokens,
+                    "max_chapters": s.max_chapters,
                     "tools": s.tools,
                     "tool_rounds": s.tool_rounds,
                     "skills": s.skills,
@@ -178,24 +181,25 @@ _CYCLE_STEPS = [
 # ── 内置工作流模板 ──
 
 _PLANNING_CORE_STEPS = _PLANNING_STEPS[:-1]
-_CHAPTER_OUTLINE_TAIL = {
+_CHAPTER_OUTLINE_PRE = {
     **_CHAPTER_OUTLINE_STEP,
     "optional": True,
+    "max_chapters": 10,  # 只预生成前 10 章，后续由 update_chapter_outline 每 5 章滚动补齐
     "phase": "细纲",
 }
 
 DEFAULT_WORKFLOW = {
     "name": "新书全流程",
-    "description": "从立意到审校，最后生成章节细纲",
-    # 细纲放到正文/审校之后：先让正文跑起来，避免 500 章细纲在开写前阻塞 30+ 次 LLM
-    "steps": _PLANNING_CORE_STEPS + [_FIX_TITLES_STEP] + _CYCLE_STEPS + [_CHAPTER_OUTLINE_TAIL],
+    "description": "从立意到审校，正文前滚动生成章节细纲",
+    # 细纲在正文之前，但只生成前 10 章，避免 500 章一次性阻塞；
+    # 之后由循环里的 update_chapter_outline 每次向前滚 10 章。
+    "steps": _PLANNING_CORE_STEPS + [_CHAPTER_OUTLINE_PRE, _FIX_TITLES_STEP] + _CYCLE_STEPS,
 }
 
 CONTINUE_WORKFLOW = {
     "name": "续写",
-    "description": "从已有章节继续写作",
-    # 续写也先写正文，最后再补细纲；不再在开头阻塞
-    "steps": [_FIX_TITLES_STEP] + _CYCLE_STEPS + [_CHAPTER_OUTLINE_TAIL],
+    "description": "从已有章节继续写作，正文前滚动生成细纲",
+    "steps": [_FIX_TITLES_STEP, _CHAPTER_OUTLINE_PRE] + _CYCLE_STEPS,
 }
 
 VALIDATE_WORKFLOW = {

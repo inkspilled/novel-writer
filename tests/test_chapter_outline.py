@@ -156,3 +156,22 @@ def test_generate_outline_writes_only_clean_entries(tmp_path):
     assert text.startswith("## 第1章")
     assert "Now let me plan" not in text
     assert not (tmp_path / "planning" / "章节细纲.partial.md").exists()
+
+
+def test_generate_outline_respects_initial_window(tmp_path):
+    parts = ["# 全书章节细纲"]
+    for i in range(1, 11):
+        parts.append(f"## 第{i}章 标题{i}\n- 事件：A{i}\n- 转折：B{i}\n- 章末钩子：C{i}")
+    (tmp_path / "planning").mkdir()
+    agent = FakeAgent("\n\n".join(parts))
+    runner = FakeRunner(tmp_path, agent)
+    runner.project_info = {"target_chapters": 500}
+    step = WorkflowStep(id="chapter_outline", needs="故事结构",
+                       output="planning/章节细纲.md", max_chapters=10)
+
+    asyncio.run(bs._run_chapter_outline(runner, step, 1))
+
+    _, sections = bs.parse_outline_sections(
+        (tmp_path / "planning" / "章节细纲.md").read_text(encoding="utf-8"))
+    assert len(sections) == 10
+    assert "第 1–10 章" in agent.calls[0]["prompt"]
