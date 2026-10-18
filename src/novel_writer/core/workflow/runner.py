@@ -530,18 +530,29 @@ class WorkflowRunner:
                 "off" if step.id in NO_THINKING_STEP_IDS else "auto"
             )
             keep_history = step.id not in NO_HISTORY_STEP_IDS
-            if step.id == "chapter" and self.on_chunk is not None:
+            if (step.id == "chapter" and self.on_chunk is not None
+                    and getattr(agent.llm, "supports_content_stream", True)):
                 # 正文流式：边出边进编辑器；此分支不挂工具，换取实时可见
                 parts: list[str] = []
+                # 有些模型 thinking=off 时流式只推 reasoning、不推正文；正文流式用 auto 拿 text
+                stream_thinking = "auto" if thinking == "off" else thinking
                 async for kind, chunk in agent.stream_run(
-                    prompt, context=context, thinking=thinking, keep_history=keep_history,
+                    prompt, context=context, thinking=stream_thinking, keep_history=keep_history,
                 ):
                     if kind == "text" and chunk:
                         parts.append(chunk)
                         self.on_chunk(step.id, n, kind, chunk)
-                response = LLMResponse(content="".join(parts))
+                if not parts:
+                    logger.warning("流式未返回正文，回退非流式: %s (第%d章)", step.id, n)
+                    response = await agent.run(
+                        prompt, context=context, thinking=thinking, keep_history=keep_history,
+                    )
+                else:
+                    response = LLMResponse(content="".join(parts))
                 logger.info("步骤完成（流式）: %s (第%d章)", step.id, n)
             else:
+                if step.id == "chapter" and self.on_chunk is not None:
+                    logger.info("模型不支持正文流式，本章使用非流式生成: %s", agent.name)
                 use_tools = self.enable_tools and bool(step.tools) and step.tool_rounds > 0
                 if use_tools:
                     from ..agents.tools import NovelToolkit

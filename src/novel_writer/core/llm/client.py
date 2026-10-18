@@ -214,7 +214,13 @@ class LLMClient(BaseLLM):
         super().__init__(model, api_key, base_url, **kwargs)
         self._bound_loop: asyncio.AbstractEventLoop | None = None
         self.client = self._build_client()
-        logger.info("LLM 客户端初始化: model=%s, base_url=%s", model, base_url)
+        name = (model or "").lower()
+        url = (base_url or "").lower()
+        # MiMo 的流式只推 reasoning_content，正文要到非流式 final 才有；
+        # 工作流正文若强行流式会拿到空内容，因此标记为不支持正文流式。
+        self.supports_content_stream = not ("mimo" in name or "milai.com" in url)
+        logger.info("LLM 客户端初始化: model=%s, base_url=%s, stream_text=%s",
+                    model, base_url, self.supports_content_stream)
 
     def _thinking_body(self, thinking: ThinkingMode) -> dict:
         """按模型方言构造思考字段；支持配置覆盖。"""
