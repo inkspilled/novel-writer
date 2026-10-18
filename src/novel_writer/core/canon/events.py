@@ -62,6 +62,9 @@ def _event_hash(event: CanonEvent) -> str:
 class CanonLog:
     """项目级 append-only 事件日志（JSONL + hash chain）。"""
 
+    # 进程内按 (mtime,size) 缓存，避免 is_sealed/for_chapter 反复解析 JSONL
+    _CACHE: dict[Path, tuple[tuple[int, int], list["CanonEvent"]]] = {}
+
     def __init__(self, project_dir: Path):
         self.project_dir = Path(project_dir)
         self.path = self.project_dir / CANON_DIR / EVENTS_FILE
@@ -77,6 +80,15 @@ class CanonLog:
         if not self.path.exists():
             return
         try:
+            st = self.path.stat()
+            key = (st.st_mtime_ns, st.st_size)
+            cached = self._CACHE.get(self.path)
+            if cached and cached[0] == key:
+                self._events = list(cached[1])
+                return
+        except OSError:
+            key = (0, 0)
+        try:
             for line in self.path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if not line:
@@ -87,6 +99,11 @@ class CanonLog:
                     logger.warning("正典事件行损坏，已跳过: %s", e)
         except OSError as e:
             logger.error("正典事件读取失败: %s", e)
+            return
+        try:
+            self._CACHE[self.path] = (key, list(self._events))
+        except Exception:
+            pass
 
     def all(self) -> list[CanonEvent]:
         self._load()
@@ -156,6 +173,11 @@ class CanonLog:
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(ev.to_dict(), ensure_ascii=False) + "\n")
         self._events.append(ev)
+        try:
+            st = self.path.stat()
+            self._CACHE[self.path] = ((st.st_mtime_ns, st.st_size), list(self._events))
+        except OSError:
+            pass
         return ev
 
     def append_many(self, events: Iterable[CanonEvent | dict[str, Any]]) -> list[CanonEvent]:

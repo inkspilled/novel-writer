@@ -407,6 +407,12 @@ def scan_chapters(project_dir: Path) -> list[dict]:
         return []
 
     result = []
+    try:
+        from .canon.revisions import latest_revision, load_revision_index
+        revision_index = load_revision_index(project_dir)
+    except Exception:
+        latest_revision = lambda _p, _n, _i=None: None  # noqa: E731
+        revision_index = {}
     for f in chapters_dir.iterdir():
         if not f.is_file():
             continue
@@ -420,8 +426,7 @@ def scan_chapters(project_dir: Path) -> list[dict]:
         outline = chapters_dir / chapter_outline_filename(number, title)
         # 封印后有修订版本：展示/编辑最新版本，原件保持不可变
         try:
-            from .canon.revisions import latest_revision
-            latest = latest_revision(project_dir, number)
+            latest = latest_revision(project_dir, number, revision_index)
         except Exception:
             latest = None
         result.append({

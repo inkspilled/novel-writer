@@ -32,8 +32,12 @@ def _read_index(project_dir: Path) -> dict:
         return {}
 
 
-def latest_revision(project_dir: Path, chapter: int) -> Path | None:
-    rel = _read_index(project_dir).get(str(chapter))
+def load_revision_index(project_dir: Path) -> dict:
+    return _read_index(project_dir)
+
+
+def latest_revision(project_dir: Path, chapter: int, index: dict | None = None) -> Path | None:
+    rel = (index if index is not None else _read_index(project_dir)).get(str(chapter))
     if rel:
         p = versions_dir(project_dir) / rel
         if p.exists():

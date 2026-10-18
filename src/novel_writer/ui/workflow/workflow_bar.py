@@ -45,6 +45,12 @@ class WorkflowMiniBar(QWidget):
         self._status_label.setStyleSheet("font-size: 10px; color: gray;")
         row.addWidget(self._status_label)
 
+        self._usage_label = QLabel("")
+        self._usage_label.setStyleSheet("font-size: 10px; color: gray;")
+        self._usage_label.setToolTip("本次运行累计 token（含工具/会审/感知）")
+        self._usage_label.setVisible(False)
+        row.addWidget(self._usage_label)
+
         self._btn_log = QPushButton("📋")
         self._btn_log.setFixedSize(20, 20)
         self._btn_log.setToolTip("展开/收起执行日志")
@@ -103,6 +109,19 @@ class WorkflowMiniBar(QWidget):
 
     def set_has_workflow(self, has: bool):
         self._btn_start.setEnabled(has)
+
+    def set_usage(self, usage: dict | None):
+        usage = usage or {}
+        total = usage.get("total_tokens")
+        if not total:
+            total = sum(int(v) for k, v in usage.items() if k.endswith("tokens") and isinstance(v, (int, float)))
+        if total:
+            text = f"{total/1000:.1f}k tok" if total >= 1000 else f"{int(total)} tok"
+            self._usage_label.setText(text)
+            self._usage_label.setVisible(True)
+        else:
+            self._usage_label.setText("")
+            self._usage_label.setVisible(False)
 
     def set_current_step(self, step_id: str, agent_title: str, n: int = 0, total: int = 0):
         if total > 0:

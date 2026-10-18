@@ -91,6 +91,10 @@ class WorkflowThread(QThread):
     def _on_step_end(self, step_id, n, agent_title, output):
         self.step_finished.emit(step_id, n, agent_title, output)
         self.log_message.emit(f"✓ {agent_title} 完成 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
+        try:
+            self.progress["_usage"] = dict(self.runner.total_usage)
+        except Exception:
+            pass
         self.progress_updated.emit(self.progress)
 
     def _on_error(self, step_id, error):

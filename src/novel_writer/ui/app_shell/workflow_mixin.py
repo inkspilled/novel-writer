@@ -196,6 +196,7 @@ class WorkflowMixin:
         self._wf_thread.workflow_done.connect(self._on_wf_done)
         self._wf_thread.workflow_stopped.connect(self._on_wf_stopped)
 
+        self.agent_panel.workflow_bar.set_usage({})
         self.agent_panel.on_workflow_started()
         self._wf_thread.start()
 
@@ -273,6 +274,7 @@ class WorkflowMixin:
 
     def _on_wf_progress(self, progress: dict):
         self._wf_progress = progress
+        self.agent_panel.workflow_bar.set_usage(progress.get("_usage") or {})
         self.agent_panel.on_workflow_progress(
             self._wf_percent(progress, self._wf_def)
         )

@@ -70,3 +70,13 @@ def test_character_dialog_lists_records(qapp, tmp_path):
     assert dlg.name_label.text() == "林牧"
     assert dlg.auto_sim.isChecked()
     dlg.close()
+
+
+def test_workflow_bar_usage_label(qapp):
+    from src.novel_writer.ui.workflow.workflow_bar import WorkflowMiniBar
+    bar = WorkflowMiniBar()
+    bar.set_usage({"total_tokens": 1234})
+    assert bar._usage_label.isVisibleTo(bar)
+    assert "1.2k tok" in bar._usage_label.text()
+    bar.set_usage({})
+    assert not bar._usage_label.isVisible()
