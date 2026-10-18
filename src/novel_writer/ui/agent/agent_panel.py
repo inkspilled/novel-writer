@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea,
 )
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer, QTimer
 
 from .agent_animation import AgentIndicator
 from ..common.chat_rendering import COLOR_POOL, AGENT_PANEL_GLOBALS, get_color
@@ -57,6 +57,7 @@ class AgentPanel(QWidget):
         self._stream_agent: str = ""
         self._pending_streams: dict[str, tuple] = {}
         self._quick_buttons: list[QPushButton] = []
+        self._chat_expanded = False  # 自由对话默认折叠
         self._chat_db: ChatHistory | None = None  # 项目级聊天记录存储
         self._setup_ui()
 
@@ -92,6 +93,14 @@ class AgentPanel(QWidget):
         self.agent_name_label.setStyleSheet("font-size: 13px; font-weight: 600;")
         header_layout.addWidget(self.agent_name_label)
         header_layout.addStretch()
+
+        self.btn_chat_toggle = QPushButton(t("agent_free_chat"))
+        self.btn_chat_toggle.setCheckable(True)
+        self.btn_chat_toggle.setFixedHeight(24)
+        self.btn_chat_toggle.setStyleSheet(
+            "font-size: 11px; padding: 2px 8px; border-radius: 6px;")
+        self.btn_chat_toggle.toggled.connect(self._set_chat_expanded)
+        header_layout.addWidget(self.btn_chat_toggle)
 
         self.btn_clear = QPushButton("\U0001f5d1️")
         self.btn_clear.setFixedSize(24, 24)
@@ -184,6 +193,7 @@ class AgentPanel(QWidget):
         # ── 输入区（固定底栏，禁止被撑大） ──
         input_area = QWidget()
         input_area.setObjectName("agentInput")
+        self._input_area = input_area
         input_area.setFixedHeight(132)  # 输入框+按钮行，写死不参与布局膨胀
         input_layout = QVBoxLayout(input_area)
         input_layout.setContentsMargins(12, 10, 12, 12)
@@ -212,10 +222,42 @@ class AgentPanel(QWidget):
 
         layout.addWidget(input_area)
 
+        # 折叠时用弹性占位把上面的状态/进度条顶到顶部，避免中间一大块空白
+        self._collapsed_spacer = QWidget()
+        self._collapsed_spacer.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        layout.addWidget(self._collapsed_spacer, 1)
+
         # 初始状态：禁用交互
         self._project_loaded = False
         self._chat_locked = False   # 工作流执行中禁止自由对话
         self._working_active = False  # 单次对话生成中
+        self._set_chat_expanded(False)
+
+    def _set_chat_expanded(self, expanded: bool):
+        """自由对话默认折叠；展开后显示消息区/快捷动作/输入框。"""
+        self._chat_expanded = bool(expanded)
+        self.btn_chat_toggle.blockSignals(True)
+        self.btn_chat_toggle.setChecked(self._chat_expanded)
+        self.btn_chat_toggle.setText(
+            t("agent_free_chat_collapse") if self._chat_expanded else t("agent_free_chat"))
+        self.btn_chat_toggle.blockSignals(False)
+        self.scroll_area.setVisible(self._chat_expanded)
+        self._input_area.setVisible(self._chat_expanded)
+        self._quick_bar.setVisible(self._chat_expanded and bool(self._quick_buttons))
+        self._loading_label.setVisible(self._chat_expanded and self._working_active)
+        self._collapsed_spacer.setVisible(not self._chat_expanded)
+        if self._chat_expanded:
+            self._update_empty_hint()
+            QTimer.singleShot(0, self._scroll_chat_to_bottom)
+            if self._project_loaded and not self._chat_locked:
+                self.input_edit.setFocus()
+
+    def _scroll_chat_to_bottom(self):
+        try:
+            bar = self.scroll_area.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        except Exception:
+            pass
 
     # ── Agent 按钮管理 ──
 
@@ -283,7 +325,7 @@ class AgentPanel(QWidget):
             self._quick_bar.setVisible(False)
             return
 
-        self._quick_bar.setVisible(True)
+        self._quick_bar.setVisible(self._chat_expanded)
         prompt_map = {
             "选题分析": "帮我分析一下当前热门的小说题材趋势",
             "立意规划": "帮我确定这部小说的核心立意",
@@ -597,7 +639,7 @@ class AgentPanel(QWidget):
             self.indicator.start(color)
             self.btn_run.setEnabled(False)
             self.btn_run.setText(t("agent_generating"))
-            self._loading_label.setVisible(True)
+            self._loading_label.setVisible(self._chat_expanded)
             self.input_edit.setEnabled(False)
         else:
             self.indicator.stop()
@@ -732,6 +774,8 @@ class AgentPanel(QWidget):
         self.btn_run.setText(t("agent_send"))
         self._loading_label.setText(t("agent_thinking"))
         self._hint_label.setText(t("agent_send_hint"))
+        self.btn_chat_toggle.setText(
+            t("agent_free_chat_collapse") if self._chat_expanded else t("agent_free_chat"))
         self._empty_title.setText(t("agent_empty_title"))
         self._empty_hint_label.setText(t("agent_empty_hint"))
         for btn, key in zip(self._empty_actions, (

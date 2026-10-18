@@ -64,6 +64,8 @@ STRINGS = {
     "agent_clear_chat": {"zh": "清空聊天", "en": "Clear Chat"},
     "agent_thinking": {"zh": "AI 正在思考...", "en": "AI is thinking..."},
     "agent_send_hint": {"zh": "Ctrl+Enter 发送", "en": "Ctrl+Enter to send"},
+    "agent_free_chat": {"zh": "💬 自由对话", "en": "💬 Free chat"},
+    "agent_free_chat_collapse": {"zh": "收起对话", "en": "Collapse chat"},
     "agent_model_default": {"zh": "默认模型", "en": "Default model"},
 
     # ── 设置对话框 ──

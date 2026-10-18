@@ -92,7 +92,7 @@ src/novel_writer/
 ├── designsystem/            # 主题 token（四套色板 + 自定义）
 └── locales.py               # 中/英 i18n
 
-tests/                       # 289 个单元/回归测试
+tests/                       # 290 个单元/回归测试
 config/                      # agents/providers 配置
 data/                        # 用户数据（gitignore）
 ```
@@ -119,6 +119,7 @@ data/                        # 用户数据（gitignore）
 
 - `Ctrl+Shift+F` 专注模式：只留正文，再按恢复；
 - 一级标签：`正文 / 规划 / 人物`；规划文档用左侧列表切换，不再有 10 个标签溢出；
+- 自由对话默认折叠，点右上「自由对话」展开；聊天不落 SQLite；
 - `人物` 是独立页面：分档/状态/auto_sim/目标/备注，菜单 `Ctrl+Alt+R` 也直接切过去；从人物设定建卡时会自动去括号/角色前缀并推断 core/recurring/extra；
 - 智能体状态条按 4 列两行展示，超过 8 个纵向滚动。
 
@@ -255,7 +256,7 @@ logger.info("操作完成")
 ## 单元测试
 
 ```bash
-python -m pytest tests/ -q          # 全量：289 passed
+python -m pytest tests/ -q          # 全量：290 passed
 python -m pytest tests/test_workflow_runner.py -v
 python -m pytest tests/test_character_isolation.py -v
 ```

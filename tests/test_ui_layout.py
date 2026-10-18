@@ -115,3 +115,22 @@ def test_character_page_loads_project_roster(qapp, tmp_path):
     assert page.name_label.text() == "林牧"
     assert page.auto_sim.isChecked()
     page.close()
+
+
+def test_free_chat_is_collapsed_by_default(qapp):
+    from src.novel_writer.ui.agent.agent_panel import AgentPanel
+
+    panel = AgentPanel()
+    assert panel.scroll_area.isHidden()
+    assert panel._input_area.isHidden()
+    assert not panel.btn_chat_toggle.isChecked()
+
+    panel._set_chat_expanded(True)
+    assert not panel.scroll_area.isHidden()
+    assert not panel._input_area.isHidden()
+    assert panel.btn_chat_toggle.isChecked()
+
+    panel._set_chat_expanded(False)
+    assert panel.scroll_area.isHidden()
+    assert panel._input_area.isHidden()
+    panel.close()
