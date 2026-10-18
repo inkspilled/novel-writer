@@ -76,10 +76,10 @@ class ModelDialog(QDialog):
 
         ctx_layout.addWidget(QLabel("最大上下文 tokens:"))
         self._ctx_tokens_spin = QSpinBox()
-        self._ctx_tokens_spin.setRange(4096, 200_000)
+        self._ctx_tokens_spin.setRange(4096, 1_000_000)
         self._ctx_tokens_spin.setSingleStep(4096)
         self._ctx_tokens_spin.setValue(self.config.get("max_context_tokens", 48_000))
-        self._ctx_tokens_spin.setToolTip("写作用的上下文上限，留空间给输出。默认 48K；140K 模型可调到 100K+")
+        self._ctx_tokens_spin.setToolTip("写作用的上下文预算（不是模型窗口）。默认 48K；1M 窗口可调高，但 prompt 成本和延迟会上升")
         ctx_layout.addWidget(self._ctx_tokens_spin)
 
         ctx_layout.addWidget(QLabel("(默认 48K；大窗口模型可上调，注意 prompt 计费)"))
