@@ -650,6 +650,7 @@ class AgentPanel(QWidget):
             from .office_scene import AgentState
             desc = f"{step_id} #{n}" if n > 1 else step_id
             self.office.set_agent_state(agent_name, AgentState.WORKING, task_desc=desc)
+            self.indicator.start(get_color(agent_name))
             self._on_agent_selected(agent_name)
             self.workflow_bar.set_current_step(step_id, agent_title, n, 0)
             self.workflow_bar.append_log(f"▸ <b>{agent_title}</b> 开始 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
@@ -680,6 +681,9 @@ class AgentPanel(QWidget):
             if slot.state != AgentState.WORKING:
                 self.office.set_agent_state(slot.name, AgentState.WAITING)
         self.workflow_bar.set_running(True)
+        active = self._current_agent or next(iter(self._agents_cfg), "")
+        if active:
+            self.indicator.start(get_color(active))
         self.workflow_bar.append_log("── 工作流开始 ──")
         # 工作流占用 Agent/LLM：禁止自由对话，避免和流程步骤抢模型、打乱历史
         self._set_chat_locked(True)
@@ -688,6 +692,8 @@ class AgentPanel(QWidget):
         from .office_scene import AgentState
         self.office.reset_states(AgentState.DONE)
         self.workflow_bar.set_running(False)
+        if not self._working_active:
+            self.indicator.stop()
         self.workflow_bar.append_log("── <b>工作流完成！</b> ──")
         self._set_chat_locked(False)
 

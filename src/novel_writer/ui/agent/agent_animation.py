@@ -66,7 +66,7 @@ class AgentIndicator(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         center = self.rect().center()
-        r = 13
+        r = max(4, min(self.width(), self.height()) // 2 - 2)
 
         if self._active:
             # 外圈旋转弧线
@@ -79,7 +79,7 @@ class AgentIndicator(QWidget):
                             (self._angle + 180) * 16, 120 * 16)
 
             # 内圈呼吸灯
-            inner_r = 8
+            inner_r = max(2, int(r * 0.58))
             painter.setOpacity(self._opacity)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self._color)

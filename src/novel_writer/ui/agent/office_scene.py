@@ -22,6 +22,8 @@ from enum import Enum
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
+
+from .agent_animation import AgentIndicator
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -144,10 +146,9 @@ class _AgentCard(QFrame):
         status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(5)
 
-        self.dot_label = QLabel(self)
-        self.dot_label.setObjectName("agentDot")
-        self.dot_label.setFixedSize(7, 7)
-        status_row.addWidget(self.dot_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.indicator = AgentIndicator(self)
+        self.indicator.setFixedSize(16, 16)
+        status_row.addWidget(self.indicator, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.status_label = QLabel(self)
         self.status_label.setObjectName("agentStatus")
@@ -164,7 +165,7 @@ class _AgentCard(QFrame):
 
         # 点击整张卡片都能选中 Agent（文字不拦截鼠标）
         for label in (self.emoji_label, self.title_label,
-                      self.status_label, self.task_label, self.dot_label):
+                      self.status_label, self.task_label, self.indicator):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self.update_view(slot, self._theme)
@@ -192,6 +193,11 @@ class _AgentCard(QFrame):
         self.setAccessibleName(f"{slot.title or slot.name} {state_text}")
 
         self._restyle()
+        if slot.state == AgentState.WORKING:
+            self.indicator.start(slot.color or self._tok("accent", "#4f8cff"))
+        else:
+            self.indicator.stop()
+            self.indicator.update_theme(self._theme)
 
     # ── 主题样式 ──
 
@@ -292,11 +298,6 @@ class _AgentCard(QFrame):
                 font-family: "{_TEXT_FONT}";
                 font-size: 11px;
                 background: transparent;
-            }}
-            QLabel#agentDot {{
-                background-color: {dot_bg};
-                border: {dot_border};
-                border-radius: 3px;
             }}
         """)
 
