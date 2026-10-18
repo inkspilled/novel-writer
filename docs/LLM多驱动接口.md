@@ -58,6 +58,7 @@ Agent 层只依赖 `BaseLLM`，不感知后端差异。
 - 历史消息支持 `assistant.tool_calls` 与 `role="tool" + tool_call_id`；
 - 网关/模型拒绝 `tools` 时自动去掉该字段重试一次（`_is_invalid_request`），降级为纯文本；
 - 流式 `stream_chat` 不承载工具调用（自由对话纯文本），工具循环只走非流式 `chat`。
+- MiMo 的 `enable_thinking=false` 不保证关思考，`thinking=off` 同时发 `reasoning_effort=none`；实测同样 100 字开头从 53s 降到 12s。
 
 其余三个驱动（Claude/Ollama/OpenAICompat）接受 `tools` 参数但当前未实现，工作流只装配 `LLMClient`。
 

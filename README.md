@@ -92,7 +92,7 @@ src/novel_writer/
 ├── designsystem/            # 主题 token（四套色板 + 自定义）
 └── locales.py               # 中/英 i18n
 
-tests/                       # 296 个单元/回归测试
+tests/                       # 298 个单元/回归测试
 config/                      # agents/providers 配置
 data/                        # 用户数据（gitignore）
 ```
@@ -118,7 +118,7 @@ data/                        # 用户数据（gitignore）
 ```
 
 - `Ctrl+Shift+F` 专注模式：只留正文，再按恢复；
-- 正文写作时编辑区实时追加模型流式输出；正文输出 8192 tokens，规划/大纲 2600–3200，避免思考吃空正文；
+- 正文写作时编辑区实时追加模型流式输出；正文输出 8192 tokens，规划/大纲 2600–3200；MiMo 关闭思考用 `reasoning_effort=none`，避免 model 仍偷偷生成 reasoning；
 - `max_context_tokens` 是**输入上下文预算**（默认 48K，设置里最高可到 1M），不是模型窗口本身；
 - 一级标签：`正文 / 规划 / 人物`；规划文档用左侧列表切换，不再有 10 个标签溢出；
 - 自由对话默认折叠，点右上「自由对话」展开；折叠时工作流日志自动占满剩余空间；聊天不落 SQLite；
@@ -258,7 +258,7 @@ logger.info("操作完成")
 ## 单元测试
 
 ```bash
-python -m pytest tests/ -q          # 全量：296 passed
+python -m pytest tests/ -q          # 全量：298 passed
 python -m pytest tests/test_workflow_runner.py -v
 python -m pytest tests/test_character_isolation.py -v
 ```

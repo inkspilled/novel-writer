@@ -26,7 +26,7 @@ class TestThinkingDialect:
     def test_mimo_payload(self):
         off = build_thinking_body("off", model="mimo-7b", base_url="https://api.milai.com/v1")
         on = build_thinking_body("on", model="mimo-7b", base_url="https://api.milai.com/v1")
-        assert off == {"enable_thinking": False}
+        assert off == {"enable_thinking": False, "reasoning_effort": "none"}
         assert on == {"enable_thinking": True}
         assert build_thinking_body("auto", model="mimo-7b", base_url="https://api.milai.com/v1") == {}
 

@@ -55,8 +55,10 @@ _DIALECT_PAYLOADS: dict[str, tuple[dict, dict]] = {
         {"enable_thinking": False},
         {"enable_thinking": True},
     ),
+    # MiMo 的 enable_thinking=false 不一定会真正关思考；reasoning_effort=none
+    # 才会让 stream 直接出正文（实测 53s→12s）。
     "mimo": (
-        {"enable_thinking": False},
+        {"enable_thinking": False, "reasoning_effort": "none"},
         {"enable_thinking": True},
     ),
     "none": ({}, {}),
