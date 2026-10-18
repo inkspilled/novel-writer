@@ -29,22 +29,8 @@ novel-writer/
 ├── installer.iss                   # Inno Setup 安装包脚本
 ├── ChineseSimplified.isl           # 中文安装语言包
 ├── logo.png                        # 应用图标
-├── docs/                           # 项目文档（总索引见 docs/README.md）
-│   ├── README.md                   # 唯一文档总目录（性质标签 + 权威归属）
-│   ├── 质量检查算法.md              # 十维规则打分
-│   ├── 追读力算法.md                # 钩子/爽点/微兑现/债务
-│   ├── 反模式追踪算法.md            # AI 味禁忌库
-│   ├── 长期记忆算法.md              # 11 桶记忆
-│   ├── 大世界状态算法.md            # 世界/角色/物品/时间线快照
-│   ├── 章节四维追踪算法.md          # 资源/情感/信息边界/支线
-│   ├── 写后沉淀算法.md              # 章后自动沉淀管线
-│   ├── 分层上下文组装算法.md        # 四层 ContextTier + 压缩
-│   ├── RAG检索算法.md               # BM25 关键词检索
-│   ├── 工作流引擎算法.md            # 五模式 × 步骤组合
-│   ├── 节奏控制与角色锚定算法.md    # 七阶段 + 角色硬约束
-│   ├── 角色推演算法.md              # 多视角剧情推演
-│   ├── LLM多驱动接口.md             # 四驱动统一契约
-│   └── 项目存储与文件格式.md        # 目录布局/原子写/IO API
+├── docs/                           # 项目文档（20 篇；完整清单与权威归属见 docs/README.md）
+│   └── README.md                   # 唯一文档总目录（性质标签 + 权威归属）
 ├── logs/                           # 日志目录（gitignore）
 │   ├── info.log                    # INFO/DEBUG（按天滚动，100MB 上限）
 │   └── error.log                   # WARNING+ 日志
@@ -94,6 +80,7 @@ novel-writer/
     │   ├── app_config.py           # 应用路径常量 + 用户配置读写
     │   ├── chat_history.py         # 聊天记录持久化（项目级 SQLite）
     │   ├── world_state.py          # → docs/大世界状态算法.md
+    │   ├── story_threads.py         # → docs/故事线台账算法.md
     │   ├── workflow/               # → docs/工作流引擎算法.md
     │   │   ├── constants.py        # 技能名与步骤 id 分组
     │   │   ├── definition.py       # WorkflowStep/Def、内置模板、build_workflow
@@ -141,8 +128,13 @@ novel-writer/
         │   ├── agent_animation.py  # 指示器动画
         │   └── office_scene.py     # 办公室场景（QPainter）
         ├── editor/                 # 写作区
-        │   ├── editor_panel.py     # 正文 + 规划文档标签页
+        │   ├── editor_panel.py     # 正文 / 规划 / 世界 三级导航
         │   └── sidebar.py          # 章节列表
+        ├── character/              # 世界页
+        │   ├── character_page.py   # 人物（分档/状态/auto_sim）
+        │   ├── world_page.py       # 世界四页容器（人物/物品/地点/故事线）
+        │   ├── storyline_page.py   # 故事线台账（时间线/主线/支线/伏笔）
+        │   └── character_dialog.py # 角色卡对话框
         ├── workflow/               # 工作流
         │   ├── workflow_panel.py   # WorkflowThread
         │   └── workflow_bar.py     # 迷你进度条
@@ -182,6 +174,10 @@ novel-writer/
 
 五模式（NEW_BOOK / NEW_BOOK_PLANNING / CONTINUE / FILL_GAPS / VALIDATE）由共享步骤列表组合。支持 `every` 定时、`repeat` 循环、断点恢复、智能跳过，以及步骤级 `retry/timeout/depends_on`。特殊步骤（toc / fix_titles / chapter_summary / world_state_update / quality_check / proofread / review / review_panel / 细纲）走 `BUILTIN_STEP_HANDLERS` 注册表，不走标准 LLM 路径。
 
+**故事线反哺**：`world_state_update` 与每章写后沉淀完成后调用
+`runner._sync_story_ledger(n)`（纯规则、零 LLM），把伏笔/支线/时间线对账进
+`story_threads.json` 并 `on_event("story_track")`；UI 收到步骤完成信号即刷新「世界→故事线」。
+
 ### 智能体工具与技能 → [docs/智能体运行时与工具.md](docs/智能体运行时与工具.md)
 
 写作/润色等步骤可声明只读工具（`tools`）与技能包（`skills`）：`AgentLoop` 在受限轮数内执行「请求→工具→再请求」，工具结果回填，异常转文本；模型不支持 tools 时自动降级纯文本。技能包目录优先级：项目 `skills/` > `config/skills/` > 包内置。
@@ -202,6 +198,8 @@ novel-writer/
 
 - `memory.py`：11 桶跨章事实，同键去重 + outdated 审计。
 - `world_state.py`：世界/角色/物品/时间线**当前快照**，深度合并 + LLM 结构化更新。
+- `story_threads.py`：时间线/主线/支线/伏笔**统一台账**——解析四份规划稿，与 memory/world_state
+  对账出状态与进度（手工编辑优先），供「世界→故事线」UI 展示并反哺写作上下文。
 - 分工：**world_state 存快照，memory 存流水**。
 
 ### 写后沉淀 (`core/workflow/sediment.py`) → [docs/写后沉淀算法.md](docs/写后沉淀算法.md)
@@ -227,16 +225,25 @@ exporter.export_pdf()    # PDF（需 reportlab）
 ```
 MainWindow (splitter: 240 / 680 / 480)
 ├── Sidebar         # 项目管理、章节树、字数统计
-├── EditorPanel     # 正文 + 8个规划文档标签页
+├── EditorPanel     # 正文 / 规划（9 份文档）/ 世界（人物/物品/地点/故事线）
 └── AgentPanel      # 办公室场景 + 工作流进度/日志 + 对话区
 ```
 
 - 聊天记录按项目隔离：`data/projects/<name>/chat.db`
-- 工作流调用 Agent 时对话自动写入聊天记录
+- 工作流日志只走 `WorkflowMiniBar` / `runs/*.jsonl`，**不写聊天记录**（避免污染 chat.db）
 - `AgentWorker(QThread)` 后台执行，信号驱动 UI
 - 流式输出按 Agent 隔离
-- 规划文档用「正文 / 规划」两级导航；Agent 区是 104–182px 状态条，不是假 3D 办公室
+- 三级导航「正文 / 规划 / 世界」；Agent 区是 104–182px 状态条，不是假 3D 办公室
 - `Ctrl+Shift+F` 专注模式：隐藏左右栏，只留正文
+
+### 世界页（`ui/character/`）
+
+「世界」一级标签内是左侧菜单 + 右侧内容的分栏：**人物 / 物品 / 地点 / 故事线**。
+
+- 人物/物品/地点围绕 `world_state.json`（`character_page.py` / `world_page.py`）
+- 故事线围绕 `story_threads.json`（`storyline_page.py`）：KPI 卡 + 按类型/卷分组的线程树 +
+  右侧详情编辑；双击线程 `chapter_activate_requested` → 编辑器跳章；手工改动写 `user_edited`
+- `WorldPage.reload()` 会顺带对账故事线；`reload_storyline()` 供工作流落盘后轻量刷新
 
 ### 菜单结构
 

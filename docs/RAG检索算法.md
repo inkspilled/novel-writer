@@ -61,7 +61,7 @@ TF_norm   = tf × (k1+1) / (tf + k1 × (1 - b + b × dl / avg_dl))
 | 来源 | 分块规则 | id 格式 | chapter |
 |------|----------|---------|---------|
 | 历史章节 `.txt` | 按 `\n\n` 分段，跳过 <20 字段 | `ch{N}_p{i}` | N |
-| 规划文档 `.md` | 按 `\n(?=#)` 或 `\n\n+` 分节，跳过 <20 字节 | `plan_{stem}_s{i}` | 0 |
+| 规划文档 `.md` | 按 `\n(?=#)` 或 `\n\n+` 分节，跳过 <20 字 | `plan_{stem}_s{i}` | 0 |
 
 历史章节加载范围：`ch_num < up_to_chapter`（不含当前章）；跳过 `.outline.md` 与 `.bak.txt` 备份；空文件跳过。
 
@@ -106,3 +106,6 @@ TF_norm   = tf × (k1+1) / (tf + k1 × (1 - b + b × dl / avg_dl))
 - 规划文档走 `ContextBuilder._rag_planning_fragments` 现场建 BM25 索引，不进 `RAGRetriever`（章节索引与规划索引分离）。
 - `Chunk.tokens` 在 `add_chunk` 时填充；`search` 前会 `build()`（幂等）。
 - 查询侧不做停用词过滤，`第N章` 等高频词会稀释 IDF（影响有限，因 BM25 本身有 IDF）。
+- **RAG 不是知识库的唯一入口**：它负责「散文/设定片段召回」；角色当前位置、当前目标、
+  伏笔是否回收等**事实**必须读 `world_state.json` / `memory.json` / `story_threads.json`，
+  否则会出现「检索到旧段落，答成旧状态」。两者互补，见[项目存储与文件格式](项目存储与文件格式.md)「流水账选型」。

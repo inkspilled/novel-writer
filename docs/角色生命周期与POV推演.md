@@ -1,7 +1,7 @@
 # 角色生命周期与 POV 推演
 
 > 引擎：`src/novel_writer/core/canon/events.py`、`src/novel_writer/core/characters/{registry,view}.py`
-> 工作流：`pov_sim`（内置步骤，默认只有显式开启 `auto_sim` 的角色才会跑）
+> 工作流：`character_panel`（默认模板，每章，仅 `auto_sim` 角色）+ `pov_sim`（可选内置步骤，自定义工作流可挂）
 > 性质：`参考`（设计说明，改动需同步代码与测试）
 
 ## 一句话总结
@@ -90,10 +90,23 @@
 | 档位 | 谁 | 推演 |
 |---|---|---|
 | `core` | 主角/常驻 3–8 人 | 每场可 POV |
-| `recurring` | 重要配角 | 在场才推演，离场低频 tick（规划中） |
+| `recurring` | 重要配角 | 在场才推演，离场低频 tick（`offscreen_tick`，每 5 章） |
 | `extra` | 群演/背景 | 不建 Agent，只作为观察者 |
 
-`auto_sim` 默认 **false**：即使建了卡，也不会自动跑 POV；必须显式打开（后续 UI 提供勾选）。
+`auto_sim` 在 `CharacterRecord` 上默认 **false**；`seed_from_profiles` 从人物设定建卡时
+`core/recurring` 档默认置 **true**，`extra` 为 false。UI 在「世界 → 人物」提供勾选，
+也可在角色卡对话框里改。
+
+### 3.1.1 与 world_state 同步（位置/目标/状态）
+
+角色档案里的 `location` / `goals` / `state` 是 **world_state 的镜像**，不是第二套事实源：
+
+- `world_state_update` 落盘后调用 `CharacterRegistry.sync_from_world_state(gs)`；
+- 「世界 → 人物」页打开/刷新时也同步；作者手改位置/目标保存后 `push_to_world_state()` 回写；
+- 只同步非空字段，世界状态还没记录时不会清掉作者手填值。
+
+这样 POV 推演/离场 tick 读到的 `rec.location`、`rec.goals` 与写作上下文里的位置/目标一致，
+不会出现「正文已经到禁地，人物页还写着杂院」。
 
 ### 3.2 状态机
 
@@ -109,7 +122,7 @@ alive → dead → resurrected / ghost / missing
 ### 3.3 新角色入场
 
 1. `ensure(name, chapter)`：先建 `extra` 临时卡，不生成完整人设；
-2. 满足条件（≥2 场 / 与核心对话 / 有目标 / 用户标记）后 `promote`；
+2. 满足条件（≥2 场 / 与核心对话 / 有目标 / 用户标记，由作者或 UI 判断）后显式 `promote`；代码不做自动门槛；
 3. 补 backstory 事件（`type="backstory"`，`known_by=本人`）；
 4. 视图按 `first_seen` 过滤：入场前的目击事件不会因为 `known_by` 误填而泄漏；
 5. 别名通过 `merge` 合并，不建第二张卡。
@@ -180,7 +193,7 @@ print(view.text)
 
 ## 5. `pov_sim` 步骤
 
-- 默认工作流改用 `character_panel`（每章，N+1 次调用，仅 auto_sim）；`pov_sim` 保留给自定义工作流（每 5 章，零额外导演调用）；
+- 默认工作流走 `character_panel`（每章，N+1 次调用，仅 auto_sim）；`pov_sim` 保留给自定义工作流（`every` 由自定义步骤决定，例如每 5 章；零额外导演调用）；
 - 只跑 `auto_sim=True` 且 `can_act` 的角色，默认最多 4 人；
 - 每个角色一次独立 LLM 调用，`keep_history=False`，临时 `BaseAgent`，不共享历史；
 - 输出 JSON，校验 `knowledge_used` 后落盘；
@@ -231,8 +244,11 @@ print(view.text)
 ## 7. 当前边界（诚实说明）
 
 - `canon/events.jsonl` 由 `percept_extract` 自动写入；但感知抽取依赖 LLM，仍可能漏事件/把旁白当 observable；
-- `pov_sim`/`character_panel` 默认没有角色开启 `auto_sim`，所以实际不会调用；可在「角色管理（Ctrl+Alt+R）」里打开；
-- 离场 tick、角色 panel、裁判/导演评分、UI 花名册尚未实现；
+- `pov_sim` 不在默认模板里（默认走 `character_panel`）；两者都只对 `auto_sim=True` 且 `can_act`
+  的角色发起调用，无角色可推演时零调用；
+- 离场 tick、角色 panel、裁判/导演评分、UI 花名册均已实现：`offscreen_tick`（每 5 章）、
+  `character_panel`（每章，≤4 人 + 导演）、`CharacterPage`（世界→人物，可视化分档/状态/auto_sim）；
+- `pov_sim` 仍是可选内置步骤：自定义工作流可显式挂载，默认模板不挂；
 - `mark_dead_many()` 已实现，但“批量死亡正典事件”的自动写入（如灭门事件）还要等感知抽取层；
 - `CharacterView` 的 `scene_brief` 需要调用方保证是公开信息；
 - 角色自己的 `private_profile.background` 可能包含别人的秘密（人物设定写法导致），建卡时需要人工/LLM 拆分。

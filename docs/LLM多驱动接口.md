@@ -26,6 +26,8 @@
 | Moonshot (Kimi) | `https://api.moonshot.cn/v1` |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` |
 | 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 小米 MiMo | `https://api.milai.com/v1` |
+| OpenAI | `https://api.openai.com/v1` |
 | Ollama (本地) | `http://localhost:11434/v1` |
 | llama.cpp (本地) | `http://localhost:8080/v1` |
 | vLLM (本地) | `http://localhost:8000/v1` |
@@ -36,15 +38,21 @@
 ```python
 @dataclass
 class LLMMessage:
-    role: str      # system / user / assistant
+    role: str      # system / user / assistant / tool
     content: str
+    tool_calls: list[dict] | None = None   # assistant 发起工具调用
+    tool_call_id: str = ""                 # tool 角色回填
 
 @dataclass
 class LLMResponse:
     content: str
+    model: str = ""
+    usage: dict[str, int] = {}             # prompt/completion/total tokens
+    tool_calls: list[dict] = []
+    finish_reason: str = ""                # stop / length / tool_calls
 
 class BaseLLM:
-    async def chat(messages, **kwargs) -> LLMResponse
+    async def chat(messages, tools=None, thinking="auto", **kwargs) -> LLMResponse
 ```
 
 Agent 层只依赖 `BaseLLM`，不感知后端差异。
