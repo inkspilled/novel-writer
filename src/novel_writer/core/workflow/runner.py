@@ -378,6 +378,13 @@ class WorkflowRunner:
                 if blocked_at is None:
                     progress[step.id] = {"current": n, "total": step.repeat}
                     self._save_progress(progress)
+                    tokens = self.total_usage.get("total_tokens") or sum(
+                        v for k, v in self.total_usage.items() if k.endswith("tokens")
+                    )
+                    logger.info(
+                        "[LONGRUN] 第%d章完成 current=%d/%d tokens=%s errors=%d",
+                        n, n, step.repeat, tokens, len(progress.get("_errors") or []),
+                    )
             if blocked_at is not None:
                 logger.warning("第%d章写盘被拒，进度停在 %d，恢复时会重试该章",
                                blocked_at, blocked_at - 1)

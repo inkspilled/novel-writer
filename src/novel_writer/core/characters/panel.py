@@ -147,6 +147,6 @@ async def run_character_panel(
         "proposals": proposals, "director": decision,
     }
     project_io.write_json(project_dir / "sim_cache" / "pov" / f"panel_{chapter}.json", panel)
-    logger.info("角色 panel 完成: 第%d章 %d 份提案，选择 %s",
+    logger.info("[PANEL] 第%d章 %d 份提案，导演选择 %s",
                 chapter, len(proposals), decision.get("choice"))
     return panel

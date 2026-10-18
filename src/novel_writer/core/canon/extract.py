@@ -145,7 +145,7 @@ async def extract_percepts(
     reg = registry or CharacterRegistry(project_dir)
     canon = CanonLog(project_dir)
     if canon.has_percepts(chapter):
-        logger.debug("第%d章已有感知事件，跳过", chapter)
+        logger.info("[PERCEPT] 第%d章已有事件，跳过", chapter)
         return []
     names = [c.name for c in reg.all()]
     if not names:
@@ -158,13 +158,15 @@ async def extract_percepts(
         payload = extract_json_object(resp.content or "")
         if isinstance(payload, dict) and isinstance(payload.get("events"), list):
             break
-        logger.warning("第%d章感知抽取返回非法 JSON（第%d次），重试", chapter, attempt + 1)
+        logger.warning("[PERCEPT] 第%d章非法 JSON（第%d次），重试", chapter, attempt + 1)
         prompt = (
             "上一次输出不是合法 JSON。请严格只输出一个 JSON 对象，"
             "格式为 {\"scene\":...,\"events\":[...]}，不要解释、不要 Markdown。\n\n"
             + prompt
         )
     if not isinstance(payload, dict) or not isinstance(payload.get("events"), list):
-        logger.warning("第%d章感知抽取两次均失败，跳过", chapter)
+        logger.warning("[PERCEPT] 第%d章两次均失败，跳过", chapter)
         return []
-    return apply_percept_payload(project_dir, chapter, payload, registry=reg)
+    events = apply_percept_payload(project_dir, chapter, payload, registry=reg)
+    logger.info("[PERCEPT] 第%d章写入 %d 条", chapter, len(events))
+    return events
