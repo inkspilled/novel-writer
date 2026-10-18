@@ -19,7 +19,13 @@ class AgentIndicator(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("agentIndicator")
         self.setFixedSize(32, 32)
+        # 全局 QWidget QSS 会填背景；指示器必须透明，只画弧/圆/光晕
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent;")
         self._active = False
         self._fade = 0.0
         self._phase = 0.0
