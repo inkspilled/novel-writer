@@ -24,6 +24,11 @@ _META_RE = re.compile(
     re.IGNORECASE,
 )
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_META_ANY_RE = re.compile(
+    r"(正文.*(不可|无法)(读取|获取)|我将以|作为唯一剧情依据|暂不可读|"
+    r"上一章.*(缺失|不可读)|由于.*(缺失|不可读)|为了保证.*衔接)",
+    re.IGNORECASE,
+)
 _HEADING_RE = re.compile(r"(?m)^#{1,6}\s+\S")
 
 
@@ -58,7 +63,7 @@ def clean_model_text(text: str, step_id: str = "") -> str:
     match = _HEADING_RE.search(text)
     if match and match.start() > 0:
         prefix = text[: match.start()]
-        if _looks_like_reasoning(prefix):
+        if _looks_like_reasoning(prefix) or _META_ANY_RE.search(prefix):
             text = text[match.start():].lstrip()
 
     # 2) 没有标题 / 标题前还有英文：逐行丢掉元认知开头

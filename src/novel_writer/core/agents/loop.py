@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 EventCallback = Callable[[str, dict[str, Any]], None]
+
+_TOOL_MARKUP_RE = re.compile(r"<tool_call|<function=|<parameter=|</tool_call>", re.IGNORECASE)
 
 _DEFAULT_GUARD = """【工具使用】
 你可以调用只读工具补充事实。规则：
@@ -109,7 +112,29 @@ class AgentLoop:
                 agent._record_usage(response.usage)
 
             calls = (response.tool_calls or [])[: self.max_calls_per_round]
-            if not calls or not allow_tools:
+            if not calls:
+                # 有些模型不会走 OpenAI tool_calls，而是把 <tool_call> XML 写进正文。
+                # 绝不能把这种文本当章节落盘：禁用工具再请求一次，强制写正文。
+                if _TOOL_MARKUP_RE.search(response.content or ""):
+                    logger.warning("模型把工具调用写进正文，禁用工具重试: %s", agent.name)
+                    response = await agent.llm.chat(
+                        messages, agent.config.temperature, agent.config.max_tokens,
+                        thinking=mode, tools=None,
+                    )
+                    for k, v in (response.usage or {}).items():
+                        if isinstance(v, (int, float)):
+                            usage[k] = int(usage.get(k, 0)) + int(v)
+                    if hasattr(agent, "_record_usage"):
+                        agent._record_usage(response.usage)
+                    if _TOOL_MARKUP_RE.search(response.content or ""):
+                        logger.error("禁用工具后仍返回工具标记，丢弃本次输出")
+                        final = LLMResponse(content="")
+                    else:
+                        final = response
+                else:
+                    final = response
+                break
+            if not allow_tools:
                 final = response
                 break
 

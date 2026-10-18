@@ -372,3 +372,31 @@ def test_llm_message_and_tool_call_serialization():
     ])
     assert msgs[0]["tool_calls"] == calls
     assert msgs[1]["tool_call_id"] == "call_9"
+
+
+def test_tool_markup_in_content_retries_without_tools(tmp_path):
+    from src.novel_writer.core.workflow.definition import WorkflowStep
+    from src.novel_writer.core.workflow.runner import WorkflowRunner
+
+    llm = FakeLLM([
+        LLMResponse(content="<tool_call><function=read_planning><parameter=doc>主线</parameter></function></tool_call>"),
+        LLMResponse(content="# 第1章\n" + "正" * 200),
+    ])
+    agent = BaseAgent(AgentConfig(name="w", role="w", title="写手",
+                                  system_prompt="s", skills=["正文写作"]), llm)
+    runner = WorkflowRunner({"w": agent}, tmp_path, {}, enable_tools=True)
+    step = WorkflowStep(id="chapter", needs="正文写作", prompt="写第{n}章",
+                        output="chapters/{n}_章节.txt", tools=["read_planning"], tool_rounds=1)
+    asyncio.run(runner._execute_step(step, {}, 1, {}))
+    files = list((tmp_path / "chapters").glob("1_*.txt"))
+    assert files and "正" in files[0].read_text(encoding="utf-8")
+    assert "<tool_call>" not in files[0].read_text(encoding="utf-8")
+    assert len(llm.calls) == 2
+
+
+def test_chapter_validator_rejects_tool_markup():
+    from src.novel_writer.core.project_io import validate_chapter_content
+
+    bad = "<tool_call><function=read_planning><parameter=doc>主线</parameter></function></tool_call>"
+    ok, reason = validate_chapter_content(bad)
+    assert not ok and "工具调用" in reason

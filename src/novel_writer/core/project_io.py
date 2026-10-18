@@ -275,10 +275,16 @@ def validate_chapter_content(content: str, min_length: int = 100) -> tuple[bool,
     stripped = content.strip()
     if not stripped:
         return False, "内容为空白"
+    # 工具调用被模型写进正文：绝不能当章节落盘
+    if re.search(r"<tool_call|<function=|<parameter=|</tool_call>", stripped, re.IGNORECASE):
+        return False, "正文包含工具调用标记，不是小说正文"
     # 去掉 Markdown 标题后检查正文长度
     body = re.sub(r'^#{1,3}\s+.*$', '', stripped, flags=re.MULTILINE).strip()
     if len(body) < min_length:
         return False, f"正文过短（{len(body)}字 < {min_length}字），可能只有标题"
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", body))
+    if cjk < 60:
+        return False, f"中文字符过少（{cjk}字），可能只有工具调用/元信息"
     return True, "OK"
 
 

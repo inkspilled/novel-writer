@@ -50,3 +50,8 @@ def test_long_output_auto_continues_on_length():
     resp = asyncio.run(agent.run("写长文", max_tokens=8192))
     assert resp.content == "第一段，第二段。"
     assert llm.calls == 2
+
+
+def test_strips_chinese_meta_before_chapter_heading():
+    raw = "第1章正文在系统中暂不可读取，我将以本章细纲为唯一依据落笔。\n\n---\n\n# 第2章 谁与你争\n\n玉牌落地。"
+    assert clean_model_text(raw, "chapter").startswith("# 第2章 谁与你争")
