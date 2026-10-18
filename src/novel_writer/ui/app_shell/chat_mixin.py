@@ -191,13 +191,12 @@ class ChatMixin:
     # ── 设置对话框 ──
 
     def _open_character_manager(self):
-        """打开角色管理（分档/状态/auto_sim）。"""
+        """切到主界面的「人物」页。"""
         if not self.project.project_dir:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.information(self, t("menu_character_manage"), t("msg_no_project"))
             return
-        from ..character.character_dialog import CharacterDialog
-        CharacterDialog(self.project.project_dir, self).exec()
+        self.editor.tab_bar.setCurrentIndex(2)
 
     def _open_agent_manage(self):
         """打开 Agent 管理对话框。"""

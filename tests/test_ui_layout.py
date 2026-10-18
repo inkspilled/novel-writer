@@ -25,7 +25,7 @@ def test_main_window_layout_and_focus_mode(qapp):
     w.show()
     qapp.processEvents()
 
-    assert w.editor.tab_bar.count() == 2
+    assert w.editor.tab_bar.count() == 3
     assert w.editor.planning_list.count() == 9
     assert w.splitter.count() == 3
 
@@ -101,3 +101,17 @@ def test_chat_db_is_opt_in(qapp, tmp_path):
     panel2.save_history()
     assert (tmp_path / "chat.db").exists()
     panel.close(); panel2.close()
+
+
+def test_character_page_loads_project_roster(qapp, tmp_path):
+    from src.novel_writer.core.characters.registry import CharacterRegistry, CharacterTier
+    from src.novel_writer.ui.character.character_page import CharacterPage
+
+    reg = CharacterRegistry(tmp_path)
+    reg.create("林牧", chapter=1, tier=CharacterTier.CORE, auto_sim=True)
+    page = CharacterPage()
+    page.set_project_dir(tmp_path)
+    assert page.list.count() == 1
+    assert page.name_label.text() == "林牧"
+    assert page.auto_sim.isChecked()
+    page.close()

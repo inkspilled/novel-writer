@@ -92,7 +92,7 @@ src/novel_writer/
 ├── designsystem/            # 主题 token（四套色板 + 自定义）
 └── locales.py               # 中/英 i18n
 
-tests/                       # 281 个单元/回归测试
+tests/                       # 282 个单元/回归测试
 config/                      # agents/providers 配置
 data/                        # 用户数据（gitignore）
 ```
@@ -111,14 +111,15 @@ data/                        # 用户数据（gitignore）
 ```
 ┌──────────┬──────────────────────────┬────────────────────────────┐
 │  侧边栏   │  编辑区                   │  协作区                     │
-│ 项目/章节 │  ┌ 正文 ┐ ┌ 规划 ┐       │  Agent 状态条（两行）        │
+│ 项目/章节 │  ┌正文┐┌规划┐┌人物┐      │  Agent 状态条（两行）        │
 │ 字数统计  │  正文编辑器               │  工作流进度（规划/正文两段）  │
 │          │  规划：左列表 + 右编辑器   │  对话 / 快捷动作             │
 └──────────┴──────────────────────────┴────────────────────────────┘
 ```
 
 - `Ctrl+Shift+F` 专注模式：只留正文，再按恢复；
-- 规划文档用左侧列表切换，不再有 10 个标签溢出；
+- 一级标签：`正文 / 规划 / 人物`；规划文档用左侧列表切换，不再有 10 个标签溢出；
+- `人物` 是独立页面：分档/状态/auto_sim/目标/备注，菜单 `Ctrl+Alt+R` 也直接切过去；
 - 智能体状态条按 4 列两行展示，超过 8 个纵向滚动。
 
 ## 写作流程
@@ -252,7 +253,7 @@ logger.info("操作完成")
 ## 单元测试
 
 ```bash
-python -m pytest tests/ -q          # 全量：281 passed
+python -m pytest tests/ -q          # 全量：282 passed
 python -m pytest tests/test_workflow_runner.py -v
 python -m pytest tests/test_character_isolation.py -v
 ```

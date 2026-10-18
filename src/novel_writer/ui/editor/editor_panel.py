@@ -15,6 +15,7 @@ from PySide6.QtGui import (
 from ...locales import t
 from ...core import project_io
 from ...core.logger import get_logger
+from ..character.character_page import CharacterPage
 
 logger = get_logger(__name__)
 
@@ -200,6 +201,10 @@ class EditorPanel(QWidget):
 
         planning_layout.addWidget(right, 1)
         self.tab_bar.addTab(planning_page, "规划")
+
+        # ── 人物标签：独立页面，不再只藏在菜单对话框里 ──
+        self.character_page = CharacterPage()
+        self.tab_bar.addTab(self.character_page, "人物")
 
         layout.addWidget(self.tab_bar)
 
@@ -415,6 +420,7 @@ class EditorPanel(QWidget):
         """设置项目目录，刷新规划文档状态。"""
         self.flush_planning_autosave()
         self._project_dir = project_dir
+        self.character_page.set_project_dir(project_dir)
         self._planning_loaded.clear()
         self._planning_dirty.clear()
         self._planning_cache.clear()
@@ -430,6 +436,8 @@ class EditorPanel(QWidget):
         """刷新指定规划文档（或全部）的内容和状态。"""
         # 先落盘用户未保存的编辑，避免被工作流写盘后 reload 冲掉
         self.flush_planning_autosave()
+        if self.tab_bar.currentIndex() == 2:
+            self.character_page.reload()
         if doc_name:
             self._planning_loaded.discard(doc_name)
             self._planning_dirty.discard(doc_name)
@@ -442,7 +450,7 @@ class EditorPanel(QWidget):
 
         # 如果当前在规划页，重新加载选中项（只刷新被点名的文档时，
         # 若它不是当前文档则保留当前编辑器内容，不打断用户）。
-        if self.tab_bar.currentIndex() > 0:
+        if self.tab_bar.currentIndex() == 1:
             row = self.planning_list.currentRow()
             if row < 0 or row >= len(PLANNING_DOCS):
                 row = 0
@@ -473,9 +481,11 @@ class EditorPanel(QWidget):
 
     def _on_tab_changed(self, index: int):
         """一级标签切换：离开规划页先落盘；进入规划页按需加载。"""
-        if index <= 0:
+        if index != 1:
             if self._planning_dirty:
                 self.flush_planning_autosave()
+            if index == 2:
+                self.character_page.reload()
             return
         row = self.planning_list.currentRow()
         if row < 0 or row >= len(PLANNING_DOCS):
@@ -526,6 +536,7 @@ class EditorPanel(QWidget):
     def clear(self):
         self.flush_planning_autosave()
         self.detach_chapter()
+        self.character_page.set_project_dir(None)
         self.chapter_title.setText(t("editor_select_chapter"))
         self.word_count_label.setText(f"0 {t('editor_words')}")
         self._planning_autosave.stop()
