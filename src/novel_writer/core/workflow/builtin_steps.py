@@ -15,6 +15,7 @@ from ..agents.base import AgentConfig, BaseAgent
 from ..canon.events import CanonEvent, CanonLog
 from ..canon.extract import extract_percepts
 from ..canon.seal import ChapterSealedError, seal_chapter
+from ..characters.offscreen import run_offscreen_tick
 from ..characters.panel import run_character_panel
 from ..characters.registry import CharacterRegistry
 from ..character_sim import parse_characters
@@ -596,6 +597,25 @@ async def _run_character_panel(runner: "WorkflowRunner", step: "WorkflowStep", n
     logger.info(msg)
     if runner.on_step_end:
         runner.on_step_end(step.id, n, agent.title, msg)
+
+
+@handler("offscreen_tick")
+async def _run_offscreen_tick(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """每 5 章批量推进离场角色；项目级开关 enable_offscreen_tick。"""
+    if not runner.project_info.get("enable_offscreen_tick", True):
+        return
+    registry = CharacterRegistry(runner.project_dir)
+    agent = runner.find_agent(step.needs) if step.needs else None
+    agent = agent or _fallback_agent(runner, (SKILL_REVIEW,))
+    if not agent or not getattr(agent, "llm", None):
+        return
+    try:
+        data = await run_offscreen_tick(runner.project_dir, n, agent, registry=registry)
+    except Exception as e:
+        logger.error("离场 tick 失败（不影响正文）: %s", e, exc_info=True)
+        return
+    if data and runner.on_step_end:
+        runner.on_step_end(step.id, n, agent.title, f"离场 tick：{len(data['ticks'])} 人")
 
 
 @handler("seal_chapter")

@@ -2,6 +2,7 @@
 from .events import CanonEvent, CanonLog, seed_event
 from .extract import apply_percept_payload, build_percept_prompt, extract_percepts
 from .projection import project_world_state
+from .revisions import latest_revision, write_revision
 from .seal import ChapterSealedError, is_sealed, seal_chapter
 
 __all__ = [

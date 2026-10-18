@@ -170,7 +170,8 @@ print(view.text)
 - `project_info.seal_chapters=true` 时，正文定稿后把 SHA256 写入
   `canon/events.jsonl` 的 `chapter_sealed` 事件；
 - 封印后工作流拒绝覆写该章（`ChapterWriteRejected`）；
-- 手动编辑器写入目前仍绕过封印，版本化修订是下一步。
+- 封印后手动编辑走 `chapters/versions/`：原件不动，`index.json` 指向最新版本；重新打开项目展示最新版。
+- 手动版本目前不重新封印；重新定稿需要显式“封印当前版本”操作（下一步）。
 
 ## 5. `pov_sim` 步骤
 
@@ -180,6 +181,13 @@ print(view.text)
 - 输出 JSON，校验 `knowledge_used` 后落盘；
 - 无可用角色时直接跳过，**零调用**；
 - 提案经 `character_panel` 裁判/导演后注入写手上下文，间接影响正文。
+
+## 5.1 离场 tick
+
+- 每 5 章 1 次批量调用，最多 8 个离场角色；
+- 只写 `sim_cache/offscreen/tick_{n}.json`，不产生正文；
+- 下一章上下文注入「离场角色近况（作者参考）」；
+- `enable_offscreen_tick=false` 可关。
 
 ## 6. 角色多了怎么办
 

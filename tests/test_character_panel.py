@@ -82,3 +82,26 @@ def test_panel_skips_without_auto_sim(tmp_path: Path):
     base = BaseAgent(AgentConfig(name="d", role="d", title="d", system_prompt="s"), llm)
     assert asyncio.run(run_character_panel(tmp_path, 1, base, registry=reg)) is None
     assert llm.calls == []
+
+
+def test_offscreen_tick_batches_and_filters(tmp_path: Path):
+    from src.novel_writer.core.characters.offscreen import run_offscreen_tick
+
+    reg = CharacterRegistry(tmp_path)
+    reg.create("林牧", chapter=1, tier=CharacterTier.CORE)
+    reg.create("楚夜", chapter=2, tier=CharacterTier.RECURRING)
+    reg.create("路人", chapter=1, tier=CharacterTier.EXTRA)
+
+    class TickAgent:
+        async def run(self, prompt, **kwargs):
+            return LLMResponse(content=__import__("json").dumps({
+                "ticks": [
+                    {"character": "林牧", "summary": "在藏经阁查符文", "goal_update": ""},
+                    {"character": "楚夜", "summary": "暗中跟踪", "goal_update": "确认林牧是否知情"},
+                    {"character": "不存在", "summary": "不该出现", "goal_update": ""},
+                ],
+            }, ensure_ascii=False))
+
+    data = asyncio.run(run_offscreen_tick(tmp_path, 5, TickAgent(), registry=reg))
+    assert data and len(data["ticks"]) == 2
+    assert (tmp_path / "sim_cache" / "offscreen" / "tick_5.json").exists()

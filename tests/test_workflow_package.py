@@ -21,7 +21,7 @@ EXPECTED_DEFAULT_IDS = [
     "ideation", "outline", "characters", "world", "timeline",
     "main_plot", "sub_plot", "foreshadow", "chapter_outline", "fix_titles",
     "inspiration", "sim", "character_panel", "chapter", "chapter_summary", "world_state_update",
-    "toc", "polish", "percept_extract", "seal_chapter", "proofread", "summary",
+    "toc", "polish", "percept_extract", "seal_chapter", "offscreen_tick", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel",
     "quality_check", "review",
@@ -30,7 +30,7 @@ EXPECTED_DEFAULT_IDS = [
 EXPECTED_CONTINUE_IDS = [
     "fix_titles", "chapter_outline",
     "inspiration", "sim", "character_panel", "chapter", "chapter_summary", "world_state_update",
-    "toc", "polish", "percept_extract", "seal_chapter", "proofread", "summary",
+    "toc", "polish", "percept_extract", "seal_chapter", "offscreen_tick", "proofread", "summary",
     "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel",
     "quality_check", "review",
@@ -117,7 +117,7 @@ class TestBuiltinStepHandlers:
             "proofread", "review",  # 批处理改造后由 handler 自行编排 LLM（分批校对/审核）
             "chapter_outline", "update_chapter_outline", "review_panel", "pov_sim",
             "character_panel",
-            "percept_extract", "seal_chapter",
+            "percept_extract", "seal_chapter", "offscreen_tick",
         }
 
     def test_tool_steps_have_no_needs(self):

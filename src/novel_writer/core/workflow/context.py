@@ -490,6 +490,10 @@ class ContextBuilder:
             if inspiration:
                 parts.append(f"=== 灵感 ===\n{inspiration}")
 
+        tick_text = self._load_offscreen_tick(n)
+        if tick_text:
+            parts.append(f"=== 离场角色近况（作者参考） ===\n{tick_text}")
+
         # 角色 POV 提案（作者参考；角色侧只写 sim_cache/pov/{id}/sim_{n}.json）
         pov_text = self._load_pov_proposals(n)
         if pov_text:
@@ -737,6 +741,22 @@ class ContextBuilder:
                 content = project_io.read_md(ch_file)
                 if content:
                     parts.append(f"=== 第{i}章 ===\n{content}")
+
+    def _load_offscreen_tick(self, n: int) -> str:
+        """读取上一章的离场 tick，给写手做背景参考。"""
+        import json
+        path = self.project_dir / "sim_cache" / "offscreen" / f"tick_{max(1, n - 1)}.json"
+        if not path.exists():
+            return ""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            ticks = data.get("ticks") or []
+            return "\n".join(
+                f"【{t.get('character')}】{str(t.get('summary') or '')[:160]}"
+                for t in ticks if isinstance(t, dict) and t.get("summary")
+            )[:1200]
+        except Exception:
+            return ""
 
     def _load_pov_proposals(self, n: int) -> str:
         """读取 sim_cache/pov/*/sim_{n}.json，格式化给写手做参考。"""

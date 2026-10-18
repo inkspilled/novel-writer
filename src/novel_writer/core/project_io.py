@@ -418,10 +418,16 @@ def scan_chapters(project_dir: Path) -> list[dict]:
         number = int(m.group(1))
         title = m.group(2)
         outline = chapters_dir / chapter_outline_filename(number, title)
+        # 封印后有修订版本：展示/编辑最新版本，原件保持不可变
+        try:
+            from .canon.revisions import latest_revision
+            latest = latest_revision(project_dir, number)
+        except Exception:
+            latest = None
         result.append({
             "number": number,
             "title": title,
-            "content_path": f,
+            "content_path": latest or f,
             "outline_path": outline if outline.exists() else None,
         })
     result.sort(key=lambda x: x["number"])

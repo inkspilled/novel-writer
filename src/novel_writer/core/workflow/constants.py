@@ -17,6 +17,7 @@ POST_CHAPTER_PERIODIC_IDS = (
     "polish", "proofread", "summary", "toc", "chapter_summary",
     "world_state_update", "update_outline", "update_characters", "update_foreshadow",
     "update_chapter_outline", "review_panel", "percept_extract", "seal_chapter",
+    "offscreen_tick",
 )
 
 # ── 步骤 id 分组 ──
@@ -39,7 +40,7 @@ NO_THINKING_STEP_IDS = frozenset({
     "sim", "chapter_summary", "world_state_update", "toc",
     "proofread", "quality_check", "fix_titles", "sediment",
     "chapter_outline", "update_chapter_outline", "pov_sim", "percept_extract",
-    "seal_chapter", "character_panel",
+    "seal_chapter", "character_panel", "offscreen_tick",
 })
 
 # 工作流内不写入 Agent 对话历史的步骤（历史只留给规划链传递上下文）
@@ -48,7 +49,7 @@ NO_HISTORY_STEP_IDS = frozenset({
     "polish", "proofread", "summary", "quality_check", "fix_titles",
     "inspiration", "sediment",
     "chapter_outline", "update_chapter_outline", "pov_sim", "percept_extract",
-    "seal_chapter", "character_panel",
+    "seal_chapter", "character_panel", "offscreen_tick",
 }) | frozenset({
     "update_outline", "update_characters", "update_foreshadow",
 })

@@ -55,6 +55,21 @@ class Chapter:
     @content.setter
     def content(self, value: str) -> None:
         self._content_cache = value
+        path = Path(self._content_path) if self._content_path else None
+        # 已封印的原始章节：不覆写，写版本文件并切换当前路径
+        if path and "versions" not in path.parts:
+            project_dir = path.parent.parent
+            try:
+                from ..core.canon.seal import is_sealed
+                if is_sealed(project_dir, self.number):
+                    from ..core.canon.revisions import write_revision
+                    self._content_path = str(write_revision(
+                        project_dir, self.number, value, reason="manual", base_path=path,
+                    ))
+                    return
+            except Exception:
+                # 封印检查失败时退回普通写入，不能丢用户输入
+                pass
         self._write_file(self._content_path, value)
 
     @property

@@ -116,6 +116,7 @@ class ProjectMixin:
             # 先卸下旧项目的当前章节，避免 clear() 触发 content_changed 把旧章写空
             self.editor.detach_chapter()
             self.project = Project.load(path)
+            self._sync_world_state_from_canon(path)
             self.agent_panel.set_project_db(path)
             self._load_workflow_for_project()
             self.sidebar.set_project_title(self.project.title)
@@ -133,6 +134,16 @@ class ProjectMixin:
         except Exception as e:
             logger.error("加载项目失败: %s - %s", path, e, exc_info=True)
             QMessageBox.critical(self, t("dialog_error"), t("msg_open_fail", e))
+
+    def _sync_world_state_from_canon(self, path: Path):
+        """有 world_state 事件时，用正典重放快照（历史才是源）。"""
+        try:
+            from ...core.canon.projection import project_world_state, world_state_event_count
+            if world_state_event_count(path):
+                project_world_state(path)
+                logger.info("世界状态已从正典重放: %s", path)
+        except Exception as e:
+            logger.warning("世界状态重放失败（保留现有快照）: %s", e)
 
     def _select_initial_chapter(self):
         """打开项目后默认载入最后一章，避免“有章节却提示选择章节”的空窗。"""
