@@ -193,12 +193,18 @@ class WorkflowMixin:
         self._wf_thread.step_error.connect(self._on_wf_step_error)
         self._wf_thread.progress_updated.connect(self._on_wf_progress)
         self._wf_thread.log_message.connect(self._on_wf_log)
+        self._wf_thread.chapter_chunk.connect(self._on_wf_chapter_chunk)
         self._wf_thread.workflow_done.connect(self._on_wf_done)
         self._wf_thread.workflow_stopped.connect(self._on_wf_stopped)
 
         self.agent_panel.workflow_bar.set_usage({})
         self.agent_panel.on_workflow_started()
         self._wf_thread.start()
+
+    def _on_wf_chapter_chunk(self, step_id: str, n: int, kind: str, text: str):
+        if step_id != "chapter" or kind != "text" or not text:
+            return
+        self.editor.append_stream_chapter(n, text)
 
     def _on_wf_step_started(self, step_id: str, n: int, agent_title: str):
         self.agent_panel.on_workflow_step_started(step_id, n, agent_title)
@@ -207,14 +213,21 @@ class WorkflowMixin:
 
     def _on_wf_step_finished(self, step_id: str, n: int, agent_title: str, response: str):
         self.agent_panel.on_workflow_step_finished(step_id, n, agent_title)
-        # 章节步骤完成后刷新侧边栏
+        # 章节步骤完成后：结束流式预览，刷新侧边栏并载入最终文件
         if step_id == "chapter":
+            self.editor.end_stream_chapter()
             self._refresh_chapters()
+            for ch in self.project.chapters:
+                if ch.number == n:
+                    self.editor.load_chapter(ch)
+                    break
         # 规划步骤 / 规划反哺（含章节细纲）完成后刷新编辑器
         if step_id in PLANNING_STEP_IDS or step_id.startswith("update_"):
             self.editor.refresh_planning()
 
     def _on_wf_step_error(self, step_id: str, error: str):
+        if step_id == "chapter":
+            self.editor.end_stream_chapter()
         self.agent_panel.on_workflow_step_error(step_id, error)
 
     def _on_wf_log(self, msg: str):

@@ -134,3 +134,16 @@ def test_free_chat_is_collapsed_by_default(qapp):
     assert panel.scroll_area.isHidden()
     assert panel._input_area.isHidden()
     panel.close()
+
+
+def test_editor_streaming_preview(qapp):
+    from src.novel_writer.ui.editor.editor_panel import EditorPanel
+
+    editor = EditorPanel()
+    editor.start_stream_chapter(1)
+    editor.append_stream_chapter(1, "第一段。")
+    editor.append_stream_chapter(1, "第二段。")
+    assert "第一段。第二段。" in editor.content_edit.toPlainText()
+    editor.end_stream_chapter()
+    assert not editor.content_edit.isReadOnly()
+    editor.close()

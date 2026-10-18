@@ -11,6 +11,7 @@ from typing import Callable, Iterator
 
 from .. import project_io
 from ..agents.base import BaseAgent
+from ..llm.base import LLMResponse
 from ..logger import get_logger
 from ..text_clean import clean_model_text
 from ..memory import MemoryScratchpad
@@ -80,6 +81,8 @@ class WorkflowRunner:
         self.on_error: Callable[[str, str], None] | None = None  # (step_id, error)
         # 结构化事件（工具调用/重试/阶段），UI 可转日志或进度
         self.on_event: Callable[[str, dict], None] | None = None
+        # 章节流式输出 (step_id, n, kind, text)
+        self.on_chunk: Callable[[str, int, str, str], None] | None = None
 
     def _build_skill_index(self):
         for agent in self.agents.values():
@@ -527,34 +530,46 @@ class WorkflowRunner:
                 "off" if step.id in NO_THINKING_STEP_IDS else "auto"
             )
             keep_history = step.id not in NO_HISTORY_STEP_IDS
-            use_tools = self.enable_tools and bool(step.tools) and step.tool_rounds > 0
-            if use_tools:
-                from ..agents.tools import NovelToolkit
-                toolkit = NovelToolkit(
-                    self.project_dir, self.project_info, n, self._skill_registry
-                ).build(step.tools)
-
-                def _on_tool(kind: str, payload: dict):
-                    self._emit_event(kind, step=step.id, n=n, **payload)
-
-                response = await agent.run_with_tools(
-                    toolkit,
-                    prompt,
-                    context=context,
-                    thinking=thinking,
-                    keep_history=keep_history,
-                    max_rounds=step.tool_rounds,
-                    on_event=_on_tool,
-                )
+            if step.id == "chapter" and self.on_chunk is not None:
+                # 正文流式：边出边进编辑器；此分支不挂工具，换取实时可见
+                parts: list[str] = []
+                async for kind, chunk in agent.stream_run(
+                    prompt, context=context, thinking=thinking, keep_history=keep_history,
+                ):
+                    if kind == "text" and chunk:
+                        parts.append(chunk)
+                        self.on_chunk(step.id, n, kind, chunk)
+                response = LLMResponse(content="".join(parts))
+                logger.info("步骤完成（流式）: %s (第%d章)", step.id, n)
             else:
-                run_kwargs = dict(
-                    context=context, thinking=thinking, keep_history=keep_history,
-                )
-                if step.max_tokens:
-                    run_kwargs["max_tokens"] = step.max_tokens
-                response = await agent.run(prompt, **run_kwargs)
-            # usage 由 BaseAgent.usage_sink 汇总（含内置步骤与工具循环）
-            logger.info("步骤完成: %s (第%d章)", step.id, n)
+                use_tools = self.enable_tools and bool(step.tools) and step.tool_rounds > 0
+                if use_tools:
+                    from ..agents.tools import NovelToolkit
+                    toolkit = NovelToolkit(
+                        self.project_dir, self.project_info, n, self._skill_registry
+                    ).build(step.tools)
+
+                    def _on_tool(kind: str, payload: dict):
+                        self._emit_event(kind, step=step.id, n=n, **payload)
+
+                    response = await agent.run_with_tools(
+                        toolkit,
+                        prompt,
+                        context=context,
+                        thinking=thinking,
+                        keep_history=keep_history,
+                        max_rounds=step.tool_rounds,
+                        on_event=_on_tool,
+                    )
+                else:
+                    run_kwargs = dict(
+                        context=context, thinking=thinking, keep_history=keep_history,
+                    )
+                    if step.max_tokens:
+                        run_kwargs["max_tokens"] = step.max_tokens
+                    response = await agent.run(prompt, **run_kwargs)
+                # usage 由 BaseAgent.usage_sink 汇总（含内置步骤与工具循环）
+                logger.info("步骤完成: %s (第%d章)", step.id, n)
         except Exception as e:
             logger.error("步骤执行失败: %s (第%d章) - %s", step.id, n, e, exc_info=True)
             if self.on_error:

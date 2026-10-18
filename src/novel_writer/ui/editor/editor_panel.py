@@ -91,6 +91,7 @@ class EditorPanel(QWidget):
         self.setObjectName("editorPanel")
         self._current_chapter = None  # 当前编辑的 Chapter 对象（勿用 number-1 当列表下标）
         self._project_dir: Path | None = None
+        self._stream_preview = False
 
         # 规划文档：单编辑器 + 内存缓存。
         # _planning_edits 仅为向后兼容保留（旧代码把它当 {label: edit} 用）。
@@ -495,9 +496,38 @@ class EditorPanel(QWidget):
             row = 0
         self._show_planning_doc(PLANNING_DOCS[row][0])
 
+    def start_stream_chapter(self, number: int, title: str = ""):
+        """正文流式预览：先把编辑器切到目标章，后续 append 逐段写入。"""
+        from ...models.chapter import Chapter
+        preview = Chapter(number=number, title=title or f"第{number}章")
+        self.load_chapter(preview)
+        self._stream_preview = True
+        self.content_edit.setReadOnly(True)
+        self.chapter_title.setText(f"第{number}章 正在生成…")
+
+    def append_stream_chapter(self, number: int, text: str):
+        if not text:
+            return
+        if (not self._stream_preview or self._current_chapter is None
+                or getattr(self._current_chapter, "number", 0) != number):
+            self.start_stream_chapter(number)
+        edit = self.content_edit
+        edit.blockSignals(True)
+        cursor = edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(text)
+        edit.setTextCursor(cursor)
+        edit.blockSignals(False)
+        self._update_word_count()
+
+    def end_stream_chapter(self):
+        self._stream_preview = False
+        self.content_edit.setReadOnly(False)
+
     def load_chapter(self, chapter):
         logger.info("编辑器加载章节: 第%s章 %s", getattr(chapter, "number", "?"), getattr(chapter, "title", ""))
         self._current_chapter = chapter
+        self._stream_preview = False
         self.chapter_title.setText(f"第{chapter.number}章 {chapter.title}" if hasattr(chapter, 'number') else "")
         self.content_edit.blockSignals(True)
         self.content_edit.setPlainText(chapter.content or "")

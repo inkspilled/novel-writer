@@ -19,6 +19,7 @@ class WorkflowThread(QThread):
     step_started = Signal(str, int, str)        # step_id, n, agent_title
     step_finished = Signal(str, int, str, str)  # step_id, n, agent_title, response
     step_error = Signal(str, str)               # step_id, error_msg
+    chapter_chunk = Signal(str, int, str, str)  # step_id, n, kind, text
     progress_updated = Signal(dict)             # progress dict
     log_message = Signal(str)                   # 日志消息
     workflow_done = Signal()                    # 全部完成
@@ -67,6 +68,7 @@ class WorkflowThread(QThread):
         self.runner.on_step_end = self._weak_callback("_on_step_end")
         self.runner.on_error = self._weak_callback("_on_error")
         self.runner.on_event = self._weak_callback("_on_event")
+        self.runner.on_chunk = self._weak_callback("_on_chunk")
 
         try:
             # 开始横幅由 AgentPanel.on_workflow_started 统一输出，避免重复
@@ -94,7 +96,7 @@ class WorkflowThread(QThread):
             self.workflow_stopped.emit()
         finally:
             # 断开 runner → callback → thread 的引用，避免线程结束后 GC 再 traverse 已销毁的 QThread
-            for attr in ("on_step_start", "on_step_end", "on_error", "on_event"):
+            for attr in ("on_step_start", "on_step_end", "on_error", "on_event", "on_chunk"):
                 try:
                     setattr(self.runner, attr, None)
                 except Exception:
@@ -149,6 +151,9 @@ class WorkflowThread(QThread):
         except Exception:
             pass
         self.progress_updated.emit(self.progress)
+
+    def _on_chunk(self, step_id, n, kind, text):
+        self.chapter_chunk.emit(step_id, n, kind, text)
 
     def _on_error(self, step_id, error):
         self.step_error.emit(step_id, error)
