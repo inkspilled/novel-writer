@@ -400,3 +400,21 @@ def test_chapter_validator_rejects_tool_markup():
     bad = "<tool_call><function=read_planning><parameter=doc>主线</parameter></function></tool_call>"
     ok, reason = validate_chapter_content(bad)
     assert not ok and "工具调用" in reason
+
+
+def test_model_markup_disables_tools_for_followup(tmp_path):
+    from src.novel_writer.core.agents.tools import NovelToolkit, ToolRegistry
+    from src.novel_writer.core.agents.loop import AgentLoop
+
+    llm = FakeLLM([
+        LLMResponse(content="<tool_call><function=read_planning></function></tool_call>"),
+        LLMResponse(content="# 第1章\n" + "正" * 120),
+        LLMResponse(content="# 第2章\n" + "文" * 120),
+    ])
+    agent = BaseAgent(AgentConfig(name="w", role="w", title="写手", system_prompt="s"), llm)
+    toolkit = ToolRegistry()
+    asyncio.run(AgentLoop(agent, toolkit, max_rounds=1).run("写第1章", keep_history=False))
+    assert getattr(llm, "tools_markup_unsupported", False)
+    # 后续 run_with_tools 应直接降级普通 run，不再发工具 schema
+    asyncio.run(agent.run_with_tools(toolkit, "写第2章", keep_history=False))
+    assert len(llm.calls) == 3

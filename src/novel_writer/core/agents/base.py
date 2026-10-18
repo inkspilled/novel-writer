@@ -172,6 +172,12 @@ class BaseAgent(ABC):
         toolkit 是 ToolRegistry；max_rounds=0 时等价于一次普通 run（但会带
         工具说明，不发工具 schema）。
         """
+        # 该模型曾把工具调用写成 XML：后续步骤直接降级纯文本，避免反复污染正文
+        if getattr(self.llm, "tools_markup_unsupported", False):
+            return await self.run(
+                user_input, context=context, thinking=thinking,
+                keep_history=keep_history,
+            )
         from .loop import AgentLoop
         loop = AgentLoop(
             self, toolkit,

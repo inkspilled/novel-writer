@@ -117,8 +117,15 @@ class AgentLoop:
                 # 绝不能把这种文本当章节落盘：禁用工具再请求一次，强制写正文。
                 if _TOOL_MARKUP_RE.search(response.content or ""):
                     logger.warning("模型把工具调用写进正文，禁用工具重试: %s", agent.name)
+                    # 关键：重建 messages，去掉 _DEFAULT_GUARD 里的“可用工具”清单；
+                    # 否则 tools=None 但提示词仍教模型调用工具，它还会继续吐 XML。
+                    fallback_input = (
+                        f"{user_input}\n\n【硬性要求】直接输出最终正文。"
+                        "禁止输出 <tool_call>、<function>、<parameter>、工具名、解释或元信息。"
+                    )
+                    fallback_messages = agent._build_messages(fallback_input, context)
                     response = await agent.llm.chat(
-                        messages, agent.config.temperature, agent.config.max_tokens,
+                        fallback_messages, agent.config.temperature, agent.config.max_tokens,
                         thinking=mode, tools=None,
                     )
                     for k, v in (response.usage or {}).items():
@@ -128,8 +135,17 @@ class AgentLoop:
                         agent._record_usage(response.usage)
                     if _TOOL_MARKUP_RE.search(response.content or ""):
                         logger.error("禁用工具后仍返回工具标记，丢弃本次输出")
+                        # 记住这个模型不支持工具：后续 run_with_tools 直接降级为普通 run
+                        try:
+                            agent.llm.tools_markup_unsupported = True
+                        except Exception:
+                            pass
                         final = LLMResponse(content="")
                     else:
+                        try:
+                            agent.llm.tools_markup_unsupported = True
+                        except Exception:
+                            pass
                         final = response
                 else:
                     final = response
