@@ -298,7 +298,7 @@ class CharacterRegistry:
             rec.last_seen = max(rec.last_seen, chapter)
 
     def seed_from_profiles(self, profiles, chapter: int = 0) -> int:
-        """从人物设定解析结果建卡（只建 extra，不自动 POV）。"""
+        """从人物设定解析结果建卡（按标题推断分档，不自动 POV）。"""
         added = 0
         for p in profiles:
             if self.get(p.name):
@@ -316,6 +316,7 @@ class CharacterRegistry:
                     "weakness": getattr(p, "weakness", ""),
                 },
                 goals=[getattr(p, "motivation", "")] if getattr(p, "motivation", "") else [],
+                tier=CharacterTier(getattr(p, "tier", "extra")),
             )
             added += 1
         return added

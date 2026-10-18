@@ -22,6 +22,7 @@ CHARACTER_SKIP_TITLES = frozenset({
 class CharacterProfile:
     """角色档案。"""
     name: str = ""
+    tier: str = "extra"  # core / recurring / extra，由人物设定标题推断
     personality: str = ""
     motivation: str = ""
     weakness: str = ""
@@ -64,7 +65,10 @@ def parse_characters(char_content: str) -> list[CharacterProfile]:
                 _flush(i)  # 跳过名单标题：同上
                 continue
             _flush(i)
-            current = CharacterProfile(name=name)
+            from .characters.naming import canonical_name, infer_tier
+            current = CharacterProfile(
+                name=canonical_name(name), tier=infer_tier(name),
+            )
             current_start = i
             continue
 
