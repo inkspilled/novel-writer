@@ -85,6 +85,7 @@ class EditorPanel(QWidget):
     content_changed = Signal()
     save_requested = Signal()
     planning_save_requested = Signal(str)  # 发送 planning 文档名称
+    chapter_activate_requested = Signal(int)  # 世界→故事线双击线程：跳转到第 N 章
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -206,6 +207,8 @@ class EditorPanel(QWidget):
         # ── 世界标签：人物 / 物品 / 地点 ──
         self.world_page = WorldPage()
         self.character_page = self.world_page.character_page  # 兼容旧引用
+        self.storyline_page = self.world_page.storyline_page
+        self.world_page.chapter_activate_requested.connect(self.chapter_activate_requested)
         self.tab_bar.addTab(self.world_page, "世界")
 
         layout.addWidget(self.tab_bar)

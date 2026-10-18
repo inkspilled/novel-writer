@@ -175,6 +175,83 @@ class CharacterRegistry:
         candidates.sort(key=lambda c: (order.get(c.tier, 9), -c.last_seen, c.name))
         return candidates[:max(0, limit)]
 
+    # ── 与世界状态同步（location / goals / state） ──
+
+    def _match_world_character(self, world_characters: dict, rec: CharacterRecord) -> tuple[str, dict] | None:
+        """按姓名/别名/id 在 world_state.characters 里找同一个人。"""
+        keys = [rec.name, *rec.aliases, rec.id]
+        if rec.id.startswith("char_"):
+            keys.append(rec.id[len("char_"):])
+        for key in keys:
+            data = world_characters.get(key)
+            if isinstance(data, dict):
+                return key, data
+        return None
+
+    def sync_from_world_state(self, gs=None) -> int:
+        """把 world_state 的 location/goals/state 同步进角色档案（世界状态为准）。
+
+        只同步非空字段，避免尚未记录位置时清掉作者手填值；改动才落盘一次。
+        """
+        from ..world_state import WorldState  # 延迟导入，保持 core 内无环
+        if gs is None:
+            gs = WorldState(self.project_dir)
+            gs.load()
+        self._load()
+        changed = 0
+        for rec in self._characters:
+            hit = self._match_world_character(gs.characters, rec)
+            if not hit:
+                continue
+            _key, data = hit
+            loc = str(data.get("location") or "").strip()
+            if loc and loc != rec.location:
+                rec.location = loc
+                changed += 1
+            goals = data.get("goals")
+            if isinstance(goals, list):
+                norm = [str(g).strip() for g in goals if str(g).strip()]
+                if norm and norm != rec.goals:
+                    rec.goals = norm
+                    changed += 1
+            state = data.get("state")
+            if isinstance(state, dict) and state:
+                before = dict(rec.state or {})
+                rec.state.update(state)
+                if rec.state != before:
+                    changed += 1
+        if changed:
+            self.save()
+            logger.debug("角色档案已从世界状态同步: %d 处", changed)
+        return changed
+
+    def push_to_world_state(self, gs=None) -> int:
+        """把作者在 UI 里改的 location/goals 写回 world_state（手工编辑优先）。"""
+        from ..world_state import WorldState
+        if gs is None:
+            gs = WorldState(self.project_dir)
+            gs.load()
+        self._load()
+        changed = 0
+        for rec in self._characters:
+            hit = self._match_world_character(gs.characters, rec)
+            if hit:
+                _key, data = hit
+            else:
+                data = gs.characters.setdefault(rec.name, {})
+            loc = (rec.location or "").strip()
+            if loc and data.get("location") != loc:
+                data["location"] = loc
+                changed += 1
+            goals = [g.strip() for g in rec.goals if g and g.strip()]
+            if goals and data.get("goals") != goals:
+                data["goals"] = goals
+                changed += 1
+        if changed:
+            gs.save()
+            logger.debug("世界状态已从角色档案回写: %d 处", changed)
+        return changed
+
     # ── 生命周期 ──
 
     def create(

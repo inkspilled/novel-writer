@@ -166,3 +166,107 @@ def test_world_page_items_locations_relations(qapp, tmp_path):
     assert "林牧" in page.location_page.occupants.text()
     assert "青霜剑" in page.location_page.items.text()
     page.close()
+
+
+def test_world_menu_has_storyline_page(qapp, tmp_path):
+    """世界菜单 = 人物/物品/地点/故事线 四页，故事线是第四个。"""
+    from src.novel_writer.core.world_state import WorldState
+    from src.novel_writer.ui.character.world_page import WorldPage
+
+    gs = WorldState(tmp_path); gs.load(); gs.save()
+    page = WorldPage()
+    page.set_project_dir(tmp_path)
+    assert page.list.count() == 4
+    labels = [page.list.item(i).text() for i in range(page.list.count())]
+    assert labels == ["人物", "物品", "地点", "故事线"]
+    assert page.stack.count() == 4
+    assert page.stack.widget(3) is page.storyline_page
+    page.select(3)
+    qapp.processEvents()
+    assert page.stack.currentWidget() is page.storyline_page
+    page.close()
+
+
+def test_storyline_page_shows_progress_and_threads(qapp, tmp_path):
+    """故事线页：KPI 卡/树/详情/双击跳章 全链路。"""
+    from src.novel_writer.core.story_threads import sync_story_threads
+    from src.novel_writer.ui.character.storyline_page import StorylinePage
+
+    (tmp_path / "planning").mkdir()
+    (tmp_path / "chapters").mkdir()
+    (tmp_path / "meta.json").write_text('{"target_chapters": 50}', encoding="utf-8")
+    for n in (1, 2):
+        (tmp_path / "chapters" / f"{n}_第{n}章.txt").write_text("正文", encoding="utf-8")
+    (tmp_path / "planning" / "主线.md").write_text(
+        "# 主线\n## 第一卷\n- 拜入宗门（第1章）\n- 禁地试炼（第2章，进行中）\n", encoding="utf-8")
+    (tmp_path / "planning" / "伏笔.md").write_text(
+        "# 伏笔\n- 剑灵（第1章埋设，第20章回收）\n", encoding="utf-8")
+    sync_story_threads(tmp_path)
+
+    page = StorylinePage()
+    page.set_project_dir(tmp_path)
+    assert "第 2 章 / 50" in page.headline.text()
+    assert page.tree.topLevelItemCount() == 2  # 主线 + 伏笔
+    assert page.cards["main"].value.text() == "0 / 2"
+    assert page.cards["foreshadow"].value.text() == "0 / 1"
+
+    main_group = page.tree.topLevelItem(0)
+    thread_item = main_group.child(0).child(0)
+    page.tree.setCurrentItem(thread_item)
+    qapp.processEvents()
+    assert page.edit_title.text() == "拜入宗门"
+
+    jumps: list[int] = []
+    page.chapter_activate_requested.connect(jumps.append)
+    page._on_tree_activated(thread_item, 0)
+    assert jumps == [1]
+
+    # 手工标记完成 → 落盘 → 卡片与标题同步
+    page.edit_status.setCurrentIndex(page.edit_status.findData("done"))
+    page._save_detail()
+    qapp.processEvents()
+    assert page.cards["main"].value.text() == "1 / 2"
+    assert "主线 1/2" in page.headline.text()
+    page.close()
+
+
+def test_storyline_empty_project_and_overdue_filter(qapp, tmp_path):
+    """空项目给出引导文案；伏笔超期可筛选出来。"""
+    from src.novel_writer.core.story_threads import sync_story_threads
+    from src.novel_writer.ui.character.storyline_page import StorylinePage
+
+    empty = StorylinePage()
+    empty.set_project_dir(tmp_path)
+    assert "还没有故事线" in empty.headline.text()
+    empty.close()
+
+    (tmp_path / "planning").mkdir(exist_ok=True)
+    (tmp_path / "chapters").mkdir(exist_ok=True)
+    for n in range(1, 21):
+        (tmp_path / "chapters" / f"{n}_第{n}章.txt").write_text("正文", encoding="utf-8")
+    (tmp_path / "planning" / "伏笔.md").write_text(
+        "# 伏笔\n- 陈年旧事（第1章埋设）\n", encoding="utf-8")
+    sync_story_threads(tmp_path)
+
+    page = StorylinePage()
+    page.set_project_dir(tmp_path)
+    assert page.cards["foreshadow"].hint.text().startswith("超期未回收 1 条")
+    page.filter_combo.setCurrentIndex(3)  # 伏笔超期
+    qapp.processEvents()
+    assert page.tree.topLevelItemCount() == 1
+    assert page.tree.topLevelItem(0).childCount() == 1
+    row = page.tree.topLevelItem(0).child(0)
+    assert "超期" in row.text(1) and row.text(0) == "陈年旧事"
+    page.close()
+
+
+def test_splash_finds_project_logo(qapp):
+    """启动页必须找得到 logo（曾因路径少一级导致只有文字没有图标）。"""
+    from src.novel_writer.core.app_config import LOGO_PATH
+    from src.novel_writer.ui.shell.splash import SplashScreen
+
+    found = SplashScreen._find_logo()
+    assert found is not None
+    assert found.exists()
+    if LOGO_PATH.exists():
+        assert found == LOGO_PATH

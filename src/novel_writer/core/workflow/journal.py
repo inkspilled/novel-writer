@@ -2,7 +2,7 @@
 
 每次 run 在项目 `runs/` 下落一个 append-only 的 JSONL：
 run_start / step_start / step_end / step_error / step_retry / tool_call /
-tool_result / run_end。只记结构化事实（步骤、耗时、token、工具名），不落
+tool_result / story_track / run_end。只记结构化事实（步骤、耗时、token、工具名），不落
 正文，便于长跑排障与成本审计。
 """
 from __future__ import annotations

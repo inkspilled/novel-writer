@@ -90,6 +90,34 @@ class WorldState:
         if len(self.location_log) > 2000:
             del self.location_log[:len(self.location_log) - 2000]
 
+    def query_location_log(self, character: str = "", location: str = "",
+                           start_chapter: int = 0, end_chapter: int = 0,
+                           limit: int = 200) -> list[dict]:
+        """按人物/地点/章号范围查地点流水（JSON 内线性过滤，2000 条上限内足够快）。
+
+        Args:
+            character: 角色名，空 = 不过滤
+            location: 地点名，空 = 不过滤
+            start_chapter: 起始章（含），0 = 不限
+            end_chapter: 结束章（含），0 = 不限
+            limit: 最多返回条数（按时间正序，取最近的 limit 条）
+        """
+        rows = []
+        for ev in self.location_log:
+            if not isinstance(ev, dict):
+                continue
+            if character and ev.get("character") != character:
+                continue
+            if location and ev.get("location") != location:
+                continue
+            ch = int(ev.get("chapter") or 0)
+            if start_chapter and ch < start_chapter:
+                continue
+            if end_chapter and ch > end_chapter:
+                continue
+            rows.append(ev)
+        return rows[-limit:] if limit > 0 else rows
+
     def add_location(self, name: str, info: dict) -> None:
         """地点是唯一实体：同名合并描述，不覆盖旧字段。"""
         loc = self.locations.setdefault(name, {})
@@ -230,8 +258,13 @@ class WorldState:
         return self._data.setdefault("timeline", [])
 
     def add_timeline_event(self, chapter: int, event: str, location: str = "") -> None:
+        """追加时间线事件。
+
+        chapter 必须由调用方显式传入：``apply_llm_update`` 传入本章章号，
+        否则所有 LLM 提取的事件都会落到 0 章（故事线台账会按章号对账，脏章号即失真）。
+        """
         self.timeline.append({
-            "chapter": chapter,
+            "chapter": int(chapter or 0),
             "event": event,
             "location": location,
         })
@@ -271,6 +304,9 @@ class WorldState:
                 lines.append(f"  灵石: {char['gold']}")
             if char.get("location"):
                 lines.append(f"  位置: {char['location']}")
+            goals = char.get("goals")
+            if isinstance(goals, list) and goals:
+                lines.append(f"  目标: {'；'.join(str(g) for g in goals[:4])}")
             inv = char.get("inventory", [])
             if inv:
                 items = ", ".join(i.get("name", "?") for i in inv)
@@ -507,12 +543,16 @@ class WorldState:
             self.add_location(loc_name, loc_info if isinstance(loc_info, dict) else {})
             logs.append(("更新地点: " if existed else "新地点: ") + loc_name)
 
-        # 时间线
+        # 时间线（章号以本次更新的 chapter 为准，LLM 漏传/传错时不落 0 章脏数据）
         for event in update_json.get("timeline") or []:
             if not isinstance(event, dict) or not event.get("event"):
                 continue
+            try:
+                event_chapter = int(event.get("chapter") or chapter or 0)
+            except (TypeError, ValueError):
+                event_chapter = int(chapter or 0)
             self.add_timeline_event(
-                event.get("chapter", 0),
+                event_chapter,
                 event["event"],
                 event.get("location", ""),
             )

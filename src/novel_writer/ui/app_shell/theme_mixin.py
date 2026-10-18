@@ -182,6 +182,11 @@ class ThemeMixin:
         self.setStyleSheet(build_style(theme_name, cfg))
         self.agent_panel.set_config(cfg)
         self.agent_panel.refresh_theme()
+        # 故事线树用显式 token 上色（QSS 主题不改 QPalette），换主题后需重刷
+        try:
+            self.editor.world_page.storyline_page.refresh_theme()
+        except Exception:
+            pass
 
     def _show_toast(self, text: str, duration: int = 2500, error: bool = False):
         """显示一个自动消失的提示框（用主题强调色，palette 在自定义 QSS 下会隐身）。"""

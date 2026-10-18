@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtWidgets import QInputDialog, QMessageBox, QDialog
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 
 from ..editor.editor_panel import PLANNING_DOCS
@@ -209,6 +209,21 @@ class ProjectMixin:
         self._flush_content_save()
         if 0 <= index < len(self.project.chapters):
             self.editor.load_chapter(self.project.chapters[index])
+
+    def _open_chapter_number(self, number: int):
+        """跳到指定章号（故事线双击/「打开当前章」）。"""
+        for i, chapter in enumerate(self.project.chapters):
+            if getattr(chapter, "number", 0) != number:
+                continue
+            self.editor.tab_bar.setCurrentIndex(0)  # 切回正文页
+            self.editor.load_chapter(chapter)
+            tree = self.sidebar.chapter_tree
+            for row in range(tree.topLevelItemCount()):
+                if tree.topLevelItem(row).data(0, Qt.ItemDataRole.UserRole) == i:
+                    tree.setCurrentItem(tree.topLevelItem(row))
+                    break
+            return
+        self.statusBar().showMessage(f"第{number}章还没有正文", 4000)
 
     def _flush_content_save(self):
         """把防抖中的正文写入磁盘；切换章节/项目/关闭前必须调用。"""

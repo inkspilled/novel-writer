@@ -437,12 +437,39 @@ class WorkflowRunner:
             progress[f"sediment_{n}"] = "done"
             self._save_progress(progress)
             logger.debug("第%d章写后沉淀完成（%s）", n, "LLM" if llm_data else "正则兜底")
+            # 沉淀完成后再对账故事线台账（反哺 UI 与下一章上下文）；它自带异常兜底，
+            # 放在断点标记之后：台账失败不能让整章沉淀被判定失败而无限重试。
+            self._sync_story_ledger(n)
             return True
         except Exception as e:
             logger.error("第%d章写后沉淀失败（恢复时重试）: %s", n, e, exc_info=True)
             if self.on_error:
                 self.on_error("sediment", f"第{n}章沉淀失败: {e}")
             return False
+
+    def _sync_story_ledger(self, n: int) -> None:
+        """写后反哺：规划 + 记忆 + 世界状态 → 故事线台账，并通知 UI 刷新。
+
+        纯规则、零 LLM 调用、失败不阻塞章节循环；事件 ``story_track`` 供前端即时刷新。
+        """
+        try:
+            from ..story_threads import sync_story_threads
+            ledger = sync_story_threads(self.project_dir)
+            progress = ledger.progress()
+            logger.info("[STORY] 第%d章台账已同步: %s", n, progress.headline())
+            self._emit_event(
+                "story_track", n=n,
+                headline=progress.headline(),
+                main_done=progress.main_done, main_total=progress.main_total,
+                subplot_done=progress.subplot_done, subplot_total=progress.subplot_total,
+                foreshadow_done=progress.foreshadow_done,
+                foreshadow_total=progress.foreshadow_total,
+                foreshadow_overdue=progress.foreshadow_overdue,
+                timeline_happened=progress.timeline_happened,
+                timeline_total=progress.timeline_total,
+            )
+        except Exception as e:
+            logger.warning("第%d章故事线台账同步失败（不影响正文）: %s", n, e)
 
     async def _llm_sediment(self, n: int, content: str) -> dict | None:
         """LLM 记忆沉淀（主通道）。

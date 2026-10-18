@@ -186,4 +186,8 @@ class CharacterDialog(QDialog):
     def _save(self):
         self._sync_current()
         self.registry.save()
+        try:
+            self.registry.push_to_world_state()
+        except Exception:
+            pass  # 世界状态回写失败不阻塞关窗，档案已保存
         self.accept()

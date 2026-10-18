@@ -82,3 +82,19 @@ def get_theme_colors(name: str, config: dict | None = None) -> dict:
         return colors
     _, t = THEMES.get(name, THEMES["light"])
     return t
+
+
+# ── 语义状态色（故事线台账等状态标签用；两套明暗底色都保证对比度） ──
+# ok=已完成/已回收、active=推进中、danger=超期、muted=未开始/已放弃
+STATUS_COLORS = {
+    "ok": {"fg": "#2eb872", "bg": "rgba(46,184,114,0.16)"},
+    "active": {"fg": "#2f6fed", "bg": "rgba(47,111,237,0.16)"},
+    "danger": {"fg": "#e5484d", "bg": "rgba(229,72,77,0.16)"},
+    "warn": {"fg": "#d97706", "bg": "rgba(217,119,6,0.16)"},
+    "muted": {"fg": "#8a8a99", "bg": "rgba(138,138,153,0.14)"},
+}
+
+
+def get_status_colors(tag: str) -> dict:
+    """取语义状态色；未知标签回退 muted。"""
+    return STATUS_COLORS.get(tag or "", STATUS_COLORS["muted"])

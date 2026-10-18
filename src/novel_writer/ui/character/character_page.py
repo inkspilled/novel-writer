@@ -131,6 +131,11 @@ class CharacterPage(QWidget):
             self._current = None
             self.name_label.setText("打开项目后管理角色")
             return
+        # 世界状态是 location/goals 的事实来源：打开/刷新页面时先同步
+        try:
+            self.registry.sync_from_world_state()
+        except Exception as e:
+            self.status_label.setText(f"世界状态同步失败：{e}")
         self._set_enabled(True)
         current_id = self._current.id if self._current else ""
         self.list.blockSignals(True)
@@ -196,6 +201,13 @@ class CharacterPage(QWidget):
             return
         self._sync_current()
         self.registry.save()
+        # 作者手改的位置/目标回写世界状态，避免两套数据各说各话
+        try:
+            self.registry.push_to_world_state()
+        except Exception as e:
+            self.status_label.setText(f"已保存角色档案；回写世界状态失败：{e}")
+            self.reload()
+            return
         self.status_label.setText("已保存")
         self.reload()
 

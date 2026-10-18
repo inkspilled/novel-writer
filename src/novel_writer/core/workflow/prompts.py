@@ -136,13 +136,13 @@ def build_world_state_prompt(n: int, gs_summary: str, content: str) -> str:
         f"第{n}章正文：\n{content}\n\n"
         f"严格输出 JSON，不要输出其他内容：\n"
         f'{{\n'
-        f'  "characters": {{"角色名": {{"gold": 数字, "cultivation": {{"level": "炼气", "sub_level": "三层"}}, "location": "地点", "hp": 数字, "sp": 数字, "inventory": [{{"name": "物品名", "type": "类型"}}]}}, ...}},\n'
+        f'  "characters": {{"角色名": {{"gold": 数字, "cultivation": {{"level": "炼气", "sub_level": "三层"}}, "location": "地点", "goals": ["当前目标1", "当前目标2"], "hp": 数字, "sp": 数字, "inventory": [{{"name": "物品名", "type": "类型"}}]}}, ...}},\n'
         f'  "items": {{"new": [{{"name": "物品名", "type": "类型", "effect": "效果", "location": "所在地点", "holder": "持有者"}}], "move": [{{"item": "物品名", "location": "新地点", "holder": ""}}], "give": [{{"character": "角色名", "item": "物品名"}}], "remove": [{{"character": "角色名", "item": "物品名"}}]}},\n' 
         f'  "locations": {{"地点名": {{"type": "地点类型", "description": "地点描述"}}}},\n'
         f'  "timeline": [{{"event": "事件描述", "location": "地点"}}],\n' 
         f'  "date": "时间"\n'
         f'}}\n\n'
-        f"只输出本章发生变化的部分，没变化的字段不要输出。角色位置变化必须写 location；timeline 只写本章2-3条关键转折，不要逐段复述。系统会据此生成地点进出流水。"
+        f"只输出本章发生变化的部分，没变化的字段不要输出。角色位置变化必须写 location；目标发生变化时必须输出新的 goals（整组替换，不要只写增量）；timeline 只写本章2-3条关键转折，不要逐段复述。系统会据此生成地点进出流水。"
     )
 
 

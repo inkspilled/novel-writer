@@ -211,6 +211,15 @@ async def _run_world_state_update(runner: "WorkflowRunner", step: "WorkflowStep"
                 logger.warning("世界状态事件入正典失败（快照仍更新）: %s", e)
             logs = gs.apply_llm_update(update, chapter=n)
             gs.save()
+            # 世界状态 → 角色档案（位置/目标/状态），让「世界→人物」页实时反映正文
+            try:
+                from ..characters.registry import CharacterRegistry
+                CharacterRegistry(runner.project_dir).sync_from_world_state(gs)
+            except Exception as e:
+                logger.warning("角色档案同步失败（不影响世界状态）: %s", e)
+            # 世界状态（含 timeline 实际发生事件）→ 故事线台账
+            if hasattr(runner, "_sync_story_ledger"):
+                runner._sync_story_ledger(n)
             msg = f"大世界状态已更新: {', '.join(logs)}"
             logger.info(msg)
             if runner.on_step_end:

@@ -160,6 +160,13 @@ class ContextTier(Enum):
 
 
 # 步骤 → 上下文层级映射
+# 需要注入「故事线台账」的步骤：只有真正推动剧情/审稿的步骤才值得这 2.6K 上限
+_STORY_LEDGER_STEP_IDS = frozenset({
+    "chapter", "chapter_outline", "update_chapter_outline",
+    "chapter_summary", "summary", "inspiration", "pov_sim",
+    "review", "review_panel", "quality_check", "sim",
+})
+
 STEP_CONTEXT_TIERS: dict[str, ContextTier] = {
     # 纯工具步骤（不需要 LLM 或只需极简上下文）
     "toc": ContextTier.GLOBAL,
@@ -299,6 +306,12 @@ class ContextBuilder:
             if beats:
                 middle.append(f"=== 本章细纲 ===\n{beats}")
 
+        # 故事线台账：四类线程的当前状态（规划/记忆/世界状态对账结果）反哺写作
+        if step_id in _STORY_LEDGER_STEP_IDS:
+            ledger_block = self._build_story_ledger_block(n)
+            if ledger_block:
+                middle.append(ledger_block)
+
         # 规划文档：RAG 片段
         if planning_docs_for_rag:
             rag_parts = self._rag_planning_fragments(planning_docs_for_rag, step_id, n)
@@ -398,6 +411,18 @@ class ContextBuilder:
         if not lines:
             return ""
         return "=== 关系与世界规则（近期沉淀） ===\n" + "\n".join(lines)
+
+    def _build_story_ledger_block(self, n: int) -> str:
+        """把故事线台账压成写作可用的「当前在途线」清单（空台账不出块）。"""
+        try:
+            from ..story_threads import load_story_threads
+            ledger = load_story_threads(self.project_dir)
+            if not len(ledger):
+                return ""
+            return ledger.build_context_block(chapter=n)
+        except Exception as e:
+            logger.debug("故事线台账上下文构建失败（忽略）: %s", e)
+            return ""
 
     def _resolve_input_files(self, f: str, n: int) -> list[tuple[Path, str]]:
         """解析单个 input_file 条目（支持通配符），返回 (路径, 内容) 列表。"""
@@ -878,6 +903,9 @@ def build_merged_character_states(gs: WorldState, mem: MemoryScratchpad) -> str:
             char_lines.append(f"  灵石: {char['gold']}")
         if char.get("location"):
             char_lines.append(f"  位置: {char['location']}")
+        goals = char.get("goals")
+        if isinstance(goals, list) and goals:
+            char_lines.append(f"  目标: {'；'.join(str(g) for g in goals[:4])}")
         inv = char.get("inventory", [])
         if inv:
             items = ", ".join(i.get("name", "?") for i in inv[:5])

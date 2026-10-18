@@ -116,6 +116,10 @@ class WorkflowThread(QThread):
                 self.log_message.emit(f"  🔧 {payload.get('name')}({text})")
             elif kind == "tool_result":
                 self.log_message.emit(f"  ↳ {payload.get('name')} 返回 {payload.get('chars', 0)} 字")
+            elif kind == "story_track":
+                self.log_message.emit(
+                    f"  🧭 故事线台账已刷新：{payload.get('headline', '')}"
+                )
             elif kind == "step_retry":
                 self.log_message.emit(
                     f"  ↻ {payload.get('step')} 第{payload.get('attempt')}次重试"

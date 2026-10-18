@@ -1,17 +1,22 @@
-"""世界页：人物 / 物品 / 地点三个子页，围绕同一份 world_state。"""
+"""世界页：人物 / 物品 / 地点 / 故事线 四个子页，围绕同一份项目世界数据。
+
+故事线页（时间线/主线/支线/伏笔台账）见 ``storyline_page.py``，
+与 world_state 分文件存储（story_threads.json），互不覆盖。
+"""
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QStackedWidget, QPlainTextEdit, QPushButton,
-    QTabWidget, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from ...core.world_state import WorldState
 from .character_page import CharacterPage
+from .storyline_page import StorylinePage
 
 
 class _WorldBase(QWidget):
@@ -183,9 +188,9 @@ class LocationPage(_WorldBase):
         people = self.gs.characters_at(name); items = self.gs.items_at(name)
         self.occupants.setText("、".join(people) or "（无人）")
         self.items.setText("、".join(items) or "（无）")
-        events = [e for e in self.gs.location_log if isinstance(e, dict) and e.get("location") == name]
+        events = self.gs.query_location_log(location=name, limit=100)
         lines = []
-        for e in reversed(events[-100:]):
+        for e in reversed(events):
             action = "进入" if e.get("action") == "enter" else "离开"
             src = e.get("from") or ""
             suffix = f"（来自 {src}）" if action == "进入" and src else (f"（前往 {src}）" if action == "离开" and src else "")
@@ -213,7 +218,13 @@ class LocationPage(_WorldBase):
 
 
 class WorldPage(QWidget):
-    """世界一级页：左侧 人物/物品/地点 菜单，右侧内容。"""
+    """世界一级页：左侧 人物/物品/地点/故事线 菜单，右侧内容。"""
+
+    chapter_activate_requested = Signal(int)  # 故事线双击 → 打开对应章节
+
+    _PAGES = (("人物", "character_page"), ("物品", "item_page"),
+              ("地点", "location_page"), ("故事线", "storyline_page"))
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
@@ -224,13 +235,14 @@ class WorldPage(QWidget):
         self.character_page = CharacterPage()
         self.item_page = ItemPage()
         self.location_page = LocationPage()
+        self.storyline_page = StorylinePage()
         self.stack = QStackedWidget()
-        self.stack.addWidget(self.character_page)
-        self.stack.addWidget(self.item_page)
-        self.stack.addWidget(self.location_page)
-        for label, idx in (("人物", 0), ("物品", 1), ("地点", 2)):
-            item = QListWidgetItem(label); item.setData(Qt.ItemDataRole.UserRole, idx); self.list.addItem(item)
+        for _label, attr in self._PAGES:
+            self.stack.addWidget(getattr(self, attr))
+        for label, _attr in self._PAGES:
+            item = QListWidgetItem(label); item.setData(Qt.ItemDataRole.UserRole, label); self.list.addItem(item)
         self.list.currentRowChanged.connect(self.select)
+        self.storyline_page.chapter_activate_requested.connect(self.chapter_activate_requested)
         layout.addWidget(self.list); layout.addWidget(self.stack, 1)
         self.list.setCurrentRow(0)
 
@@ -241,10 +253,23 @@ class WorldPage(QWidget):
             if page is not None:
                 page.reload()
 
+    def select_page(self, key: str):
+        """按页面键（character_page/item_page/location_page/storyline_page）切换。"""
+        for idx, (_label, attr) in enumerate(self._PAGES):
+            if attr == key:
+                self.list.setCurrentRow(idx)
+                return True
+        return False
+
     def set_project_dir(self, project_dir):
-        self.character_page.set_project_dir(project_dir)
-        self.item_page.set_project_dir(project_dir)
-        self.location_page.set_project_dir(project_dir)
+        for _label, attr in self._PAGES:
+            getattr(self, attr).set_project_dir(project_dir)
 
     def reload(self):
+        """刷新全部子页；故事线页顺带与规划/记忆/世界状态对账。"""
         self.character_page.reload(); self.item_page.reload(); self.location_page.reload()
+        self.storyline_page.sync(force=False)
+
+    def reload_storyline(self):
+        """工作流落盘后只刷新故事线（轻量，不碰人物/物品/地点编辑态）。"""
+        self.storyline_page.sync(force=False)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QRectF
 from PySide6.QtGui import (
@@ -122,7 +123,10 @@ class SplashScreen(QWidget):
         if logo_path:
             pix = QPixmap(str(logo_path))
             if not pix.isNull():
-                p.drawPixmap(w // 2 - 32, 36, 64, 64, pix)
+                # 等比缩放 + 平滑插值，避免 logo 被拉扁/锯齿
+                scaled = pix.scaled(72, 72, Qt.AspectRatioMode.KeepAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation)
+                p.drawPixmap(w // 2 - scaled.width() // 2, 34, scaled)
 
         # 标题
         p.setPen(_TEXT_MAIN)
@@ -172,17 +176,23 @@ class SplashScreen(QWidget):
 
     @staticmethod
     def _find_logo():
-        """查找 logo.png（支持开发环境和 PyInstaller 打包后）。"""
-        candidates = [
-            Path(__file__).resolve().parents[2] / "logo.png",  # dev
-            Path(__file__).resolve().parents[1] / "logo.png",
+        """查找 logo.png（开发环境在仓库根，打包后在 bundle 根）。
+
+        以 ``app_config.LOGO_PATH`` 为准（dev = 项目根/logo.png，frozen = _MEIPASS/logo.png），
+        再补几处历史路径兜底；找不到时启动页只显示文字，不阻塞启动。
+        """
+        candidates = []
+        try:
+            from ...core.app_config import LOGO_PATH
+            candidates.append(LOGO_PATH)
+        except Exception:
+            pass
+        candidates += [
+            Path(__file__).resolve().parents[3] / "logo.png",   # dev: <repo>/logo.png
+            Path(__file__).resolve().parents[2] / "logo.png",   # 旧布局兜底
             Path(sys._MEIPASS) / "logo.png" if hasattr(sys, "_MEIPASS") else None,
         ]
         for p in candidates:
-            if p and p.exists():
-                return p
+            if p and Path(p).exists():
+                return Path(p)
         return None
-
-
-# 需要 import Path
-from pathlib import Path  # noqa: E402

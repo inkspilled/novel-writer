@@ -30,6 +30,8 @@ MODULES = [
     "novel_writer.ui.shell.splash",
     "novel_writer.ui.shell.about_dialog",
     "novel_writer.ui.character.character_dialog",
+    "novel_writer.ui.character.storyline_page",
+    "novel_writer.ui.character.world_page",
     "novel_writer.ui.app_shell.theme_mixin",
     "novel_writer.ui.app_shell.llm_mixin",
     "novel_writer.ui.app_shell.project_mixin",
@@ -52,7 +54,7 @@ def test_mainwindow_methods_wired():
         "_setup_ui", "_setup_menu", "_apply_theme", "_show_toast",
         "_init_llm", "_init_agents", "_new_project", "_save_project",
         "_on_agent_run", "_build_context", "_workflow_start", "_export",
-        "_open_model_settings", "closeEvent",
+        "_open_model_settings", "_open_chapter_number", "closeEvent",
     ]
     for name in required:
         assert callable(getattr(MainWindow, name, None)), f"MainWindow 缺方法: {name}"

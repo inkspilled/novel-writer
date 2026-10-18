@@ -109,6 +109,7 @@ class MainWindow(
         self.editor.content_changed.connect(self._on_content_changed)
         self.editor.save_requested.connect(self._save_project)
         self.editor.planning_save_requested.connect(self._on_planning_save)
+        self.editor.chapter_activate_requested.connect(self._open_chapter_number)
 
     def closeEvent(self, event):
         self._stop_worker()

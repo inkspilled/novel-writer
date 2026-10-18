@@ -230,6 +230,12 @@ class WorkflowMixin:
         # 规划步骤 / 规划反哺（含章节细纲）完成后刷新编辑器
         if step_id in PLANNING_STEP_IDS or step_id.startswith("update_"):
             self.editor.refresh_planning()
+        # 故事线台账：世界状态更新 / 章节写完后由 runner 落盘，这里即时刷新「世界→故事线」
+        if step_id == "world_state_update" or step_id == "chapter":
+            self.editor.world_page.reload_storyline()
+        if step_id == "world_state_update":
+            # 世界状态里的位置/目标已同步进角色档案，人物页立即反映
+            self.editor.world_page.character_page.reload()
 
     def _on_wf_step_error(self, step_id: str, error: str):
         if step_id == "chapter":
@@ -302,6 +308,9 @@ class WorkflowMixin:
         self.agent_panel.workflow_bar.set_progress(100)
         self._refresh_chapters()
         self.editor.refresh_planning()
+        # 规划/正文都跑完后把四份规划稿+记忆+世界状态对账进台账，进「世界→故事线」即是最新
+        self.editor.world_page.reload_storyline()
+        self.editor.world_page.character_page.reload()
         self.statusBar().showMessage(t("workflow_finished"))
 
     def _on_wf_stopped(self):
@@ -312,6 +321,8 @@ class WorkflowMixin:
         self.agent_panel.workflow_bar.append_log("── <b>工作流已停止</b> ──")
         self._refresh_chapters()
         self.editor.refresh_planning()
+        self.editor.world_page.reload_storyline()
+        self.editor.world_page.character_page.reload()
         self.statusBar().showMessage(t("workflow_stopped"))
 
     def _park_wf_thread(self):
