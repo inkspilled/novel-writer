@@ -20,7 +20,8 @@ _META_RE = re.compile(
     r"Okay|Sure|Here'?s|Here is|Based on|First,|First of all|"
     r"As an|To (build|design|create|write)|This (is|outline|world)|"
     r"The (outline|story|world|user)|Now I|Next,|Finally,|"
-    r"用户(要求|需要|想要)|我(需要|应该|先|来)|让我|首先|好的)",
+    r"用户(要求|需要|想要)|我(需要|应该|先|来)|让我|首先|好的|"
+    r"思考过程|分析[:：]|推理[:：]|我先|先想|让我先)",
     re.IGNORECASE,
 )
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")

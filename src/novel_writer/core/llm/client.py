@@ -91,6 +91,41 @@ def _is_invalid_request(e: Exception) -> bool:
     ))
 
 
+def _coerce_text(value) -> str:
+    """兼容 content 为 str / list[parts] / dict 的几种 OpenAI 方言。"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    if isinstance(value, dict):
+        text = value.get("text") or value.get("content")
+        return text if isinstance(text, str) else ""
+    return ""
+
+
+def _reasoning_text(message) -> str:
+    """不同厂商的思考字段：reasoning_content / reasoning / analysis / thinking。"""
+    for attr in ("reasoning_content", "reasoning", "analysis", "thinking"):
+        value = getattr(message, attr, None)
+        if value:
+            return _coerce_text(value)
+    extra = getattr(message, "model_extra", None) or {}
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "reasoning", "analysis", "thinking"):
+            value = extra.get(key)
+            if value:
+                return _coerce_text(value)
+    return ""
+
+
 def _serialize_messages(messages: list[LLMMessage]) -> list[dict]:
     """把内部消息转成 OpenAI 请求体（保留 tool_calls / tool_call_id）。"""
     out: list[dict] = []
@@ -149,27 +184,22 @@ def _delta_parts(delta) -> tuple[str, str]:
     content 是正式回答；reasoning_content/reasoning 是思考过程。
     不包任何标签，由 UI 按 kind 着色——标签既脏 UI 又浪费 token。
     """
-    content = getattr(delta, "content", None) or ""
+    content = _coerce_text(getattr(delta, "content", None))
     if content:
         return "text", content
-    for attr in ("reasoning_content", "reasoning"):
-        r = getattr(delta, attr, None)
-        if r:
-            return "thinking", r
-    return "text", ""
+    reasoning = _reasoning_text(delta)
+    return ("thinking", reasoning) if reasoning else ("text", "")
 
 
 def _message_parts(message) -> tuple[str, str]:
-    """非流式：拆 (thinking, text)。只有思考无正文时，思考升格为正文。"""
-    content = getattr(message, "content", None) or ""
-    thinking = (
-        getattr(message, "reasoning_content", None)
-        or getattr(message, "reasoning", None)
-        or ""
-    )
-    if content:
-        return thinking, content
-    return "", thinking
+    """非流式：拆 (thinking, text)。
+
+    思考字段绝不升格为正文：只有 reasoning 的响应应由上层判空/重试，
+    不能把“思考过程”写进大纲或章节。
+    """
+    content = _coerce_text(getattr(message, "content", None))
+    thinking = _reasoning_text(message)
+    return thinking, content
 
 
 class LLMClient(BaseLLM):
