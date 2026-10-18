@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import weakref
 import gc
+import time
 
 from PySide6.QtCore import Signal, QThread
 
@@ -30,6 +31,8 @@ class WorkflowThread(QThread):
         self.progress = progress
         self._loop = None
         self._task = None
+        self._step_t0 = 0.0
+        self._step_usage: dict = {}
         _register_worker(self)  # 防止 run() 未结束就被 GC
 
     def _weak_callback(self, name: str):
@@ -66,7 +69,7 @@ class WorkflowThread(QThread):
         self.runner.on_event = self._weak_callback("_on_event")
 
         try:
-            self.log_message.emit("工作流开始执行...")
+            # 开始横幅由 AgentPanel.on_workflow_started 统一输出，避免重复
             self._task = self._loop.create_task(
                 self.runner.run(self.workflow, self.progress)
             )
@@ -120,14 +123,29 @@ class WorkflowThread(QThread):
             logger.debug("工作流事件格式化失败（忽略）", exc_info=True)
 
     def _on_step_start(self, step_id, n, agent_title):
+        self._step_t0 = time.monotonic()
+        try:
+            self._step_usage = dict(self.runner.total_usage)
+        except Exception:
+            self._step_usage = {}
         self.step_started.emit(step_id, n, agent_title)
-        self.log_message.emit(f"▸ {agent_title} 开始 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
+        suffix = f" (第{n}章)" if n > 1 else ""
+        self.log_message.emit(f"▸ <b>{agent_title}</b> 开始 {step_id}{suffix}")
 
     def _on_step_end(self, step_id, n, agent_title, output):
+        elapsed = max(0.0, time.monotonic() - self._step_t0) if self._step_t0 else 0.0
+        total = dict(getattr(self.runner, "total_usage", {}) or {})
+        delta = {k: int(total.get(k, 0)) - int(self._step_usage.get(k, 0)) for k in total}
+        tok = delta.get("total_tokens") or (delta.get("prompt_tokens", 0) + delta.get("completion_tokens", 0))
+        preview = " ".join((output or "").strip().split())[:80]
         self.step_finished.emit(step_id, n, agent_title, output)
-        self.log_message.emit(f"✓ {agent_title} 完成 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
+        suffix = f" (第{n}章)" if n > 1 else ""
+        detail = f" | {elapsed:.1f}s | +{tok} tok | {len(output or '')}字"
+        if preview:
+            detail += f" | {preview}"
+        self.log_message.emit(f"✓ <b>{agent_title}</b> 完成 {step_id}{suffix}{detail}")
         try:
-            self.progress["_usage"] = dict(self.runner.total_usage)
+            self.progress["_usage"] = dict(total)
         except Exception:
             pass
         self.progress_updated.emit(self.progress)

@@ -26,3 +26,12 @@ def test_parse_and_seed_uses_tier(tmp_path: Path):
     assert reg.get("顾言").tier == CharacterTier.CORE
     assert reg.get("苏怀瑾").tier == CharacterTier.RECURRING
     assert reg.get("路人甲").tier == CharacterTier.EXTRA
+
+
+def test_tier_auto_sim_default(tmp_path: Path):
+    from src.novel_writer.core.character_sim import parse_characters
+    reg = CharacterRegistry(tmp_path)
+    reg.seed_from_profiles(parse_characters("## 顾言（主角）\n\n## 苏怀瑾（挚友）\n\n## 路人（群演）\n"), chapter=1)
+    assert reg.get("顾言").auto_sim is True
+    assert reg.get("苏怀瑾").auto_sim is True
+    assert reg.get("路人").auto_sim is False

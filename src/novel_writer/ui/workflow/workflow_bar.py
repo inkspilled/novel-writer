@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal
 
 from ...locales import t
+from datetime import datetime
 
 
 class WorkflowMiniBar(QWidget):
@@ -145,7 +146,8 @@ class WorkflowMiniBar(QWidget):
             self._status_label.setText(f"▸ {agent_title}")
 
     def append_log(self, msg: str):
-        self._log_area.append(msg)
+        stamp = datetime.now().strftime("%H:%M:%S")
+        self._log_area.append(f"<span style='color:#8e8e9a'>[{stamp}]</span> {msg}")
         # 自动滚动到底部
         sb = self._log_area.verticalScrollBar()
         sb.setValue(sb.maximum())

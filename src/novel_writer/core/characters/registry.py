@@ -305,6 +305,7 @@ class CharacterRegistry:
                 continue
             # 只把“可公开的身份”放 public_profile；性格/背景/动机/弱点属于本人视角，
             # 避免未来做“他人眼中的你”时把秘密当公开信息带出去。
+            tier = CharacterTier(getattr(p, "tier", "extra"))
             self.create(
                 p.name,
                 chapter=chapter,
@@ -316,7 +317,9 @@ class CharacterRegistry:
                     "weakness": getattr(p, "weakness", ""),
                 },
                 goals=[getattr(p, "motivation", "")] if getattr(p, "motivation", "") else [],
-                tier=CharacterTier(getattr(p, "tier", "extra")),
+                tier=tier,
+                # 核心/常驻默认开启 POV，群演不自动推演
+                auto_sim=tier in (CharacterTier.CORE, CharacterTier.RECURRING),
             )
             added += 1
         return added

@@ -707,7 +707,6 @@ class AgentPanel(QWidget):
             self.indicator.start(get_color(agent_name))
             self._on_agent_selected(agent_name)
             self.workflow_bar.set_current_step(step_id, agent_title, n, 0)
-            self.workflow_bar.append_log(f"▸ <b>{agent_title}</b> 开始 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
 
     def on_workflow_step_finished(self, step_id: str, n: int, agent_title: str):
         """工作流步骤完成。"""
@@ -715,7 +714,6 @@ class AgentPanel(QWidget):
         if agent_name:
             from .office_scene import AgentState
             self.office.set_agent_state(agent_name, AgentState.DONE)
-            self.workflow_bar.append_log(f"✓ <b>{agent_title}</b> 完成 {step_id}" + (f" (第{n}章)" if n > 1 else ""))
 
     def on_workflow_step_error(self, step_id: str, error: str):
         """工作流步骤出错。"""
@@ -723,7 +721,6 @@ class AgentPanel(QWidget):
         for slot in self.office.iter_slots():
             if slot.state == AgentState.WORKING:
                 self.office.set_agent_state(slot.name, AgentState.ERROR)
-                self.workflow_bar.append_log(f"✗ <b>{slot.title}</b> 出错: {error[:80]}")
                 break
 
     def on_workflow_progress(self, percent: int, step_text: str = ""):
