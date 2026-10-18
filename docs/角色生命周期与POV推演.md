@@ -16,7 +16,7 @@
 | 输入 | 大纲、全局世界状态、伏笔、工具 | 只有 `CharacterView` |
 | 输出 | 角色反应预测、戏剧建议 | `intent/action/dialogue/expected_effects/knowledge_used` |
 | 缓存 | `sim_cache/sim_{n}.md` | `sim_cache/pov/{character_id}/sim_{n}.json` |
-| 消费者 | 写手 | 未来的 character_panel / 裁判 |
+| 消费者 | 写手 | `character_panel` / 裁判 / 写手 |
 
 铁律：
 
@@ -152,14 +152,34 @@ print(view.text)
 写手上下文会读取 `sim_cache/pov/{id}/sim_{n}.json`，注入
 `=== 角色当前意图（作者参考） ===`，让角色提案真正影响本章写作。
 
+## 4.2 角色会审（`character_panel`）
+
+每章写作前，仅对显式 `auto_sim` 的角色：
+
+1. 选角（最多 4 人，`simulatable` 优先）；
+2. 每个角色用隔离 `CharacterView` 写提案（intent/action/dialogue/knowledge_used）；
+3. 裁判用 `validate_knowledge_used` 拒绝引用视图外事件；
+4. 导演按 drama/consistency/surprise 评分，选/合并一个走向；
+5. 落盘 `sim_cache/pov/panel_{n}.json` + 每个角色 `sim_{n}.json`；
+6. 写手上下文注入「角色当前意图 + 导演裁决」。
+
+成本：N 个 auto_sim 角色 ≈ N+1 次调用/章；默认没有 auto_sim 时 0 次。
+
+## 4.3 章节封印（`seal_chapter`）
+
+- `project_info.seal_chapters=true` 时，正文定稿后把 SHA256 写入
+  `canon/events.jsonl` 的 `chapter_sealed` 事件；
+- 封印后工作流拒绝覆写该章（`ChapterWriteRejected`）；
+- 手动编辑器写入目前仍绕过封印，版本化修订是下一步。
+
 ## 5. `pov_sim` 步骤
 
-- 每 5 章触发一次（`every=5`），`optional=True`；
+- 默认工作流改用 `character_panel`（每章，N+1 次调用，仅 auto_sim）；`pov_sim` 保留给自定义工作流（每 5 章，零额外导演调用）；
 - 只跑 `auto_sim=True` 且 `can_act` 的角色，默认最多 4 人；
 - 每个角色一次独立 LLM 调用，`keep_history=False`，临时 `BaseAgent`，不共享历史；
 - 输出 JSON，校验 `knowledge_used` 后落盘；
 - 无可用角色时直接跳过，**零调用**；
-- 仍然不接正文：它只是为后续 `character_panel` 准备素材。
+- 提案经 `character_panel` 裁判/导演后注入写手上下文，间接影响正文。
 
 ## 6. 角色多了怎么办
 
@@ -198,7 +218,7 @@ print(view.text)
 ## 7. 当前边界（诚实说明）
 
 - `canon/events.jsonl` 由 `percept_extract` 自动写入；但感知抽取依赖 LLM，仍可能漏事件/把旁白当 observable；
-- `pov_sim` 默认没有角色开启 `auto_sim`，所以实际不会调用；
+- `pov_sim`/`character_panel` 默认没有角色开启 `auto_sim`，所以实际不会调用；
 - 离场 tick、角色 panel、裁判/导演评分、UI 花名册尚未实现；
 - `mark_dead_many()` 已实现，但“批量死亡正典事件”的自动写入（如灭门事件）还要等感知抽取层；
 - `CharacterView` 的 `scene_brief` 需要调用方保证是公开信息；

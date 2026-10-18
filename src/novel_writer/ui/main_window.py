@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QMainWindow, QSplitter,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 
 from .editor.sidebar import Sidebar
@@ -61,6 +61,12 @@ class MainWindow(
         self.llm: LLMClient | None = None
         self._worker: AgentWorker | None = None
         self._old_workers: list[AgentWorker] = []
+        # 正文输入防抖：避免每个击键都整章原子写盘
+        self._pending_chapter = None
+        self._content_save_timer = QTimer(self)
+        self._content_save_timer.setSingleShot(True)
+        self._content_save_timer.setInterval(350)
+        self._content_save_timer.timeout.connect(self._flush_content_save)
 
         self._setup_ui()
         self._apply_theme()

@@ -10,13 +10,13 @@ SKILL_TYPO_CHECK = "错别字检查"  # 错别字检查
 # ── 章节循环中的定时步骤分组 ──
 
 # 章前触发（写作前注入）
-PRE_CHAPTER_PERIODIC_IDS = ("inspiration", "sim", "pov_sim")
+PRE_CHAPTER_PERIODIC_IDS = ("inspiration", "sim", "pov_sim", "character_panel")
 
 # 章后触发（写作后沉淀）
 POST_CHAPTER_PERIODIC_IDS = (
     "polish", "proofread", "summary", "toc", "chapter_summary",
     "world_state_update", "update_outline", "update_characters", "update_foreshadow",
-    "update_chapter_outline", "review_panel", "percept_extract",
+    "update_chapter_outline", "review_panel", "percept_extract", "seal_chapter",
 )
 
 # ── 步骤 id 分组 ──
@@ -39,6 +39,7 @@ NO_THINKING_STEP_IDS = frozenset({
     "sim", "chapter_summary", "world_state_update", "toc",
     "proofread", "quality_check", "fix_titles", "sediment",
     "chapter_outline", "update_chapter_outline", "pov_sim", "percept_extract",
+    "seal_chapter", "character_panel",
 })
 
 # 工作流内不写入 Agent 对话历史的步骤（历史只留给规划链传递上下文）
@@ -47,6 +48,7 @@ NO_HISTORY_STEP_IDS = frozenset({
     "polish", "proofread", "summary", "quality_check", "fix_titles",
     "inspiration", "sediment",
     "chapter_outline", "update_chapter_outline", "pov_sim", "percept_extract",
+    "seal_chapter", "character_panel",
 }) | frozenset({
     "update_outline", "update_characters", "update_foreshadow",
 })

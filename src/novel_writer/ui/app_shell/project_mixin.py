@@ -54,6 +54,7 @@ class ProjectMixin:
             cover_rel = f"cover{ext}"
 
         # 先卸下旧项目的当前章节，避免 clear() 触发 content_changed 把旧章写空
+        self._flush_content_save()
         self.editor.detach_chapter()
         self.project = Project(
             title=title,
@@ -110,6 +111,7 @@ class ProjectMixin:
 
     def _load_project_from_dir(self, path: Path):
         """从项目目录加载项目。"""
+        self._flush_content_save()
         try:
             # 先卸下旧项目的当前章节，避免 clear() 触发 content_changed 把旧章写空
             self.editor.detach_chapter()
@@ -172,13 +174,33 @@ class ProjectMixin:
                 pass
 
     def _on_chapter_selected(self, index: int):
+        self._flush_content_save()
         if 0 <= index < len(self.project.chapters):
             self.editor.load_chapter(self.project.chapters[index])
+
+    def _flush_content_save(self):
+        """把防抖中的正文写入磁盘；切换章节/项目/关闭前必须调用。"""
+        chapter = getattr(self, "_pending_chapter", None)
+        if chapter is None:
+            return
+        self._pending_chapter = None
+        try:
+            chapter.content = chapter._content_cache or ""
+        except Exception as e:
+            logger.error("正文落盘失败: %s", e)
 
     def _on_content_changed(self):
         chapter = getattr(self.editor, "_current_chapter", None)
         if chapter is not None:
-            chapter.content = self.editor.get_content()
+            text = self.editor.get_content()
+            # 先更新内存缓存（字数统计/断点读取都走缓存），350ms 后统一写盘
+            chapter._content_cache = text
+            self._pending_chapter = chapter
+            timer = getattr(self, "_content_save_timer", None)
+            if timer is not None:
+                timer.start()
+            else:
+                chapter.content = text
             self.sidebar.update_stats(
                 self.project.total_words(),
                 self.project.target_words,
@@ -186,6 +208,7 @@ class ProjectMixin:
             )
 
     def _save_project(self):
+        self._flush_content_save()
         if not self.project.title:
             return
         # 规划文档（含章节细纲）未落盘的编辑一并保存

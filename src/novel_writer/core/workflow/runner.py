@@ -364,7 +364,12 @@ class WorkflowRunner:
                             await self._run_periodic(ps, project, n, progress)
                 # 写后沉淀：等全部章后步骤（含润色改写正文）跑完后，
                 # 从最终落盘正文提取记忆——草稿不是正典，润色前的文本不入账
-                await self._run_sediment(n, progress)
+                sediment_ok = await self._run_sediment(n, progress)
+                if not sediment_ok:
+                    # 沉淀失败：留洞，恢复时重试本章；本章不推进 current
+                    if blocked_at is None:
+                        blocked_at = n
+                    continue
                 if self._stop:
                     # 章后步骤被停止打断：不推进 current，恢复时补跑本章章后链路
                     break
@@ -400,7 +405,7 @@ class WorkflowRunner:
         progress[ps_key] = "done"
         self._save_progress(progress)
 
-    async def _run_sediment(self, n: int, progress: dict):
+    async def _run_sediment(self, n: int, progress: dict) -> bool:
         """写后沉淀：从第 n 章最终正文提取记忆项。
 
         在该章全部章后步骤（含润色）完成后调用，读最终落盘文件而非 LLM 原始输出。
@@ -408,23 +413,25 @@ class WorkflowRunner:
         断点键 sediment_{n}：失败不标记，恢复时自动重试；失败不中断章节循环。
         """
         if progress.get(f"sediment_{n}") == "done":
-            return
+            return True
         chapter_file = self._find_chapter_file(n)
         if not chapter_file:
-            return  # 章节写作失败或被跳过，无可沉淀
+            return True  # 章节写作失败或被跳过，无可沉淀
         content = project_io.read_md(self.project_dir / "chapters" / chapter_file)
         if not content:
-            return
+            return True
         llm_data = await self._llm_sediment(n, content)
         try:
             sediment_chapter(self.project_dir, n, content, llm_data=llm_data)
             progress[f"sediment_{n}"] = "done"
             self._save_progress(progress)
             logger.debug("第%d章写后沉淀完成（%s）", n, "LLM" if llm_data else "正则兜底")
+            return True
         except Exception as e:
             logger.error("第%d章写后沉淀失败（恢复时重试）: %s", n, e, exc_info=True)
             if self.on_error:
                 self.on_error("sediment", f"第{n}章沉淀失败: {e}")
+            return False
 
     async def _llm_sediment(self, n: int, content: str) -> dict | None:
         """LLM 记忆沉淀（主通道）。
@@ -577,6 +584,13 @@ class WorkflowRunner:
         return step.output.format(n=n, **project)
 
     def _write_output(self, step: WorkflowStep, n: int, output: str, content: str, agent: BaseAgent) -> bool:
+        if step.id in CHAPTER_CONTENT_STEP_IDS:
+            from ..canon.seal import is_sealed
+            if is_sealed(self.project_dir, n):
+                logger.error("第%d章已封印，拒绝覆写（%s）", n, step.id)
+                if self.on_error:
+                    self.on_error(step.id, f"第{n}章已封印，拒绝覆写")
+                return False
         """写出步骤结果，带规划文档保护、内容校验、备份与写后验证。
 
         Returns:

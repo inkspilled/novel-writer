@@ -745,6 +745,25 @@ class ContextBuilder:
         if not root.exists():
             return ""
         lines: list[str] = []
+        panel_path = root / f"panel_{n}.json"
+        if panel_path.exists():
+            try:
+                panel = json.loads(panel_path.read_text(encoding="utf-8"))
+                director = panel.get("director") or {}
+                choice = str(director.get("choice") or "").strip()
+                reason = str(director.get("reason") or "").strip()
+                beats = director.get("selected_beats") or []
+                if choice or beats:
+                    line = "【导演裁决】"
+                    if choice:
+                        line += f"选择 {choice}"
+                    if reason:
+                        line += f"（{reason[:80]}）"
+                    if beats:
+                        line += "；" + "；".join(str(b)[:80] for b in beats[:3])
+                    lines.append(line)
+            except (OSError, json.JSONDecodeError):
+                pass
         for path in sorted(root.glob(f"*/sim_{n}.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))

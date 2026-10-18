@@ -188,6 +188,7 @@ class CharacterRegistry:
         goals: Iterable[str] = (),
         aliases: Iterable[str] = (),
         auto_sim: bool = False,
+        location: str = "",
     ) -> CharacterRecord:
         self._load()
         existing = self.get(name)
@@ -205,6 +206,7 @@ class CharacterRegistry:
             private_profile=private_profile or {},
             goals=list(goals),
             auto_sim=auto_sim,
+            location=location,
         )
         self._characters.append(rec)
         self.save()

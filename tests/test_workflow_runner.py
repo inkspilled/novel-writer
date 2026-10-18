@@ -348,7 +348,7 @@ class TestSediment:
         assert agent.calls == []                          # 已有内容不重写
         assert not (project_dir / "memory.json").exists()  # 已沉淀过，不重复提取
 
-    def test_sediment_failure_does_not_break_loop(self, project_dir, monkeypatch):
+    def test_sediment_failure_blocks_progress(self, project_dir, monkeypatch):
         import src.novel_writer.core.workflow.runner as runner_mod
 
         def boom(*args, **kwargs):
@@ -362,7 +362,8 @@ class TestSediment:
         wf = make_wf([WorkflowStep(id="chapter", needs="正文写作", prompt="写第{n}章",
                                    output="chapters/{n}_chapter.txt", repeat=2)])
         progress = asyncio.run(runner.run(wf, {}))
-        assert progress["chapter"]["current"] == 2        # 章节循环未被带崩
+        # 章节循环继续，但沉淀失败的那一章不能被标成完成
+        assert progress.get("chapter") is None
         assert "sediment_1" not in progress                # 失败不标记，恢复时重试
         assert any(s == "sediment" for s, _ in errors)
 

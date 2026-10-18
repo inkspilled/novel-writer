@@ -100,6 +100,7 @@ class WorkflowMixin:
             "style": self.project.style,
             "theme": self.project.theme,
             "target_chapters": end_ch,
+            "seal_chapters": self.config.get("seal_chapters", False),
             "_project_dir": str(self.project.project_dir),
         }
         self._wf_def = build_workflow(mode, project_info, start_ch, end_ch)

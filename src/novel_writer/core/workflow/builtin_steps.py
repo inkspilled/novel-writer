@@ -12,8 +12,10 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .. import project_io
 from ..agents.base import AgentConfig, BaseAgent
-from ..canon.events import CanonLog
+from ..canon.events import CanonEvent, CanonLog
 from ..canon.extract import extract_percepts
+from ..canon.seal import ChapterSealedError, seal_chapter
+from ..characters.panel import run_character_panel
 from ..characters.registry import CharacterRegistry
 from ..character_sim import parse_characters
 from ..characters.view import (
@@ -190,6 +192,14 @@ async def _run_world_state_update(runner: "WorkflowRunner", step: "WorkflowStep"
             # 注入章节号到 timeline
             for ev in update.get("timeline", []):
                 ev["chapter"] = n
+            # 先入正典（可重放），再更新快照
+            try:
+                CanonLog(runner.project_dir).append(CanonEvent(
+                    chapter=n, type="world_state_update", actor="system",
+                    visibility="world", payload={"update": update, "source": "world_state_update"},
+                ))
+            except Exception as e:
+                logger.warning("世界状态事件入正典失败（快照仍更新）: %s", e)
             logs = gs.apply_llm_update(update)
             gs.save()
             msg = f"大世界状态已更新: {', '.join(logs)}"
@@ -560,6 +570,45 @@ async def _run_percept_extract(runner: "WorkflowRunner", step: "WorkflowStep", n
             runner.on_step_end(step.id, n, agent.title, msg)
     except Exception as e:
         logger.error("第%d章感知抽取失败（不影响正文）: %s", n, e)
+
+
+@handler("character_panel")
+async def _run_character_panel(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """多角色 POV 提案 + 导演裁决（只对 auto_sim 角色发起调用）。"""
+    registry = CharacterRegistry(runner.project_dir)
+    if not registry.simulatable():
+        return
+    agent = runner.find_agent(step.needs) if step.needs else None
+    agent = agent or _fallback_agent(runner, (SKILL_REVIEW,))
+    if not agent or not getattr(agent, "llm", None):
+        return
+    if runner.on_step_start:
+        runner.on_step_start(step.id, n, agent.title)
+    try:
+        panel = await run_character_panel(runner.project_dir, n, agent, registry=registry)
+    except Exception as e:
+        logger.error("角色 panel 失败（不影响正文）: %s", e, exc_info=True)
+        return
+    if not panel:
+        return
+    choice = (panel.get("director") or {}).get("choice", "")
+    msg = f"角色会审完成：{len(panel.get('proposals', []))} 份提案，导演选择 {choice}"
+    logger.info(msg)
+    if runner.on_step_end:
+        runner.on_step_end(step.id, n, agent.title, msg)
+
+
+@handler("seal_chapter")
+async def _run_seal_chapter(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """可选：章节定稿后写入不可变封印（project_info.seal_chapters）。"""
+    if not runner.project_info.get("seal_chapters"):
+        return
+    try:
+        event = seal_chapter(runner.project_dir, n)
+        if event and runner.on_step_end:
+            runner.on_step_end(step.id, n, "系统", f"第{n}章已封印")
+    except ChapterSealedError as e:
+        logger.warning("第%d章封印冲突（保留旧封印）: %s", n, e)
 
 
 # ── 角色 POV 推演（隔离视图，不读大纲/全局状态） ──

@@ -323,7 +323,7 @@ def test_rejected_chapter_blocks_progress_and_resumes(tmp_path):
     runner = WorkflowRunner({"w": bad}, tmp_path, {}, enable_tools=False)
 
     async def no_sediment(n, progress):
-        return None
+        return True
 
     runner._run_sediment = no_sediment
     progress = asyncio.run(runner.run(wf, {}))
