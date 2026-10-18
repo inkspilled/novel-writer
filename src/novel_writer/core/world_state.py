@@ -64,8 +64,41 @@ class WorldState:
     def world(self) -> dict:
         return self._data.setdefault("world", {})
 
+    @property
+    def locations(self) -> dict:
+        return self.world.setdefault("locations", {})
+
     def add_location(self, name: str, info: dict) -> None:
-        self.world.setdefault("locations", {})[name] = info
+        """地点是唯一实体：同名合并描述，不覆盖旧字段。"""
+        loc = self.locations.setdefault(name, {})
+        if isinstance(info, dict):
+            loc.update(info)
+
+    def characters_at(self, location: str) -> list[str]:
+        """地点当前有哪些人（从角色 location 反查，多对多只存一边）。"""
+        return [n for n, c in self.characters.items()
+                if isinstance(c, dict) and (c.get("location") or "") == location]
+
+    def items_at(self, location: str) -> list[str]:
+        """地点当前有哪些物品（未被角色持有、且 location 匹配）。"""
+        return [n for n, item in self.items_catalog.items()
+                if isinstance(item, dict)
+                and not item.get("holder")
+                and (item.get("location") or "") == location]
+
+    def item_holder(self, item_name: str) -> str:
+        item = self.items_catalog.get(item_name) or {}
+        return str(item.get("holder") or "")
+
+    def set_item_position(self, item_name: str, location: str = "", holder: str = "") -> bool:
+        item = self.items_catalog.get(item_name)
+        if not isinstance(item, dict):
+            return False
+        if holder and not location:
+            location = (self.characters.get(holder) or {}).get("location", "")
+        item["location"] = location
+        item["holder"] = holder
+        return True
 
     def set_date(self, date: str) -> None:
         self.world["current_date"] = date
@@ -107,7 +140,11 @@ class WorldState:
         return self._data.setdefault("items_catalog", {})
 
     def add_item(self, name: str, info: dict) -> None:
-        self.items_catalog[name] = info
+        """物品是唯一实体：同名合并，不丢失已有 location/holder。"""
+        item = self.items_catalog.setdefault(name, {})
+        if isinstance(info, dict):
+            item.update(info)
+        item["name"] = name
 
     def get_item(self, name: str) -> dict | None:
         return self.items_catalog.get(name)
@@ -121,6 +158,7 @@ class WorldState:
         # 避免重复
         if not any(i.get("name") == item_name for i in inv):
             inv.append({"name": item_name, **(item_info or {})})
+            self.set_item_position(item_name, holder=char_name)
             logger.info("给予 %s 物品: %s", char_name, item_name)
 
     def remove_item(self, char_name: str, item_name: str) -> bool:
@@ -133,6 +171,7 @@ class WorldState:
         char["inventory"] = [i for i in inv if i.get("name") != item_name]
         removed = len(char["inventory"]) < before
         if removed:
+            self.set_item_position(item_name, location=char.get("location", ""), holder="")
             logger.info("移除 %s 物品: %s", char_name, item_name)
         return removed
 
@@ -254,6 +293,11 @@ class WorldState:
                 continue
             self.add_item(item["name"], item)
             logs.append(f"新物品: {item['name']}")
+        for op in items.get("move") or []:
+            if not isinstance(op, dict) or not op.get("item"):
+                continue
+            if self.set_item_position(op["item"], location=op.get("location", ""), holder=op.get("holder", "")):
+                logs.append(f"移动物品: {op['item']}")
         for op in items.get("give") or []:
             if not isinstance(op, dict) or not op.get("character") or not op.get("item"):
                 continue
@@ -266,10 +310,11 @@ class WorldState:
             if self.remove_item(op["character"], op["item"]):
                 logs.append(f"移除 {op['character']}: {op['item']}")
 
-        # 新地点
+        # 地点：同名合并，保留已有描述
         for loc_name, loc_info in (update_json.get("locations") or {}).items():
+            existed = loc_name in self.locations
             self.add_location(loc_name, loc_info if isinstance(loc_info, dict) else {})
-            logs.append(f"新地点: {loc_name}")
+            logs.append(("更新地点: " if existed else "新地点: ") + loc_name)
 
         # 时间线
         for event in update_json.get("timeline") or []:

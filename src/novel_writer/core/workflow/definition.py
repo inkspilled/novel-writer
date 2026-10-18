@@ -155,14 +155,14 @@ _FIX_TITLES_STEP = {"id": "fix_titles", "needs": "", "prompt": "", "output": "",
 # 逐章循环步骤（章前定时 + 正文写作 + 章后定时沉淀 + 全书审校）
 # thinking: 工具/抽取类步骤 off（省 token、免长考）；创作/审稿类 auto/on
 _CYCLE_STEPS = [
-    {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True, "thinking": "auto", "tools": ["search_chapters", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 1, "phase": "灵感"},
-    {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True, "thinking": "off", "tools": ["read_chapter", "get_world_state", "get_memory", "get_open_loops"], "tool_rounds": 1, "phase": "推演"},
+    {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True, "thinking": "off", "tools": ["search_chapters", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 1, "phase": "灵感"},
+    {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True, "thinking": "on", "tools": ["read_chapter", "get_world_state", "get_memory", "get_open_loops"], "tool_rounds": 1, "phase": "推演"},
     {"id": "character_panel", "needs": "剧情审查", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "角色会审"},
     {"id": "chapter", "needs": "正文写作", "prompt": "严格按【本章细纲】写第{n}章正文；细纲只是骨架，可丰富场景与对话，但不得改写事件走向。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【本章大纲】【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/章节细纲.md", "planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/时间线.md", "planning/主线.md", "planning/支线.md", "planning/伏笔.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt", "max_tokens": 8192, "thinking": "off", "skills": ["chapter-craft"], "tools": ["read_planning", "read_chapter", "search_chapters", "get_world_state", "get_memory", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 2, "retry": 1, "phase": "写作"},
     {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
     {"id": "world_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
     {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
-    {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True, "max_tokens": 8192, "thinking": "auto", "skills": ["continuity"], "tools": ["read_chapter", "read_planning", "search_chapters", "get_world_state"], "tool_rounds": 1, "retry": 1, "phase": "润色"},
+    {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True, "max_tokens": 8192, "thinking": "off", "skills": ["continuity"], "tools": ["read_chapter", "read_planning", "search_chapters", "get_world_state"], "tool_rounds": 1, "retry": 1, "phase": "润色"},
     {"id": "percept_extract", "needs": "剧情审查", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "感知抽取"},
     {"id": "seal_chapter", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "封印"},
     {"id": "offscreen_tick", "needs": "剧情审查", "prompt": "", "output": "", "every": 5, "optional": True, "thinking": "off", "phase": "离场tick"},
@@ -172,7 +172,7 @@ _CYCLE_STEPS = [
     {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
     {"id": "update_foreshadow", "needs": "伏笔设计", "prompt": "根据前{n}章的实际内容，更新伏笔清单。标注哪些伏笔已回收、哪些仍悬而未决、新增了哪些伏笔。保留原有清单，在末尾追加【进展更新】。", "input": ["planning/伏笔.md", "prev_chapters"], "output": "planning/伏笔.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
     {"id": "update_chapter_outline", "needs": "故事结构", "prompt": "", "output": "planning/章节细纲.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
-    {"id": "review_panel", "needs": "剧情审查", "prompt": "", "output": "review/会审报告.md", "every": 10, "optional": True, "thinking": "auto", "phase": "会审"},
+    {"id": "review_panel", "needs": "剧情审查", "prompt": "", "output": "review/会审报告.md", "every": 10, "optional": True, "thinking": "off", "phase": "会审"},
     {"id": "quality_check", "needs": "", "prompt": "", "output": "review/质量检查报告.md", "every": 1, "optional": True, "thinking": "off"},
     {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md", "thinking": "off"},
 ]

@@ -355,6 +355,32 @@ class ContextBuilder:
             if w.get("power_system", {}).get("levels"):
                 world_brief += f" | 等级: {' → '.join(w['power_system']['levels'])}"
             parts.append(f"=== 世界设定 ===\n{world_brief}")
+        locs = gs.locations or {}
+        if locs:
+            lines = []
+            for name, info in list(locs.items())[:12]:
+                desc = ""
+                if isinstance(info, dict):
+                    desc = str(info.get("desc") or info.get("description") or "")
+                people = gs.characters_at(name)
+                line = f"- {name}"
+                if desc:
+                    line += f"：{desc[:60]}"
+                if people:
+                    line += f"｜在场：{'、'.join(people)}"
+                lines.append(line)
+            parts.append("=== 地点 ===\n" + "\n".join(lines))
+        items = gs.items_catalog or {}
+        if items:
+            lines = []
+            for name, info in list(items.items())[:12]:
+                if not isinstance(info, dict):
+                    continue
+                pos = info.get("holder") or info.get("location") or "未定位"
+                typ = info.get("type") or ""
+                lines.append(f"- {name}" + (f"（{typ}）" if typ else "") + f"｜{pos}")
+            if lines:
+                parts.append("=== 物品 ===\n" + "\n".join(lines))
 
     def _build_rel_rules_block(self, mem: MemoryScratchpad) -> str:
         """章后沉淀的人物关系与世界规则（LLM 沉淀写入；空桶不出块）。

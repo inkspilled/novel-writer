@@ -147,3 +147,22 @@ def test_editor_streaming_preview(qapp):
     editor.end_stream_chapter()
     assert not editor.content_edit.isReadOnly()
     editor.close()
+
+
+def test_world_page_items_locations_relations(qapp, tmp_path):
+    from src.novel_writer.core.world_state import WorldState
+    from src.novel_writer.ui.character.world_page import WorldPage
+
+    gs = WorldState(tmp_path); gs.load()
+    gs.add_location("药圃", {"type": "宗门", "description": "灵草园"})
+    gs.add_character("林牧", {"location": "药圃"})
+    gs.add_item("青霜剑", {"type": "法器", "location": "药圃"})
+    gs.save()
+
+    page = WorldPage(); page.set_project_dir(tmp_path)
+    assert page.item_page.list.count() == 1
+    assert page.location_page.list.count() == 1
+    page.location_page.list.setCurrentRow(0); qapp.processEvents()
+    assert "林牧" in page.location_page.occupants.text()
+    assert "青霜剑" in page.location_page.items.text()
+    page.close()

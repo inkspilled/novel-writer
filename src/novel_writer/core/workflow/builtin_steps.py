@@ -409,7 +409,7 @@ async def _run_review(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
             break
         agent.clear_history()
         prompt = build_review_batch_prompt(batch, planning_summary, i, len(batches))
-        resp = await agent.run(prompt, thinking="auto", keep_history=False)
+        resp = await agent.run(prompt, thinking="off", keep_history=False)
         if resp.content.strip():
             findings.append(resp.content.strip())
         logger.info("全书审核进度: 批 %d/%d", i, len(batches))
@@ -424,7 +424,7 @@ async def _run_review(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
     agent.clear_history()
     aggregate_prompt = build_review_aggregate_prompt(findings, len(chapters))
     try:
-        resp = await agent.run(aggregate_prompt, thinking="auto", keep_history=False)
+        resp = await agent.run(aggregate_prompt, thinking="off", keep_history=False)
         report = resp.content.strip() or "\n\n".join(findings)
     except Exception as e:
         logger.warning("审核汇总调用失败，直接落盘各批发现: %s", e)
@@ -480,7 +480,7 @@ async def _run_review_panel(runner: "WorkflowRunner", step: "WorkflowStep", n: i
     tasks = []
     for lens, focus_text in REVIEW_PANEL_LENSES:
         prompt = build_review_panel_prompt(lens, focus_text, chapter_text, end_ch)
-        tasks.append(base_agent.run(prompt, thinking="auto", keep_history=False))
+        tasks.append(base_agent.run(prompt, thinking="off", keep_history=False))
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     findings: list[str] = []
@@ -500,7 +500,7 @@ async def _run_review_panel(runner: "WorkflowRunner", step: "WorkflowStep", n: i
     editor.clear_history()
     aggregate_prompt = build_review_panel_aggregate_prompt(findings, start_ch, end_ch)
     try:
-        resp = await editor.run(aggregate_prompt, thinking="auto", keep_history=False)
+        resp = await editor.run(aggregate_prompt, thinking="off", keep_history=False)
         report = (resp.content or "").strip() or "\n\n".join(findings)
     except Exception as e:
         logger.warning("会审聚合失败，直接落盘分视角发现: %s", e)

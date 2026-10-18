@@ -92,7 +92,7 @@ src/novel_writer/
 ├── designsystem/            # 主题 token（四套色板 + 自定义）
 └── locales.py               # 中/英 i18n
 
-tests/                       # 298 个单元/回归测试
+tests/                       # 300 个单元/回归测试
 config/                      # agents/providers 配置
 data/                        # 用户数据（gitignore）
 ```
@@ -118,11 +118,11 @@ data/                        # 用户数据（gitignore）
 ```
 
 - `Ctrl+Shift+F` 专注模式：只留正文，再按恢复；
-- 正文写作时编辑区实时追加模型流式输出；正文输出 8192 tokens，规划/大纲 2600–3200；MiMo 关闭思考用 `reasoning_effort=none`，避免 model 仍偷偷生成 reasoning；
+- 正文写作时编辑区实时追加模型流式输出；正文输出 8192 tokens，规划/大纲 2600–3200；MiMo 关闭思考用 `reasoning_effort=none`，避免 model 仍偷偷生成 reasoning；只有 `sim`（角色推演）强制开启思考，其它步骤关闭；
 - `max_context_tokens` 是**输入上下文预算**（默认 48K，设置里最高可到 1M），不是模型窗口本身；
-- 一级标签：`正文 / 规划 / 人物`；规划文档用左侧列表切换，不再有 10 个标签溢出；
+- 一级标签：`正文 / 规划 / 世界`；规划文档用左侧列表切换，不再有 10 个标签溢出；
 - 自由对话默认折叠，点右上「自由对话」展开；折叠时工作流日志自动占满剩余空间；聊天不落 SQLite；
-- `人物` 是独立页面：分档/状态/auto_sim/目标/备注，菜单 `Ctrl+Alt+R` 也直接切过去；从人物设定建卡时会自动去括号/角色前缀并推断 core/recurring/extra；自由对话带只读工具，可查大纲/正文/记忆/世界状态；
+- `世界` 是独立页面，内含 **人物 / 物品 / 地点** 三个子页；人物分档/状态/auto_sim/目标/备注，物品记录类型/效果/位置/持有者，地点反查在场角色与地面物品；菜单 `Ctrl+Alt+R` 直接切到人物子页；从人物设定建卡时会自动去括号/角色前缀并推断 core/recurring/extra；自由对话带只读工具，可查大纲/正文/记忆/世界状态；
 - 智能体状态条按 4 列两行展示，超过 8 个纵向滚动。
 
 ## 写作流程
@@ -258,7 +258,7 @@ logger.info("操作完成")
 ## 单元测试
 
 ```bash
-python -m pytest tests/ -q          # 全量：298 passed
+python -m pytest tests/ -q          # 全量：300 passed
 python -m pytest tests/test_workflow_runner.py -v
 python -m pytest tests/test_character_isolation.py -v
 ```

@@ -15,7 +15,7 @@ from PySide6.QtGui import (
 from ...locales import t
 from ...core import project_io
 from ...core.logger import get_logger
-from ..character.character_page import CharacterPage
+from ..character.world_page import WorldPage
 
 logger = get_logger(__name__)
 
@@ -203,9 +203,10 @@ class EditorPanel(QWidget):
         planning_layout.addWidget(right, 1)
         self.tab_bar.addTab(planning_page, "规划")
 
-        # ── 人物标签：独立页面，不再只藏在菜单对话框里 ──
-        self.character_page = CharacterPage()
-        self.tab_bar.addTab(self.character_page, "人物")
+        # ── 世界标签：人物 / 物品 / 地点 ──
+        self.world_page = WorldPage()
+        self.character_page = self.world_page.character_page  # 兼容旧引用
+        self.tab_bar.addTab(self.world_page, "世界")
 
         layout.addWidget(self.tab_bar)
 
@@ -421,7 +422,7 @@ class EditorPanel(QWidget):
         """设置项目目录，刷新规划文档状态。"""
         self.flush_planning_autosave()
         self._project_dir = project_dir
-        self.character_page.set_project_dir(project_dir)
+        self.world_page.set_project_dir(project_dir)
         self._planning_loaded.clear()
         self._planning_dirty.clear()
         self._planning_cache.clear()
@@ -438,7 +439,7 @@ class EditorPanel(QWidget):
         # 先落盘用户未保存的编辑，避免被工作流写盘后 reload 冲掉
         self.flush_planning_autosave()
         if self.tab_bar.currentIndex() == 2:
-            self.character_page.reload()
+            self.world_page.reload()
         if doc_name:
             self._planning_loaded.discard(doc_name)
             self._planning_dirty.discard(doc_name)
@@ -486,7 +487,7 @@ class EditorPanel(QWidget):
             if self._planning_dirty:
                 self.flush_planning_autosave()
             if index == 2:
-                self.character_page.reload()
+                self.world_page.reload()
             return
         row = self.planning_list.currentRow()
         if row < 0 or row >= len(PLANNING_DOCS):
@@ -574,7 +575,7 @@ class EditorPanel(QWidget):
     def clear(self):
         self.flush_planning_autosave()
         self.detach_chapter()
-        self.character_page.set_project_dir(None)
+        self.world_page.set_project_dir(None)
         self.chapter_title.setText(t("editor_select_chapter"))
         self.word_count_label.setText(f"0 {t('editor_words')}")
         self._planning_autosave.stop()
