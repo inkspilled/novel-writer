@@ -100,7 +100,7 @@ class AgentIndicator(QWidget):
             glow.setAlphaF(0.16 * alpha)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(glow)
-            glow_r = max(6, int(r * 1.55))
+            glow_r = max(6, int(r * 1.38))
             painter.drawEllipse(center, glow_r, glow_r)
 
             # 双旋转弧

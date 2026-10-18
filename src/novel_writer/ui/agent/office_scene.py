@@ -143,7 +143,8 @@ class _AgentCard(QFrame):
 
         # ── 第二行：状态点 + 状态文案 ──
         status_row = QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
+        # 与上方 emoji/标题留一点呼吸，避免旋转光环贴脸
+        status_row.setContentsMargins(0, 3, 0, 0)
         status_row.setSpacing(5)
 
         self.indicator = AgentIndicator(self)
