@@ -16,6 +16,7 @@ from ...locales import t
 from ...core import project_io
 from ...core.logger import get_logger
 from ..character.world_page import WorldPage
+from .assist_page import AssistPage
 
 logger = get_logger(__name__)
 
@@ -210,6 +211,10 @@ class EditorPanel(QWidget):
         self.storyline_page = self.world_page.storyline_page
         self.world_page.chapter_activate_requested.connect(self.chapter_activate_requested)
         self.tab_bar.addTab(self.world_page, "世界")
+
+        # ── 写作台：本章/全书辅助资料（灵感/推演/细纲/概要/审校/摘要/记忆/版本） ──
+        self.assist_page = AssistPage()
+        self.tab_bar.addTab(self.assist_page, "写作台")
 
         layout.addWidget(self.tab_bar)
 
@@ -426,6 +431,7 @@ class EditorPanel(QWidget):
         self.flush_planning_autosave()
         self._project_dir = project_dir
         self.world_page.set_project_dir(project_dir)
+        self.assist_page.set_project_dir(project_dir)
         self._planning_loaded.clear()
         self._planning_dirty.clear()
         self._planning_cache.clear()
@@ -491,6 +497,8 @@ class EditorPanel(QWidget):
                 self.flush_planning_autosave()
             if index == 2:
                 self.world_page.reload()
+            if index == 3:
+                self.assist_page.reload()
             return
         row = self.planning_list.currentRow()
         if row < 0 or row >= len(PLANNING_DOCS):
@@ -513,9 +521,11 @@ class EditorPanel(QWidget):
     def append_stream_chapter(self, number: int, text: str):
         if not text:
             return
+        # 用户已经切到别的章：不要把编辑器抢回预览，也不要把正文写错地方。
+        # 正文最终仍由 runner._write_output 按章号落盘，预览只是显示。
         if (not self._stream_preview or self._current_chapter is None
                 or getattr(self._current_chapter, "number", 0) != number):
-            self.start_stream_chapter(number)
+            return
         self.content_edit.setPlaceholderText("")
         self.chapter_title.setText(f"第{number}章 正在生成…")
         edit = self.content_edit
@@ -526,6 +536,14 @@ class EditorPanel(QWidget):
         edit.setTextCursor(cursor)
         edit.blockSignals(False)
         self._update_word_count()
+
+    def is_streaming_chapter(self, number: int) -> bool:
+        """当前是否仍在跟随第 number 章的流式预览（用户没切走）。"""
+        return bool(
+            self._stream_preview
+            and self._current_chapter is not None
+            and getattr(self._current_chapter, "number", 0) == number
+        )
 
     def set_stream_status(self, text: str):
         if self._stream_preview and self._current_chapter is not None:
@@ -540,6 +558,7 @@ class EditorPanel(QWidget):
         logger.info("编辑器加载章节: 第%s章 %s", getattr(chapter, "number", "?"), getattr(chapter, "title", ""))
         self._current_chapter = chapter
         self._stream_preview = False
+        self.assist_page.set_chapter(getattr(chapter, "number", 0), getattr(chapter, "title", ""))
         self.chapter_title.setText(f"第{chapter.number}章 {chapter.title}" if hasattr(chapter, 'number') else "")
         self.content_edit.blockSignals(True)
         self.content_edit.setPlainText(chapter.content or "")
@@ -558,6 +577,8 @@ class EditorPanel(QWidget):
         self.save_btn.setText(t("editor_save"))
         self.tab_bar.setTabText(0, t("editor_tab_content"))
         self.tab_bar.setTabText(1, "规划")
+        self.tab_bar.setTabText(2, "世界")
+        self.tab_bar.setTabText(3, "写作台")
         self.planning_save_btn.setText(t("editor_save"))
         if self._planning_current:
             self._apply_planning_doc_state(self._planning_current)
@@ -579,6 +600,7 @@ class EditorPanel(QWidget):
         self.flush_planning_autosave()
         self.detach_chapter()
         self.world_page.set_project_dir(None)
+        self.assist_page.set_project_dir(None)
         self.chapter_title.setText(t("editor_select_chapter"))
         self.word_count_label.setText(f"0 {t('editor_words')}")
         self._planning_autosave.stop()

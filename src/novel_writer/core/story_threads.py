@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -140,6 +141,82 @@ def extract_chapters(text: str) -> list[int]:
     return result
 
 
+# ── 卷 / 人物识别（把「卷/组」「人物」字段接上规划与实际数据） ──
+
+_VOLUME_HEADING_RE = re.compile(
+    r"^#{1,4}\s*(?:第\s*([0-9零〇一二两三四五六七八九十百千]{1,6})\s*卷"
+    r"|卷\s*([0-9零〇一二两三四五六七八九十百千]{1,6}))"
+)
+_VOLUME_NAME_RE = re.compile(
+    r"(?:第\s*([0-9零〇一二两三四五六七八九十百千]{1,6})\s*卷"
+    r"|卷\s*([0-9零〇一二两三四五六七八九十百千]{1,6}))"
+)
+_VOLUME_RANGE_RE = re.compile(
+    r"[（(]\s*第?\s*[0-9零〇一二两三四五六七八九十百千]{1,6}\s*"
+    r"[-~—–至到]\s*[0-9零〇一二两三四五六七八九十百千]{1,6}\s*章?\s*[）)]"
+)
+
+
+def volume_ordinal(name: str) -> int:
+    """「卷一 外门断事」→ 1；无法识别返回 0。"""
+    m = _VOLUME_NAME_RE.search(name or "")
+    return (cn_to_int(m.group(1) or m.group(2)) or 0) if m else 0
+
+
+def parse_volume_ranges(text: str, target_chapters: int = 0) -> list[tuple[int, str, int, int]]:
+    """从标题解析卷：(序号, 卷名, 起始章, 结束章)。
+
+    兼容 ``## 卷一 外门断事（1—100章）`` / ``## 第二卷 xxx（第101-200章）``；
+    没写结束章的卷用下一卷起始 -1 补齐，最后一卷用目标章数。
+    """
+    entries: dict[int, tuple[int, str, int, int]] = {}
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        m = _VOLUME_HEADING_RE.match(line)
+        if not m:
+            continue
+        ordinal = cn_to_int(m.group(1) or m.group(2))
+        if not ordinal:
+            continue
+        name = re.sub(r"^#{1,4}\s*", "", line).strip()
+        chapters = extract_chapters(name)
+        start = chapters[0] if chapters else 0
+        end = chapters[1] if len(chapters) > 1 else 0
+        name = _VOLUME_RANGE_RE.sub("", name).strip()
+        old = entries.get(ordinal)
+        # 有章区间的条目优先；同类时保留信息更全的卷名
+        if old is None or (start and not old[2]) or (start == old[2] and len(name) > len(old[1])):
+            entries[ordinal] = (ordinal, name, start, end)
+    ordered = [entries[k] for k in sorted(entries)]
+    any_ranges = any(start for _, _, start, _ in ordered)
+    # 第一遍：没写起始章的卷，用上一卷结束章 +1 补
+    resolved: list[list] = []
+    prev_end = 0
+    for ordinal, name, start, end in ordered:
+        if not start and any_ranges:
+            start = prev_end + 1
+        if start:
+            prev_end = end or start
+        resolved.append([ordinal, name, start, end])
+    # 第二遍：没写结束章的卷，用下一卷起始 -1；最后一卷用目标章数
+    for i, row in enumerate(resolved):
+        if not row[3]:
+            next_start = resolved[i + 1][2] if i + 1 < len(resolved) else 0
+            row[3] = (next_start - 1) if next_start else target_chapters
+    return [tuple(row) for row in resolved]
+
+
+def infer_owner(text: str, names, limit: int = 4) -> str:
+    """从标题/详情里认出已知角色名，拼成「顾言、赵九衡」（按出现顺序）。"""
+    hay = text or ""
+    hits: list[str] = []
+    for name in sorted({str(n).strip() for n in names or [] if n}, key=len, reverse=True):
+        if len(name) >= 2 and name in hay and name not in hits:
+            hits.append(name)
+    hits.sort(key=lambda n: hay.find(n))
+    return "、".join(hits[:limit])
+
+
 # ── 状态词判定 ──
 
 # 明确「已经做完」的词：规划稿里写这些才算完成（「第20章回收」只是计划，见 _PLAN_RESOLVE_WORDS）
@@ -238,7 +315,7 @@ class StoryThread:
             return "已完成", "ok"
         if self.status == ThreadStatus.ACTIVE.value:
             if self.kind == ThreadKind.FORESHADOW.value and self.resolve_chapter:
-                return f"待回收·计划第{self.resolve_chapter}章", "active"
+                return f"待回收·第{self.resolve_chapter}章", "active"
             return "推进中", "active"
         if self.status == ThreadStatus.ABANDONED.value:
             return "已放弃", "muted"
@@ -798,6 +875,74 @@ class StoryLedger:
 
     # ── 时钟与进度 ──
 
+    def planning_volume_ranges(self) -> list[tuple[int, str, int, int]]:
+        """从主线/大纲/时间线解析卷区间（实例内缓存）。"""
+        cached = getattr(self, "_volume_ranges", None)
+        if cached is not None:
+            return cached
+        from . import project_io
+
+        target = 0
+        try:
+            target = int(project_io.load_meta(self.project_dir).get("target_chapters") or 0)
+        except Exception:
+            target = 0
+        texts = []
+        for name in ("主线.md", "大纲.md", "时间线.md"):
+            path = self.project_dir / "planning" / name
+            if path.exists():
+                texts.append(project_io.read_md(path))
+        self._volume_ranges = parse_volume_ranges("\n".join(texts), target)
+        return self._volume_ranges
+
+    def volume_for_chapter(self, chapter: int) -> str:
+        """按章号找所属卷；优先复用台账里已有的卷名（避免同一卷两种写法）。"""
+        if not chapter:
+            return ""
+        for ordinal, name, start, end in self.planning_volume_ranges():
+            if not start or chapter < start:
+                continue
+            if end and chapter > end:
+                continue
+            same = [
+                t.group for t in self.threads.values()
+                if t.group and volume_ordinal(t.group) == ordinal
+            ]
+            if same:
+                # 同一卷可能有两种写法（规划稿带章区间、时间线带主题），取用得最多的
+                counts = Counter(same)
+                return max(counts.items(), key=lambda kv: (kv[1], len(kv[0])))[0]
+            return name
+        return ""
+
+    def known_character_names(self) -> list[str]:
+        """台账可识别的角色名：角色注册表 + 世界状态 + 人物设定。"""
+        from . import project_io
+
+        names: set[str] = set()
+        try:
+            from .characters.registry import CharacterRegistry
+            for rec in CharacterRegistry(self.project_dir).all():
+                if rec.name:
+                    names.add(rec.name)
+                names.update(a for a in (rec.aliases or []) if a)
+        except Exception as e:
+            logger.debug("读取角色注册表失败（忽略）: %s", e)
+        try:
+            from .world_state import WorldState
+            gs = WorldState(self.project_dir)
+            gs.load()
+            names.update(gs.characters.keys())
+        except Exception as e:
+            logger.debug("读取世界状态角色失败（忽略）: %s", e)
+        try:
+            from .character_sim import parse_characters
+            content = project_io.read_md(self.project_dir / "planning" / "人物设定.md")
+            names.update(p.name for p in parse_characters(content) if p.name)
+        except Exception as e:
+            logger.debug("解析人物设定失败（忽略）: %s", e)
+        return sorted(n for n in names if n and len(n) >= 2)
+
     def clock(self) -> tuple[int, int]:
         """(当前章号, 目标章数)。
 
@@ -1050,6 +1195,25 @@ class StoryLedger:
                     thread.status = ThreadStatus.ACTIVE.value
                     thread.updated_at = datetime.now().isoformat(timespec="seconds")
 
+        # 人物/卷组：空字段按「正文提到的角色 + 章号所属卷」补齐，
+        # 让 UI 里这两个字段有真实可选值，也让写作上下文能带上涉及人物。
+        names = self.known_character_names()
+        filled = 0
+        for thread in self.all():
+            if not thread.group:
+                chapter = thread.planted_chapter or thread.resolve_chapter
+                group = self.volume_for_chapter(chapter)
+                if group:
+                    thread.group = group
+                    filled += 1
+            if not thread.owner and "owner" not in thread.user_edited:
+                owner = infer_owner(f"{thread.title} {thread.detail}", names)
+                if owner:
+                    thread.owner = owner
+                    filled += 1
+        if filled:
+            stats["fields"] = filled
+
         if any(stats.values()):
             self.meta["last_sync"] = datetime.now().isoformat(timespec="seconds")
         return stats
@@ -1250,20 +1414,25 @@ class StoryLedger:
         n = chapter or current
         lines: list[str] = []
 
+        def owner_tag(t: StoryThread) -> str:
+            return f"〔{t.owner}〕" if t.owner else ""
+
         mains = [t for t in self.all(ThreadKind.MAIN.value)
                  if t.status in (ThreadStatus.ACTIVE.value, ThreadStatus.PLANNED.value)][:4]
         if mains:
             lines.append("【主线进行中】")
             for t in mains:
                 mark = "▶" if t.status == ThreadStatus.ACTIVE.value else "·"
-                lines.append(f"{mark} {t.title}（{t.chapter_text()}）{('：' + t.detail[:60]) if t.detail else ''}")
+                lines.append(f"{mark} {t.title}{owner_tag(t)}（{t.chapter_text()}）"
+                             f"{('：' + t.detail[:60]) if t.detail else ''}")
 
         subs = [t for t in self.all(ThreadKind.SUBPLOT.value)
                 if t.status in (ThreadStatus.ACTIVE.value, ThreadStatus.PLANNED.value)][:4]
         if subs:
             lines.append("【支线推进中】")
             for t in subs:
-                lines.append(f"· {t.title}（{t.chapter_text()}）{('：' + t.detail[:60]) if t.detail else ''}")
+                lines.append(f"· {t.title}{owner_tag(t)}（{t.chapter_text()}）"
+                             f"{('：' + t.detail[:60]) if t.detail else ''}")
 
         loops = [t for t in self.all(ThreadKind.FORESHADOW.value)
                  if t.status in (ThreadStatus.ACTIVE.value, ThreadStatus.PLANNED.value)]
@@ -1272,15 +1441,16 @@ class StoryLedger:
             lines.append("【待回收伏笔】")
             for t in loops[:6]:
                 if t.is_overdue(n):
-                    lines.append(f"⚠ {t.title}（第{t.planted_chapter}章埋，已过{n - t.planted_chapter}章，优先回收）")
+                    lines.append(f"⚠ {t.title}{owner_tag(t)}（第{t.planted_chapter}章埋，"
+                                 f"已过{n - t.planted_chapter}章，优先回收）")
                 else:
-                    lines.append(f"· {t.title}（{t.chapter_text()}）")
+                    lines.append(f"· {t.title}{owner_tag(t)}（{t.chapter_text()}）")
 
         timeline = [t for t in self.all(ThreadKind.TIMELINE.value) if t.happened][-5:]
         if timeline:
             lines.append("【时间线·最近已发生】")
             for t in timeline:
-                lines.append(f"· {t.chapter_text()} {t.title}")
+                lines.append(f"· {t.chapter_text()} {t.title}{owner_tag(t)}")
 
         if not lines:
             return ""

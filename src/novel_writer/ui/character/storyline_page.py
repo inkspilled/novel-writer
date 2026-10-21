@@ -14,20 +14,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QStringListModel, Qt, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
-    QComboBox, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QHeaderView, QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QCompleter, QDialog, QDialogButtonBox,
+    QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit,
+    QProgressBar, QPushButton, QHeaderView, QScrollArea, QSplitter, QToolButton,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...core.logger import get_logger
 from ...core.story_threads import (
     KIND_LABELS, STATUS_LABELS, ThreadKind, ThreadStatus,
-    StoryLedger, sync_story_threads,
+    StoryLedger, infer_owner, sync_story_threads, volume_ordinal,
 )
 from ...designsystem import get_status_colors
 
@@ -60,6 +62,34 @@ def _pill(text: str, tag: str) -> str:
         f"color: {colors['fg']}; background: {colors['bg']};"
         "border-radius: 8px; padding: 1px 8px; font-size: 11px; font-weight: 600;"
     )
+
+
+class _OwnerPicker(QDialog):
+    """多选涉及人物（数据来自人物设定/世界状态/角色注册表）。"""
+
+    def __init__(self, names: list[str], selected: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择涉及人物")
+        self.resize(260, 360)
+        layout = QVBoxLayout(self)
+        self.list = QListWidget(self)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        chosen = set(selected)
+        for name in names:
+            item = QListWidgetItem(name)
+            item.setSelected(name in chosen)
+            self.list.addItem(item)
+        layout.addWidget(self.list)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_names(self) -> list[str]:
+        return [item.text() for item in self.list.selectedItems()]
 
 
 class _KpiCard(QFrame):
@@ -141,6 +171,8 @@ class StorylinePage(QWidget):
         self.ledger: StoryLedger | None = None
         self._current_id: str | None = None
         self._current_chapter = 0
+        self._owner_names: list[str] = []
+        self._volume_ranges: list[tuple[int, str, int, int]] = []
         self._build_ui()
         self.set_project_dir(None)
 
@@ -225,8 +257,9 @@ class StorylinePage(QWidget):
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(4)
-        self.tree.setHeaderLabels(["线程", "状态", "章节", "备注"])
+        self.tree.setHeaderLabels(["线程", "状态", "章节", "人物/备注"])
         self.tree.setRootIsDecorated(True)
+        self.tree.setIndentation(16)
         self.tree.setAlternatingRowColors(False)
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
@@ -234,10 +267,11 @@ class StorylinePage(QWidget):
         self._apply_tree_style()
         header = self.tree.header()
         header.setStretchLastSection(False)
+        # 线程列吃掉剩余宽度；状态/章节/人物用固定宽度，避免长摘要/长人名把标题列挤成 0
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in (1, 2, 3):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.setColumnWidth(1, 110)
+        for column, width in ((1, 104), (2, 104), (3, 140)):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            self.tree.setColumnWidth(column, width)
         self.tree.currentItemChanged.connect(self._on_tree_selected)
         self.tree.itemDoubleClicked.connect(self._on_tree_activated)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -267,6 +301,7 @@ class StorylinePage(QWidget):
         self.edit_kind = QComboBox()
         for kind in _KIND_ORDER:
             self.edit_kind.addItem(KIND_LABELS[kind], kind)
+        self.edit_kind.currentIndexChanged.connect(self._sync_chapter_hints)
         self.form.addRow("类型", self.edit_kind)
         self.edit_status = QComboBox()
         for status in _STATUS_CHOICES:
@@ -275,19 +310,43 @@ class StorylinePage(QWidget):
         chapter_row = QHBoxLayout()
         self.edit_plant = QLineEdit()
         self.edit_plant.setPlaceholderText("埋设章")
-        self.edit_plant.setFixedWidth(84)
+        self.edit_plant.setFixedWidth(78)
         self.edit_resolve = QLineEdit()
         self.edit_resolve.setPlaceholderText("回收章")
-        self.edit_resolve.setFixedWidth(84)
+        self.edit_resolve.setFixedWidth(78)
+        self.btn_stamp = QToolButton()
+        self.btn_stamp.setText("当前章")
+        self.btn_stamp.setToolTip("把右侧章节设为当前写作章（标完成时也会自动补）")
+        self.btn_stamp.clicked.connect(self._stamp_current_chapter)
+        self.edit_plant.editingFinished.connect(self._autofill_group_from_chapter)
+        self.edit_resolve.editingFinished.connect(self._autofill_group_from_chapter)
         chapter_row.addWidget(self.edit_plant)
         chapter_row.addWidget(self.edit_resolve)
+        chapter_row.addWidget(self.btn_stamp)
         chapter_row.addStretch()
         self.form.addRow("章号", chapter_row)
+
+        owner_row = QHBoxLayout()
         self.edit_owner = QLineEdit()
-        self.edit_owner.setPlaceholderText("涉及人物 / 线索归属")
-        self.form.addRow("人物", self.edit_owner)
-        self.edit_group = QLineEdit()
-        self.edit_group.setPlaceholderText("所属卷 / 分组")
+        self.edit_owner.setPlaceholderText("涉及人物（可多选，用、分隔）")
+        self._owner_model = QStringListModel([], self)
+        completer = QCompleter(self._owner_model, self)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.edit_owner.setCompleter(completer)
+        self.btn_pick_owner = QToolButton()
+        self.btn_pick_owner.setText("选择")
+        self.btn_pick_owner.setToolTip("从人物设定 / 世界状态里选涉及人物")
+        self.btn_pick_owner.clicked.connect(self._pick_owners)
+        owner_row.addWidget(self.edit_owner, 1)
+        owner_row.addWidget(self.btn_pick_owner)
+        self.form.addRow("人物", owner_row)
+
+        self.edit_group = QComboBox()
+        self.edit_group.setEditable(True)
+        self.edit_group.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        if self.edit_group.lineEdit() is not None:
+            self.edit_group.lineEdit().setPlaceholderText("所属卷 / 分组（可输入或选择）")
         self.form.addRow("卷/组", self.edit_group)
         self.edit_notes = QPlainTextEdit()
         self.edit_notes.setPlaceholderText("作者备注（只显示在这里，不进正文上下文）")
@@ -298,6 +357,7 @@ class StorylinePage(QWidget):
         self.edit_detail.setMaximumHeight(64)
         self.form.addRow("详情", self.edit_detail)
         dv.addLayout(self.form)
+        self._sync_chapter_hints()
 
         actions = QHBoxLayout()
         self.btn_save = QPushButton("保存修改")
@@ -328,8 +388,20 @@ class StorylinePage(QWidget):
         body.setStretchFactor(1, 2)
         body.setSizes([700, 320])
         root.addWidget(body, 1)
+        self._apply_responsive_columns()
 
         self._set_enabled(False)
+
+    def resizeEvent(self, event):  # noqa: N802 — Qt 命名
+        super().resizeEvent(event)
+        if hasattr(self, "tree"):
+            self._apply_responsive_columns()
+
+    def _apply_responsive_columns(self):
+        """窄窗口先收起「人物/备注」，把宽度让给线程标题。"""
+        if not hasattr(self, "tree"):
+            return
+        self.tree.setColumnHidden(3, self.tree.width() < 520)
 
     # ── 主题 ──
 
@@ -366,7 +438,8 @@ class StorylinePage(QWidget):
     def _set_detail_enabled(self, on: bool):
         for w in (self.edit_title, self.edit_kind, self.edit_status, self.edit_plant,
                   self.edit_resolve, self.edit_owner, self.edit_group, self.edit_notes,
-                  self.edit_detail, self.btn_save, self.btn_jump_chapter):
+                  self.edit_detail, self.btn_save, self.btn_jump_chapter,
+                  self.btn_stamp, self.btn_pick_owner):
             w.setEnabled(on)
         self.btn_restore.setVisible(False)
 
@@ -408,10 +481,63 @@ class StorylinePage(QWidget):
             return
         if self.ledger is None:
             self.ledger = StoryLedger(self._project_dir).load()
+        self._refresh_field_choices()
         self.reload_tree()
         self._refresh_headline()
         self._refresh_cards()
         self._refresh_detail_from_ledger()
+
+    def _refresh_field_choices(self):
+        """人物/卷组改成真实数据源：可选、可输入、可推断。"""
+        if not self.ledger:
+            return
+        self._owner_names = self.ledger.known_character_names()
+        self._owner_model.setStringList(self._owner_names)
+        self._volume_ranges = self.ledger.planning_volume_ranges()
+
+        # 下拉只列「卷」级分组（规划稿里的章节小标题不进下拉，避免几十条噪声）；
+        # 同一卷有「卷一 xx（1—50章）」和「卷一 xx」两种写法时只留台账那种。
+        groups = sorted({
+            t.group for t in self.ledger.all()
+            if t.group and volume_ordinal(t.group)
+        })
+        seen_ordinals = {volume_ordinal(g) for g in groups if volume_ordinal(g)}
+        for ordinal, name, _, _ in self._volume_ranges:
+            if ordinal not in seen_ordinals:
+                groups.append(name)
+        current = self.edit_group.currentText()
+        self.edit_group.blockSignals(True)
+        self.edit_group.clear()
+        seen: set[str] = set()
+        for name in groups:
+            if name and name not in seen:
+                self.edit_group.addItem(name)
+                seen.add(name)
+        self.edit_group.setCurrentText(current)
+        self.edit_group.blockSignals(False)
+
+    def _infer_owner(self, thread) -> str:
+        return infer_owner(f"{thread.title} {thread.detail}", self._owner_names)
+
+    def _infer_group(self, chapter: int) -> str:
+        """按章号猜所属卷；优先复用台账里已有的卷名。"""
+        if not chapter or not self._volume_ranges:
+            return ""
+        for ordinal, name, start, end in self._volume_ranges:
+            if not start or chapter < start:
+                continue
+            if end and chapter > end:
+                continue
+            same = [
+                t.group for t in (self.ledger.all() if self.ledger else [])
+                if t.group and volume_ordinal(t.group) == ordinal
+            ]
+            if same:
+                from collections import Counter
+                counts = Counter(same)
+                return max(counts.items(), key=lambda kv: (kv[1], len(kv[0])))[0]
+            return name
+        return ""
 
     def _refresh_headline(self):
         if not self.ledger:
@@ -472,23 +598,33 @@ class StorylinePage(QWidget):
                 continue
             progress = self.ledger.progress()
             summary = self._kind_summary(kind, items, progress)
-            group = QTreeWidgetItem([f"{_KIND_ICONS.get(kind, '')} {KIND_LABELS[kind]}", summary, "", ""])
+            # 摘要放进第一列并跨列：否则「已发生 41/60 · 当前第 10 章」会把状态列撑到 200px
+            group = QTreeWidgetItem([
+                f"{_KIND_ICONS.get(kind, '')} {KIND_LABELS[kind]} · {summary}", "", "", ""
+            ])
             font = group.font(0)
             font.setBold(True)
             group.setFont(0, font)
-            group.setFirstColumnSpanned(False)
+            group.setFirstColumnSpanned(True)
+            if kind == ThreadKind.TIMELINE.value:
+                group.setToolTip(0, "时间线：已发生 = 对应章节已经写了；计划中 = 还没写到")
             group.setData(0, Qt.ItemDataRole.UserRole, {"kind": kind, "group": True})
             self.tree.addTopLevelItem(group)
 
-            # 按卷/分组做二级分组（时间线直接平铺）
+            # 按卷/分组做二级分组（时间线也按卷收拢，500 章平铺会找不到）
             buckets: dict[str, list] = {}
             for thread in items:
-                key = thread.group if kind != ThreadKind.TIMELINE.value else ""
-                buckets.setdefault(key or "", []).append(thread)
-            for bucket, rows in buckets.items():
+                buckets.setdefault(thread.group or "", []).append(thread)
+            def bucket_key(item):
+                name = item[0]
+                ordinal = volume_ordinal(name)
+                return (0, ordinal, name) if ordinal else (1, 0, name)
+
+            for bucket, rows in sorted(buckets.items(), key=bucket_key):
                 parent = group
                 if bucket:
                     parent = QTreeWidgetItem([bucket, "", "", ""])
+                    parent.setFirstColumnSpanned(True)
                     parent.setData(0, Qt.ItemDataRole.UserRole, {"kind": kind, "group": True})
                     group.addChild(parent)
                 for thread in rows:
@@ -502,7 +638,7 @@ class StorylinePage(QWidget):
 
     def _append_thread_row(self, parent, thread, current_chapter: int):
         status_text, tag = thread.ui_status(current_chapter)
-        notes = thread.notes or (thread.owner or "")
+        notes = thread.owner or thread.notes or ""
         row = QTreeWidgetItem([thread.title, status_text, thread.chapter_text(), notes])
         row.setData(0, Qt.ItemDataRole.UserRole,
                     {"kind": thread.kind, "id": thread.id, "group": False})
@@ -512,13 +648,15 @@ class StorylinePage(QWidget):
         font.setBold(True)
         row.setFont(1, font)
         row.setToolTip(0, thread.detail or thread.title)
-        if thread.kind == ThreadKind.TIMELINE.value and thread.happened:
-            row.setForeground(0, QColor(colors["fg"]))
         if not thread.active:
             row.setForeground(0, QColor(palette().color(QPalette.ColorRole.PlaceholderText)))
         if thread.owner:
             row.setToolTip(3, thread.owner)
         hint = f"{thread.kind_label} · {thread.status_label}"
+        if thread.group:
+            hint += f"\n卷/组：{thread.group}"
+        if thread.owner:
+            hint += f"\n人物：{thread.owner}"
         if thread.detail:
             hint += f"\n{thread.detail}"
         if thread.notes:
@@ -536,7 +674,7 @@ class StorylinePage(QWidget):
             return f"已完成 {progress.main_done}/{progress.main_total}"
         if kind == ThreadKind.SUBPLOT.value:
             return f"已完成 {progress.subplot_done}/{progress.subplot_total}"
-        return f"已发生 {progress.timeline_happened}/{progress.timeline_total} · 当前第 {progress.current_chapter} 章"
+        return f"已发生 {progress.timeline_happened}/{progress.timeline_total}"
 
     def _match_filter(self, thread, filter_key: str, current_chapter: int) -> bool:
         if filter_key == "open":
@@ -634,6 +772,7 @@ class StorylinePage(QWidget):
             f"更新于 {thread.updated_at or '—'}"
         )
         self.edit_title.setText(thread.title)
+        self.edit_title.setCursorPosition(0)  # 长标题不要停在末尾，开头才是有效信息
         index = self.edit_kind.findData(thread.kind)
         if index >= 0:
             self.edit_kind.setCurrentIndex(index)
@@ -642,14 +781,76 @@ class StorylinePage(QWidget):
             self.edit_status.setCurrentIndex(index)
         self.edit_plant.setText(str(thread.planted_chapter or ""))
         self.edit_resolve.setText(str(thread.resolve_chapter or ""))
-        self.edit_owner.setText(thread.owner)
-        self.edit_group.setText(thread.group)
+        self._sync_chapter_hints()
+
+        # 空字段按正文/规划推断，先显示出来，保存时落盘（不改动已手工编辑的值）
+        owner = thread.owner
+        inferred_owner = False
+        if not owner and "owner" not in (thread.user_edited or []):
+            owner = self._infer_owner(thread)
+            inferred_owner = bool(owner)
+        self.edit_owner.setText(owner)
+
+        group = thread.group
+        inferred_group = False
+        if not group and "group" not in (thread.user_edited or []):
+            group = self._infer_group(thread.planted_chapter or thread.resolve_chapter)
+            inferred_group = bool(group)
+        self.edit_group.setCurrentText(group)
+
         self.edit_notes.setPlainText(thread.notes)
         self.edit_detail.setPlainText(thread.detail)
         self.btn_restore.setVisible(not thread.active)
-        self.detail_status.setText(
-            "手工改过的字段会被保护，后续自动对账不会覆盖" if thread.user_edited else ""
-        )
+        if inferred_owner or inferred_group:
+            self.detail_status.setText("人物/卷组已按正文补全，点「保存修改」写入台账")
+        elif thread.user_edited:
+            self.detail_status.setText("手工改过的字段会被保护，后续自动对账不会覆盖")
+        else:
+            self.detail_status.setText("")
+
+    def _sync_chapter_hints(self):
+        """章号输入标题随类型变：伏笔是埋/收，时间线是发生/结束。"""
+        kind = self.edit_kind.currentData()
+        if kind == ThreadKind.TIMELINE.value:
+            self.edit_plant.setPlaceholderText("发生章")
+            self.edit_resolve.setPlaceholderText("结束章")
+            self.edit_resolve.setToolTip("时间线一般只填发生章；跨章事件可填结束章")
+        elif kind == ThreadKind.FORESHADOW.value:
+            self.edit_plant.setPlaceholderText("埋设章")
+            self.edit_resolve.setPlaceholderText("回收章")
+            self.edit_resolve.setToolTip("伏笔回收章；标记完成时自动填当前章")
+        else:
+            self.edit_plant.setPlaceholderText("起始章")
+            self.edit_resolve.setPlaceholderText("完成章")
+            self.edit_resolve.setToolTip("节点完成章；标记完成时自动填当前章")
+
+    def _autofill_group_from_chapter(self):
+        """卷/组为空时，按刚填的章号补上，不让字段悬空。"""
+        if self.edit_group.currentText().strip():
+            return
+        chapter = self._parse_chapter(self.edit_plant.text()) or self._parse_chapter(self.edit_resolve.text())
+        group = self._infer_group(chapter)
+        if group:
+            self.edit_group.setCurrentText(group)
+
+    def _stamp_current_chapter(self):
+        chapter = self._current_chapter
+        if not chapter and self.ledger:
+            chapter = self.ledger.clock()[0]
+        if not chapter:
+            self.detail_status.setText("还没有已写章节，无法取当前章")
+            return
+        self.edit_resolve.setText(str(chapter))
+        self.detail_status.setText(f"已填入当前章：第 {chapter} 章")
+
+    def _pick_owners(self):
+        if not self._owner_names:
+            self.detail_status.setText("还没识别到角色（先写人物设定，或跑一章正文）")
+            return
+        selected = [s.strip() for s in re.split(r"[、,，/\s]+", self.edit_owner.text()) if s.strip()]
+        dialog = _OwnerPicker(self._owner_names, selected, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.edit_owner.setText("、".join(dialog.selected_names()))
 
     def _refresh_detail_from_ledger(self):
         if self._current_id and self.ledger and self.ledger.get(self._current_id):
@@ -662,9 +863,10 @@ class StorylinePage(QWidget):
         self.detail_title.setText("选择左侧一条线程查看/编辑")
         self.detail_meta.setText("")
         self.detail_status.setText("")
-        for w in (self.edit_title, self.edit_owner, self.edit_group,
+        for w in (self.edit_title, self.edit_owner,
                   self.edit_plant, self.edit_resolve):
             w.clear()
+        self.edit_group.setCurrentText("")
         self.edit_notes.clear()
         self.edit_detail.clear()
         self._set_detail_enabled(False)
@@ -680,19 +882,42 @@ class StorylinePage(QWidget):
         if not self.ledger or not self._current_id:
             return
         kind = self.edit_kind.currentData()
+        status = self.edit_status.currentData()
+        plant = self._parse_chapter(self.edit_plant.text())
+        resolve = self._parse_chapter(self.edit_resolve.text())
+        stamped = False
+
+        # 标完成但没填回收/完成章：自动取当前写作章（时间线取发生章）
+        if status == ThreadStatus.DONE.value and not resolve:
+            current = self._current_chapter
+            if not current:
+                current = self.ledger.clock()[0]
+            resolve = plant if kind == ThreadKind.TIMELINE.value and plant else (current or plant)
+            if resolve:
+                stamped = True
+                self.edit_resolve.setText(str(resolve))
+
+        chapters = {"plant": plant, "resolve": resolve}
+        if kind == ThreadKind.TIMELINE.value and not plant and resolve:
+            chapters["plant"] = resolve
+
         fields = {
             "title": self.edit_title.text().strip(),
             "kind": kind,
-            "status": self.edit_status.currentData(),
+            "status": status,
             "owner": self.edit_owner.text().strip(),
-            "group": self.edit_group.text().strip(),
+            "group": self.edit_group.currentText().strip(),
             "notes": self.edit_notes.toPlainText().strip(),
             "detail": self.edit_detail.toPlainText().strip(),
-            "chapters": {
-                "plant": self._parse_chapter(self.edit_plant.text()),
-                "resolve": self._parse_chapter(self.edit_resolve.text()),
-            },
+            "chapters": chapters,
         }
+        # 时间线的「已完成」要同时落 happened，否则树上仍显示「计划中」
+        if kind == ThreadKind.TIMELINE.value:
+            if status == ThreadStatus.DONE.value:
+                fields["happened"] = True
+            elif status == ThreadStatus.PLANNED.value:
+                fields["happened"] = False
+
         if not fields["title"]:
             self.detail_status.setText("标题不能为空")
             return
@@ -711,7 +936,9 @@ class StorylinePage(QWidget):
         self._refresh_cards()
         if self._select_thread(thread.id):
             self._load_detail()
-            self.detail_status.setText("已保存")
+            self.detail_status.setText(
+                f"已保存（回收/完成章自动填为第 {resolve} 章）" if stamped else "已保存"
+            )
         else:
             self._clear_detail()
             self.detail_status.setText("已保存（当前筛选下不可见）")

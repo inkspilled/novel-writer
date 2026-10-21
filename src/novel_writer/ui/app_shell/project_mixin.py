@@ -15,6 +15,8 @@ from ...models.project import Project
 from ...models.chapter import Chapter
 from ...core import project_io
 from ...core.app_config import PROJECTS_DIR, safe_project_dirname
+from ...core.meme_style import DEFAULT_MEME_LEVEL
+from ...core.narrative_voice import DEFAULT_VOICE
 from ...core.exporter import Exporter
 from ...locales import t
 from ...core.logger import get_logger
@@ -60,6 +62,8 @@ class ProjectMixin:
             title=title,
             genre=data["genre"],
             style=data["style"],
+            narrative_voice=data.get("narrative_voice", DEFAULT_VOICE),
+            meme_level=data.get("meme_level", DEFAULT_MEME_LEVEL),
             theme=data["theme"],
             direction=data["direction"],
             target_words=data["target_words"],

@@ -43,6 +43,9 @@ novel-writer/
 │   └── projects/                   # 小说项目目录 → 详见 docs/项目存储与文件格式.md
 ├── tests/                          # 单元测试
 │   ├── test_quality_checker.py
+│   ├── test_narrative_voice.py
+│   ├── test_meme_style.py
+│   ├── test_llm_timeout.py
 │   ├── test_reading_power.py
 │   ├── test_workflow.py
 │   ├── test_workflow_runner.py
@@ -91,6 +94,8 @@ novel-writer/
     │   │   ├── journal.py          # runs/*.jsonl 运行日志
     │   │   └── runner.py           # WorkflowRunner（重试/超时/DAG/工具）
     │   ├── quality_checker.py      # → docs/质量检查算法.md
+    │   ├── narrative_voice.py      # → docs/叙述语言与大白话约束.md
+    │   ├── meme_style.py           # → docs/梗密度与现代梗.md
     │   ├── exporter.py             # 导出功能（TXT/EPUB/PDF）
     │   ├── reading_power.py        # → docs/追读力算法.md
     │   ├── anti_patterns.py        # → docs/反模式追踪算法.md
@@ -128,7 +133,8 @@ novel-writer/
         │   ├── agent_animation.py  # 指示器动画
         │   └── office_scene.py     # 办公室场景（QPainter）
         ├── editor/                 # 写作区
-        │   ├── editor_panel.py     # 正文 / 规划 / 世界 三级导航
+        │   ├── editor_panel.py     # 正文 / 规划 / 世界 / 写作台 四个标签
+        │   ├── assist_page.py      # 写作台：本章/全书辅助资料只读页
         │   └── sidebar.py          # 章节列表
         ├── character/              # 世界页
         │   ├── character_page.py   # 人物（分档/状态/auto_sim）
@@ -189,6 +195,14 @@ novel-writer/
 ### 质量检查 (`core/quality_checker.py`) → [docs/质量检查算法.md](docs/质量检查算法.md)
 
 10 维规则打分（0–100 加权总分）+ 问题/建议列表。纯规则，不调 LLM。
+
+### 叙述语言 (`core/narrative_voice.py`) → [docs/叙述语言与大白话约束.md](docs/叙述语言与大白话约束.md)
+
+项目级三档（大白话/平实/文学，默认大白话）：写作/润色上下文注入带阈值的语言硬约束；质量检查另附不计分的成语/书面腔/比喻/句长体检。
+
+### 梗密度 (`core/meme_style.py`) → [docs/梗密度与现代梗.md](docs/梗密度与现代梗.md)
+
+四档（无/少/中/高，默认少）：正文写作注入「一章几个、谁嘴里、玩哪类、什么时候收」的约束；润色只保留不新增；质量检查统计现代梗数量/密度/重复。
 
 ### 追读力 (`core/reading_power.py`) → [docs/追读力算法.md](docs/追读力算法.md)
 

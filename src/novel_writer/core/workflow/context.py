@@ -14,7 +14,9 @@ from pathlib import Path
 from .. import project_io
 from ..anti_patterns import AntiPatternTracker
 from ..character_sim import load_sim_cache
+from ..meme_style import build_meme_constraint, normalize_meme_level
 from ..memory import LOOP_OVERDUE_URGENCY, MemoryScratchpad, loop_urgency
+from ..narrative_voice import build_voice_constraint
 from ..rag import BM25Index, Chunk, get_retriever
 from ..reading_power import ReadingPowerTracker
 from ..world_state import WorldState
@@ -159,6 +161,11 @@ class ContextTier(Enum):
     WORKING = 3     # + 工作记忆层（章节概要/全文/推演/RAG）
 
 
+# 需要语言质感约束的步骤：直接写正文的步骤（规划/审稿不必背大白话规矩）
+_VOICE_STEP_IDS = frozenset({"chapter", "polish"})
+# 只有新写正文才「加梗」；润色只保留原梗，不加不减
+_MEME_STEP_IDS = frozenset({"chapter"})
+
 # 步骤 → 上下文层级映射
 # 需要注入「故事线台账」的步骤：只有真正推动剧情/审稿的步骤才值得这 2.6K 上限
 _STORY_LEDGER_STEP_IDS = frozenset({
@@ -277,6 +284,16 @@ class ContextBuilder:
             if constraint:
                 head.append(constraint)
 
+        # 语言质感硬约束：长篇正文的最大风险是文绉绉，放在高注意力区
+        if step_id in _VOICE_STEP_IDS:
+            voice_block = self._build_voice_block()
+            if voice_block:
+                head.append(voice_block)
+        if step_id in _MEME_STEP_IDS:
+            meme_block = self._build_meme_block()
+            if meme_block:
+                head.append(meme_block)
+
         # 活性记忆卡：按本章相关实体（从大纲提取）精准拉取状态
         active_cards = self._build_active_memory_cards(gs, mem, n)
         if active_cards:
@@ -345,6 +362,40 @@ class ContextBuilder:
         logger.debug("上下文组装完成: step=%s n=%d tier=%s tokens≈%d chars=%d",
                      step_id, n, tier.name, est_tokens, len(result))
         return result
+
+    def _project_meta_field(self, key: str) -> str:
+        value = self.project_info.get(key, "")
+        if value:
+            return str(value)
+        try:
+            return str(project_io.load_meta(self.project_dir).get(key, "") or "")
+        except Exception:
+            return ""
+
+    def _build_voice_block(self) -> str:
+        """读取项目叙述语言；旧 workflow.json 没带该字段时回退读 meta.json。"""
+        voice = self._project_meta_field("narrative_voice")
+        try:
+            return build_voice_constraint(
+                voice,
+                self.project_info.get("style", ""),
+                self._project_meta_field("meme_level"),
+            )
+        except Exception as e:
+            logger.debug("语言质感约束构建失败（忽略）: %s", e)
+            return ""
+
+    def _build_meme_block(self) -> str:
+        """梗密度约束：只对正文写作注入，润色不新增梗。"""
+        try:
+            return build_meme_constraint(
+                normalize_meme_level(self._project_meta_field("meme_level")),
+                self.project_info.get("genre", ""),
+                self._project_meta_field("narrative_voice"),
+            )
+        except Exception as e:
+            logger.debug("梗密度约束构建失败（忽略）: %s", e)
+            return ""
 
     def _meta_line(self) -> str:
         if not self.project_info.get("title"):

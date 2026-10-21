@@ -8,6 +8,8 @@ from pathlib import Path
 from .chapter import Chapter, ChapterStatus
 from .character import Character
 from ..core import project_io
+from ..core.meme_style import DEFAULT_MEME_LEVEL
+from ..core.narrative_voice import DEFAULT_VOICE
 
 
 @dataclass
@@ -17,6 +19,8 @@ class Project:
     title: str = ""
     genre: str = ""  # 题材：玄幻、都市、科幻...
     style: str = ""  # 风格：轻松、严肃、悬疑...
+    narrative_voice: str = DEFAULT_VOICE  # 叙述语言：大白话/平实/文学
+    meme_level: str = DEFAULT_MEME_LEVEL  # 梗密度：无/少/中/高
     theme: str = ""  # 核心主题
     direction: str = ""  # 规划方向
     target_words: int = 200000  # 目标字数
@@ -79,6 +83,8 @@ class Project:
             "title": self.title,
             "genre": self.genre,
             "style": self.style,
+            "narrative_voice": self.narrative_voice,
+            "meme_level": self.meme_level,
             "theme": self.theme,
             "direction": self.direction,
             "target_words": self.target_words,
@@ -119,6 +125,8 @@ class Project:
             title=meta.get("title", ""),
             genre=meta.get("genre", ""),
             style=meta.get("style", ""),
+            narrative_voice=meta.get("narrative_voice", DEFAULT_VOICE),
+            meme_level=meta.get("meme_level", DEFAULT_MEME_LEVEL),
             theme=meta.get("theme", ""),
             direction=meta.get("direction", ""),
             target_words=meta.get("target_words", 200000),

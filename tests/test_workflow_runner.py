@@ -173,9 +173,11 @@ class TestErrorTolerance:
                                    output="chapters/{n}_chapter.txt", repeat=3)])
         progress = asyncio.run(runner.run(wf, {}))
         assert any("第2章" in e for e in progress.get("_errors", []))
-        assert progress["chapter"]["current"] == 3
+        # 失败章保留「洞」：后续章节可以继续写，但 current 不得越过 2，
+        # 否则断点恢复会从 3 开始，把第 2 章永久跳过。
+        assert progress["chapter"]["current"] == 1
         numbers = [c["number"] for c in project_io.scan_chapters(project_dir)]
-        assert numbers == [1, 3]  # 失败的第 2 章跳过，后续章节继续
+        assert numbers == [1, 3]
 
     def test_custom_periodic_step_defaults_to_post(self, project_dir):
         writer = make_agent("正文写作")
@@ -715,3 +717,31 @@ class TestStepCompletedOutputMissing:
         from src.novel_writer.core.workflow.definition import WorkflowStep
         step = WorkflowStep(id="toc", output="")
         assert WorkflowRunner._step_completed(step, {"toc": "done"}, None) is True
+
+
+def test_optional_normal_step_failure_is_skipped(project_dir):
+    """可选普通步骤（细纲/标题等）失败不能终止整跑；记 error 后继续。"""
+    outline = make_agent("大纲", fail_keywords=("坏",))
+    writer = make_agent("正文写作")
+    runner = make_runner(project_dir, {"o": outline, "w": writer})
+    wf = make_wf([
+        WorkflowStep(id="outline", needs="大纲", prompt="坏掉的一步", optional=True),
+        WorkflowStep(id="after", needs="正文写作", prompt="继续写"),
+    ])
+    progress = asyncio.run(runner.run(wf, {}))
+    assert progress.get("outline") == "error"
+    assert progress.get("after") == "done"
+    assert writer.calls
+
+
+def test_consecutive_chapter_failures_abort_run(project_dir):
+    """断网时连续失败两章就中止，不能把后面几百章全刷成 error。"""
+    writer = make_agent("正文写作", fail_keywords=("第",))
+    runner = make_runner(project_dir, {"a": writer})
+    wf = make_wf([WorkflowStep(id="chapter", needs="正文写作", prompt="写第{n}章",
+                               output="chapters/{n}_chapter.txt", repeat=10)])
+    progress = asyncio.run(runner.run(wf, {}))
+    assert len(progress.get("_errors", [])) == 2
+    assert runner._stop is True
+    assert "连续 2 章失败" in runner._abort_reason
+    assert "chapter" not in progress  # 没推进 current

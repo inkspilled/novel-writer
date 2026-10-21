@@ -7,7 +7,7 @@ from ..workflow.workflow_panel import WorkflowThread
 from ..project.project_dialogs import WorkflowModeDialog
 from ...core.workflow import (
     WorkflowRunner, WorkflowDef, DEFAULT_WORKFLOW, WorkflowMode, build_workflow,
-    PLANNING_STEP_IDS,
+    PLANNING_STEP_IDS, refresh_builtin_workflow,
 )
 from ...core import project_io
 from ...locales import t
@@ -36,6 +36,8 @@ class WorkflowMixin:
                 "title": self.project.title,
                 "genre": self.project.genre,
                 "style": self.project.style,
+                "narrative_voice": self.project.narrative_voice,
+                "meme_level": self.project.meme_level,
                 "target_chapters": self.project.target_chapters or 100,
             },
         }
@@ -98,6 +100,8 @@ class WorkflowMixin:
             "title": self.project.title,
             "genre": self.project.genre,
             "style": self.project.style,
+            "narrative_voice": self.project.narrative_voice,
+            "meme_level": self.project.meme_level,
             "theme": self.project.theme,
             "target_chapters": end_ch,
             "seal_chapters": self.config.get("seal_chapters", False),
@@ -139,6 +143,28 @@ class WorkflowMixin:
             return True
         if ret != QMessageBox.StandardButton.Yes:
             return False
+        # 内置工作流：用当前代码的提示词刷新定义（旧存档会带着老指令跑完）；
+        # 自定义/结构有改动的工作流保持存档原样。
+        start_ch = int((progress.get("chapter") or {}).get("current", 0)) + 1
+        fresh_wf = refresh_builtin_workflow(
+            wf_data,
+            {
+                "title": self.project.title,
+                "genre": self.project.genre,
+                "style": self.project.style,
+                "narrative_voice": self.project.narrative_voice,
+                "meme_level": self.project.meme_level,
+                "theme": self.project.theme,
+                "_project_dir": str(self.project.project_dir),
+            },
+            start_chapter=start_ch,
+        )
+        if fresh_wf:
+            wf_data = fresh_wf
+            project_io.save_workflow(
+                self.project.project_dir, {"workflow": fresh_wf, "progress": progress}
+            )
+            logger.info("断点续跑：已刷新内置工作流定义（start=%d）", start_ch)
         self._wf_def = WorkflowDef.from_dict(wf_data)
         self._wf_progress = dict(progress)
         self._launch_workflow(self._wf_def, self._wf_progress)
@@ -221,12 +247,15 @@ class WorkflowMixin:
         self.agent_panel.on_workflow_step_finished(step_id, n, agent_title)
         # 章节步骤完成后：结束流式预览，刷新侧边栏并载入最终文件
         if step_id == "chapter":
+            # 用户中途点了别的章就别抢回编辑器；只刷新侧边栏，让他自己点第 n 章。
+            following = self.editor.is_streaming_chapter(n)
             self.editor.end_stream_chapter()
             self._refresh_chapters()
-            for ch in self.project.chapters:
-                if ch.number == n:
-                    self.editor.load_chapter(ch)
-                    break
+            if following:
+                for ch in self.project.chapters:
+                    if ch.number == n:
+                        self.editor.load_chapter(ch)
+                        break
         # 规划步骤 / 规划反哺（含章节细纲）完成后刷新编辑器
         if step_id in PLANNING_STEP_IDS or step_id.startswith("update_"):
             self.editor.refresh_planning()
@@ -236,6 +265,13 @@ class WorkflowMixin:
         if step_id == "world_state_update":
             # 世界状态里的位置/目标已同步进角色档案，人物页立即反映
             self.editor.world_page.character_page.reload()
+        if step_id in {
+            "inspiration", "sim", "chapter_summary", "summary",
+            "quality_check", "proofread", "review", "review_panel",
+            "world_state_update", "sediment",
+        }:
+            # 写作台只读页：工作流产出后刷新当前页，不打断写作
+            self.editor.assist_page.reload()
 
     def _on_wf_step_error(self, step_id: str, error: str):
         if step_id == "chapter":
@@ -311,6 +347,7 @@ class WorkflowMixin:
         # 规划/正文都跑完后把四份规划稿+记忆+世界状态对账进台账，进「世界→故事线」即是最新
         self.editor.world_page.reload_storyline()
         self.editor.world_page.character_page.reload()
+        self.editor.assist_page.reload()
         self.statusBar().showMessage(t("workflow_finished"))
 
     def _on_wf_stopped(self):
@@ -323,6 +360,7 @@ class WorkflowMixin:
         self.editor.refresh_planning()
         self.editor.world_page.reload_storyline()
         self.editor.world_page.character_page.reload()
+        self.editor.assist_page.reload()
         self.statusBar().showMessage(t("workflow_stopped"))
 
     def _park_wf_thread(self):

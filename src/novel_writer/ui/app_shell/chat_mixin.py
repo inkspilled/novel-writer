@@ -100,6 +100,10 @@ class ChatMixin:
                 meta += f" | 题材: {self.project.genre}"
             if self.project.style:
                 meta += f" | 风格: {self.project.style}"
+            if self.project.narrative_voice:
+                meta += f" | 语言质感: {self.project.narrative_voice}"
+            if self.project.meme_level:
+                meta += f" | 梗密度: {self.project.meme_level}"
             if self.project.theme:
                 meta += f" | 主题: {self.project.theme}"
             parts.append(meta)

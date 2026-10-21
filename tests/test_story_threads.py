@@ -13,8 +13,8 @@ import pytest
 from src.novel_writer.core.memory import MemoryItem, MemoryScratchpad
 from src.novel_writer.core.story_threads import (
     LOOP_OVERDUE_CHAPTERS, StoryLedger, ThreadKind, ThreadStatus,
-    cn_to_int, detect_status, extract_chapters, parse_planning_doc,
-    sync_story_threads,
+    cn_to_int, detect_status, extract_chapters, infer_owner, parse_planning_doc,
+    parse_volume_ranges, sync_story_threads, volume_ordinal,
 )
 from src.novel_writer.core.world_state import WorldState
 
@@ -351,3 +351,49 @@ def test_manual_subplot_fields_not_overwritten_by_memory(tmp_path):
     assert got.status == "done"
     assert got.planted_chapter == 1
     assert got.resolve_chapter == 30
+
+
+# ── 卷 / 人物字段联动 ──
+
+class TestVolumeAndOwner:
+    def test_parse_volume_ranges(self):
+        text = (
+            "# 主线\n"
+            "## 卷一 外门断事（1—50章）\n"
+            "## 第二卷 江湖\n"
+            "## 卷三 大道（第90-120章）\n"
+        )
+        assert parse_volume_ranges(text, 150) == [
+            (1, "卷一 外门断事", 1, 50),
+            (2, "第二卷 江湖", 51, 89),
+            (3, "卷三 大道", 90, 120),
+        ]
+
+    def test_volume_ordinal(self):
+        assert volume_ordinal("卷一 外门断事") == 1
+        assert volume_ordinal("第二卷 江湖") == 2
+        assert volume_ordinal("支线一：苏怀瑾") == 0
+
+    def test_infer_owner_orders_by_occurrence(self):
+        text = "顾言立下申辩状，赵九衡收进袖中"
+        assert infer_owner(text, ["赵九衡", "顾言"]) == "顾言、赵九衡"
+        assert infer_owner("没有角色", ["顾言"]) == ""
+
+    def test_reconcile_fills_group_and_owner(self, tmp_path):
+        project = make_project(tmp_path, chapters=3)
+        write_planning(
+            project, "主线.md",
+            "# 主线\n## 卷一 外门断事（1—50章）\n- 拜入宗门（第1章）\n",
+        )
+        write_planning(project, "人物设定.md", "## 顾言\n- 主角\n## 赵九衡\n- 执事\n")
+        gs = WorldState(project)
+        gs.load()
+        gs.add_timeline_event(3, "顾言立下申辩状，赵九衡收进袖中", "执事堂")
+        gs.save()
+
+        ledger = sync_story_threads(project)
+        thread = next(t for t in ledger.all("timeline") if "申辩状" in t.title)
+        assert thread.group.startswith("卷一")
+        assert thread.owner == "顾言、赵九衡"
+        assert ledger.volume_for_chapter(3).startswith("卷一")
+        assert "〔顾言、赵九衡〕" in ledger.build_context_block(3)

@@ -412,15 +412,16 @@ class RAGRetriever:
             self._save_index()
         self._loaded = True
 
-    def retrieve(self, query: str, top_k: int = 5) -> str:
+    def retrieve(self, query: str, top_k: int = 5, use_semantic: bool = True) -> str:
         """检索相关段落，返回格式化文本。
 
         配置了 embedding 时走语义向量检索（别名/近义可召回），
-        未配置或失败时回退 BM25 关键词检索。
+        未配置或失败时回退 BM25 关键词检索。工具内检索传 use_semantic=False，
+        避免一次工具调用阻塞在 embedding 冷启动上。
         """
         if not self.index._built:
             self.index.build()
-        results = self._vector_search(query, top_k)
+        results = self._vector_search(query, top_k) if use_semantic else None
         if results is None:
             results = self.index.search(query, top_k)
         if not results:

@@ -14,6 +14,8 @@ from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QPixmap
 
 from ...core.logger import get_logger
+from ...core.meme_style import DEFAULT_MEME_LEVEL, MEME_LEVELS
+from ...core.narrative_voice import DEFAULT_VOICE, VOICE_OPTIONS
 from ...locales import t
 
 logger = get_logger(__name__)
@@ -228,6 +230,26 @@ class NewProjectDialog(QDialog):
         self.style_combo.setEditable(True)
         self.style_combo.setMinimumHeight(34)
         genre_form.addRow("风格 *", self.style_combo)
+
+        self.voice_combo = QComboBox()
+        self.voice_combo.addItems(VOICE_OPTIONS)
+        self.voice_combo.setMinimumHeight(34)
+        self.voice_combo.setToolTip(
+            "大白话：短句、口语、少成语少比喻，长篇连载首选；\n"
+            "平实：正常书面语、克制修辞；\n"
+            "文学：允许修辞和节奏经营。"
+        )
+        genre_form.addRow("叙述语言", self.voice_combo)
+
+        self.meme_combo = QComboBox()
+        self.meme_combo.addItems(MEME_LEVELS)
+        self.meme_combo.setMinimumHeight(34)
+        self.meme_combo.setToolTip(
+            "现代梗/职场梗的用量：\n"
+            "无：一个不用；少：1-2 个/章；中：3-5 个/章；高：6-10 个/章。\n"
+            "只放在主角吐槽、旁白和熟人对话里，正剧场合不玩梗。"
+        )
+        genre_form.addRow("梗密度", self.meme_combo)
 
         self.words_spin = QSpinBox()
         self.words_spin.setRange(10000, 10000000)
@@ -623,7 +645,21 @@ class NewProjectDialog(QDialog):
         self.title_edit.setText(data.get("title", ""))
         self.genre_combo.setCurrentText(data.get("genre", ""))
         self.style_combo.setCurrentText(data.get("style", ""))
-        self.words_spin.setValue(data.get("target_words", 200000))
+        voice = data.get("narrative_voice", DEFAULT_VOICE)
+        if self.voice_combo.findText(voice) < 0:
+            voice = DEFAULT_VOICE
+        self.voice_combo.setCurrentText(voice)
+        meme_level = data.get("meme_level", DEFAULT_MEME_LEVEL)
+        if self.meme_combo.findText(meme_level) < 0:
+            meme_level = DEFAULT_MEME_LEVEL
+        self.meme_combo.setCurrentText(meme_level)
+        self.words_spin.setValue(int(data.get("target_words", 200000) or 200000))
+        try:
+            target_chapters = int(data.get("target_chapters") or 0)
+        except (TypeError, ValueError):
+            target_chapters = 0
+        if target_chapters > 0:
+            self.chapters_spin.setValue(target_chapters)
         self.theme_edit.setPlainText(data.get("theme", ""))
         self.direction_edit.setPlainText(data.get("direction", ""))
         self.synopsis_edit.setPlainText(data.get("synopsis", ""))
@@ -667,6 +703,8 @@ class NewProjectDialog(QDialog):
             "title": self.title_edit.text().strip(),
             "genre": self.genre_combo.currentText(),
             "style": self.style_combo.currentText(),
+            "narrative_voice": self.voice_combo.currentText(),
+            "meme_level": self.meme_combo.currentText(),
             "target_words": self.words_spin.value(),
             "target_chapters": self.chapters_spin.value(),
             "theme": self.theme_edit.toPlainText().strip(),

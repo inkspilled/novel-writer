@@ -15,6 +15,8 @@ from pathlib import Path
 
 from .. import project_io
 from ..logger import get_logger
+from ..meme_style import normalize_meme_level
+from ..narrative_voice import normalize_voice
 
 logger = get_logger(__name__)
 
@@ -158,11 +160,11 @@ _CYCLE_STEPS = [
     {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True, "thinking": "off", "tools": ["search_chapters", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 1, "phase": "灵感"},
     {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True, "thinking": "on", "tools": ["read_chapter", "get_world_state", "get_memory", "get_open_loops"], "tool_rounds": 1, "phase": "推演"},
     {"id": "character_panel", "needs": "剧情审查", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "角色会审"},
-    {"id": "chapter", "needs": "正文写作", "prompt": "严格按【本章细纲】写第{n}章正文；细纲只是骨架，可丰富场景与对话，但不得改写事件走向。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【本章大纲】【灵感】和【角色推演】来推进剧情。保持与前文连贯。", "input": ["planning/章节细纲.md", "planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/时间线.md", "planning/主线.md", "planning/支线.md", "planning/伏笔.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt", "max_tokens": 8192, "thinking": "off", "skills": ["chapter-craft"], "tools": ["read_planning", "read_chapter", "search_chapters", "get_world_state", "get_memory", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 2, "retry": 1, "phase": "写作"},
+    {"id": "chapter", "needs": "正文写作", "prompt": "严格按【本章细纲】写第{n}章正文；细纲只是骨架，可丰富场景与对话，但不得改写事件走向。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【本章大纲】【灵感】和【角色推演】来推进剧情。保持与前文连贯。语言严格按【语言质感】的硬约束执行：长篇以「读得顺」为先，不以「写得美」为先，不要为了文采堆形容词、成语和比喻。现代梗严格按【梗密度】执行，不超量、不硬塞。", "input": ["planning/章节细纲.md", "planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/时间线.md", "planning/主线.md", "planning/支线.md", "planning/伏笔.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt", "max_tokens": 8192, "thinking": "off", "skills": ["chapter-craft"], "tools": ["read_planning", "read_chapter", "search_chapters", "get_world_state", "get_memory", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 2, "retry": 1, "phase": "写作"},
     {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
     {"id": "world_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
     {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
-    {"id": "polish", "needs": "润色", "prompt": "润色第{n}章正文，提升文笔质量、场景描写、对话自然度和情感表达。保持原有风格，只做锦上添花。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True, "max_tokens": 8192, "thinking": "off", "skills": ["continuity"], "tools": ["read_chapter", "read_planning", "search_chapters", "get_world_state"], "tool_rounds": 1, "retry": 1, "phase": "润色"},
+    {"id": "polish", "needs": "润色", "prompt": "语言按【语言质感 · {narrative_voice}】执行。大白话/平实档做「减法润色」：删掉多余的形容词、成语、比喻和「淡淡的/微微/缓缓」这类凑字副词，把书面腔改成平时说话的说法，把长句拆短；文学档只删冗余和套话，保留有信息量的修辞与节奏。只改语言，不改剧情、人物、信息和对白的意思；不新增修辞、不重写；原文里符合【梗密度】的梗要保留，不新增也不删改。改完应比原文更顺、更好读，篇幅不得少于原文的 70%。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True, "max_tokens": 8192, "thinking": "off", "skills": ["continuity"], "tools": ["read_chapter", "read_planning", "search_chapters", "get_world_state"], "tool_rounds": 1, "retry": 1, "phase": "润色"},
     {"id": "percept_extract", "needs": "剧情审查", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "感知抽取"},
     {"id": "seal_chapter", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "封印"},
     {"id": "offscreen_tick", "needs": "剧情审查", "prompt": "", "output": "", "every": 5, "optional": True, "thinking": "off", "phase": "离场tick"},
@@ -300,7 +302,7 @@ def build_workflow(
                 gap_steps.append(n)
         data = {"name": "查漏补缺", "description": f"补写 {len(gap_steps)} 个缺失章节", "steps": [
             {"id": "chapter", "needs": "正文写作",
-             "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。",
+             "prompt": "根据大纲和前文写第{n}章正文。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。语言按【语言质感】写：短句、口语，不堆成语、比喻和形容词；现代梗按【梗密度】执行。",
              "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"],
              "output": "chapters/{n}_chapter.txt", "repeat": end_chapter},
         ]}
@@ -314,6 +316,8 @@ def build_workflow(
         "title": project_info.get("title", ""),
         "genre": project_info.get("genre", ""),
         "style": project_info.get("style", ""),
+        "narrative_voice": normalize_voice(project_info.get("narrative_voice", "")),
+        "meme_level": normalize_meme_level(project_info.get("meme_level", "")),
         "target_chapters": end_chapter,
     }
     # 从规划方向解析预期总章数，与 end_chapter 对不上时以规划为准（并告警）
@@ -332,7 +336,7 @@ def build_workflow(
             step["repeat"] = end_chapter
             # 续写模式：prompt 中提示从第几章开始
             if mode == WorkflowMode.CONTINUE:
-                step["prompt"] = f"根据大纲和前文写第{{n}}章正文。这是第{start_chapter}章到第{end_chapter}章的续写部分。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。"
+                step["prompt"] = f"根据大纲和前文写第{{n}}章正文。这是第{start_chapter}章到第{end_chapter}章的续写部分。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。保持与前文连贯。语言按【语言质感】写：短句、口语，不堆成语、比喻和形容词；现代梗按【梗密度】执行。"
 
     wf = WorkflowDef.from_dict(data)
     # 续写模式：跳过已完成的章节
@@ -340,3 +344,47 @@ def build_workflow(
         wf.project["_start_chapter"] = start_chapter
     logger.info("构建工作流: mode=%s, steps=%d, chapters=%d-%d", mode.value, len(wf.steps), start_chapter, end_chapter)
     return wf
+
+
+_RESUME_MODE_BY_NAME = {
+    "新书全流程": WorkflowMode.NEW_BOOK,
+    "续写": WorkflowMode.CONTINUE,
+    "新书立意": WorkflowMode.NEW_BOOK_PLANNING,
+    "校验": WorkflowMode.VALIDATE,
+}
+
+
+def refresh_builtin_workflow(
+    workflow_data: dict,
+    project_info: dict,
+    start_chapter: int = 1,
+) -> dict | None:
+    """断点续跑时用当前代码的内置模板替换旧定义。
+
+    提示词/技能包升级后，旧 `workflow.json` 会把老指令一直带到跑完。
+    只在「步骤 id 序列与当前模板完全一致」时刷新，避免覆盖手改的工作流；
+    自定义名称或结构不一致返回 None，调用方继续用存档定义。
+    """
+    name = (workflow_data or {}).get("name", "")
+    mode = _RESUME_MODE_BY_NAME.get(name)
+    if mode is None:
+        return None
+
+    merged = dict(project_info)
+    for key, value in (workflow_data.get("project") or {}).items():
+        if not merged.get(key):
+            merged[key] = value
+    end = int(merged.get("target_chapters") or 0)
+    if end <= 0:
+        return None
+
+    try:
+        fresh = build_workflow(mode, merged, start_chapter, end)
+    except Exception as e:  # 存档结构异常时不影响续跑
+        logger.warning("刷新内置工作流失败，沿用存档定义: %s", e)
+        return None
+    saved_ids = [s.get("id") for s in workflow_data.get("steps", [])]
+    if [s.id for s in fresh.steps] != saved_ids:
+        logger.info("工作流结构已变化，保留存档定义（不自动刷新）")
+        return None
+    return fresh.to_dict()

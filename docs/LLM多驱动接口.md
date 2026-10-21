@@ -76,10 +76,15 @@ Agent 层只依赖 `BaseLLM`，不感知后端差异。
 |------|-----|------|
 | 全局限流器间隔 | **0.15s** | 曾为 5s，8 步规划纯等 40s+ |
 | 限流器锁 | `threading.Lock` | 调用方各自 `new_event_loop()`，`asyncio.Lock` 跨 loop 竞争即死锁 |
-| httpx 超时 | **300s**（连接 15s） | 曾为 5s，LLM 生成必超时→重试 |
+| httpx 超时 | **120s**（连接 15s） | 移动网络/酒店 Wi-Fi 下快速失败，断了就断，交给断点续跑 |
+| 硬墙钟超时 | **120s**/次（`NOVEL_WRITER_LLM_TIMEOUT`） | httpx 的 read timeout 会被 keepalive 字节重置；坏网下不硬等，失败即记录/续跑 |
+| 流式空闲超时 | **90s** 无新 chunk（`NOVEL_WRITER_STREAM_IDLE_TIMEOUT`） | 连接活着但不吐字，坏网下尽快失败 |
+| 流式总时长 | **600s**（`NOVEL_WRITER_STREAM_TOTAL_TIMEOUT`） | 防止慢速滴流把一章拖成几小时 |
+| 超时重试 | **0 次** | 120s 都拿不到响应的请求，重试大概率还是卡；交给上层跳过/记录 |
+| embedding 硬超时 | **60s**（`NOVEL_WRITER_EMBED_TIMEOUT`） | 本地 8B embedding 批量补嵌可能慢；超时回退 BM25，不阻塞写作 |
 | HTTP 客户端 loop 绑定 | 每次调用 `_sync_loop()` | AgentWorker/WorkflowThread 各建 loop，httpx 客户端绑定创建时 loop，换 loop 须重建 |
 | 流式重试 | **仅在尚未产出内容时** | 已 yield 后再从头重试会把重复文本拼进正文 |
-| `max_retries` | **3** | 曾为 8，一次抖动最多等 2 分钟 |
+| `max_retries` | **1** | 坏网下少重试，失败交给上层记录/断点续跑 |
 | 退避封顶 | **15s** | 防止指数退避爆炸 |
 | 懒加载 SDK | 是 | PySide6 shiboken 导入链冲突 |
 | 显式 `certifi.where()` | 是 | Windows 系统证书库卡顿 |

@@ -7,12 +7,17 @@
 from __future__ import annotations
 
 import os
+import threading
 
 from .logger import get_logger
 
 logger = get_logger(__name__)
 
 _sync_openai_cls = None
+
+# 硬墙钟超时：httpx 的 read timeout 会被服务端 keepalive 重置；
+# 本地 embedding 冷启动曾出现单次调用挂 9 分钟，必须 fail-fast 回退 BM25。
+EMBED_TIMEOUT = float(os.environ.get("NOVEL_WRITER_EMBED_TIMEOUT", "60"))
 
 
 def _get_sync_openai():
@@ -59,6 +64,28 @@ class EmbeddingClient:
             logger.debug("Embedding 客户端 close 异常（忽略）: %s", e)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """批量向量化。单次调用不宜超过 ~64 条（多数网关的批量上限）。"""
-        resp = self._client.embeddings.create(model=self.model, input=texts)
+        """批量向量化；超过 EMBED_TIMEOUT 直接失败，由调用方回退 BM25。
+
+        单次调用不宜超过 ~64 条（多数网关的批量上限）。
+        """
+        result: dict = {}
+
+        def _call():
+            try:
+                result["resp"] = self._client.embeddings.create(model=self.model, input=texts)
+            except Exception as exc:  # 交给调用线程重新抛出
+                result["err"] = exc
+
+        worker = threading.Thread(target=_call, name="embedding-call", daemon=True)
+        worker.start()
+        worker.join(EMBED_TIMEOUT)
+        if worker.is_alive():
+            logger.warning("Embedding 调用超过 %.0fs，回退 BM25（model=%s）",
+                           EMBED_TIMEOUT, self.model)
+            raise TimeoutError(f"embedding 调用超过 {EMBED_TIMEOUT:.0f}s")
+        if "err" in result:
+            raise result["err"]
+        resp = result.get("resp")
+        if resp is None:
+            raise RuntimeError("embedding 返回空结果")
         return [item.embedding for item in resp.data]

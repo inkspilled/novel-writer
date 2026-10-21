@@ -111,18 +111,35 @@ def build_title_constraint(old_title: str) -> str:
     return f"\n\n【标题约束】本章标题必须是「{old_title}」，正文第一行用 # {old_title}，不得更改标题。"
 
 
-def build_fix_titles_prompt(excerpts: list[str]) -> str:
-    """标题校准：LLM 根据正文开头内容为每章重新拟标题。"""
-    return (
-        "你是小说编辑。以下是各章的开头内容和当前标题。\n"
-        "当前标题可能重复或不准确，请根据正文内容为每章重新拟定一个2-6字的精准标题。\n"
-        "【重要】只输出标题的后半部分，不要包含「第X章」前缀。例如：\n"
-        "- 当前标题「第一章：寸铁」→ 输出「铁入学堂」\n"
-        "- 当前标题「第二章：月照铁光」→ 输出「夜试寸铁」\n\n"
-        "严格输出 JSON 格式，不要输出其他内容：\n"
-        '{"1": "新标题", "2": "新标题", ...}\n\n'
-        + "\n\n".join(excerpts)
-    )
+def build_fix_titles_prompt(
+    excerpts: list[str],
+    style_titles: list[str] | None = None,
+) -> str:
+    """标题校准：只修占位/重复/空标题，并沿用本书现有标题风格。
+
+    不再要求「统一改成 2-6 字精准标题」——那会把作者原有的两字事件名
+    （欠薪/杖责/道种）批量改成四字解释句，越校准越不像原书。
+    """
+    parts = [
+        "你是小说编辑。下面列出的章节标题存在「空标题 / 占位标题 / 标题重复」问题，请只修这些章节。",
+        "【硬性要求】沿用本书现有标题的字数与风格，不要统一改成「2-6 字精准标题」。",
+    ]
+    if style_titles:
+        parts.append("本书正常标题示例：" + "、".join(style_titles[:8]))
+        parts.append(
+            "修复后的标题必须与这些示例保持同一风格：字数相近、偏事件名还是偏意象、"
+            "是否使用短句，都要一致。"
+        )
+    parts.extend([
+        "【重要】只输出标题的后半部分，不要包含「第X章」前缀。",
+        "只输出下面列出的问题章节；正常章节不要出现在 JSON 里。",
+        "",
+        "严格输出 JSON 格式，不要输出其他内容：",
+        '{"1": "新标题", "2": "新标题", ...}',
+        "",
+        "\n\n".join(excerpts),
+    ])
+    return "\n".join(parts)
 
 
 def build_world_state_prompt(n: int, gs_summary: str, content: str) -> str:

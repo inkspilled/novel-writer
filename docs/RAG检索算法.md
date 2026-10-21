@@ -27,6 +27,8 @@
 - 补嵌时顺带清理陈旧键（章节润色后段落变少、id:指纹 组合失效的）；换 embedding 模型 → 全部向量作废重嵌；
 - 余弦排序有 numpy 用 numpy，没有则纯 Python（功能不受影响）；
 - 规划文档检索（`_rag_planning_fragments`）**仍走 BM25**：文档小、关键词命中准，无需语义化。
+- embedding 单次调用有 **60s 硬墙钟**（`NOVEL_WRITER_EMBED_TIMEOUT`）：本地 embedding 冷启动曾挂 9 分钟，超时直接抛错、本次检索回退 BM25；
+- `search_chapters` 工具固定 `use_semantic=False`（纯 BM25）：工具调用在 Agent 循环里同步执行，不能为了语义召回把整章写作卡住。
 
 **成本**：首次启用时全书 chunk 批量嵌入（一次性，之后每章只嵌新增段落 + 1 次查询嵌入）；调用失败静默回退 BM25，不影响写作流程。
 

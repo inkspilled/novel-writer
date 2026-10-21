@@ -65,6 +65,23 @@ class _RateLimiter:
 
 _global_limiter = _RateLimiter(min_interval=0.15)
 
+# 硬墙钟超时：httpx 的 read timeout 会被服务端 keepalive 字节不断重置，
+# 曾出现「HTTP 200 后挂 1 小时」；这里给每次调用加不可重置的总时限。
+# 默认值按「移动网络/酒店 Wi-Fi 快速失败」调：断开就立刻让上层记录/续跑，
+# 不追求在坏网上硬等一次成功。
+LLM_REQUEST_TIMEOUT = float(os.environ.get("NOVEL_WRITER_LLM_TIMEOUT", "120"))
+LLM_STREAM_IDLE_TIMEOUT = float(os.environ.get("NOVEL_WRITER_STREAM_IDLE_TIMEOUT", "90"))
+LLM_STREAM_TOTAL_TIMEOUT = float(os.environ.get("NOVEL_WRITER_STREAM_TOTAL_TIMEOUT", "600"))
+
+
+async def _with_timeout(coro, timeout: float, label: str):
+    """给协程加硬时限；超时日志写明是哪类请求，方便排查卡死。"""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("LLM %s 硬超时（%.0fs），取消本次请求", label, timeout)
+        raise
+
 # N-01 修复：使用模块级缓存实现真正的单次懒加载
 _async_openai_cls = None
 
@@ -238,7 +255,7 @@ class LLMClient(BaseLLM):
         import ssl
         import httpx, certifi
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-        http_client = httpx.AsyncClient(verify=ssl_ctx, timeout=httpx.Timeout(300.0, connect=15.0))
+        http_client = httpx.AsyncClient(verify=ssl_ctx, timeout=httpx.Timeout(120.0, connect=15.0))
         return AsyncOpenAI(
             api_key=self.api_key or "ollama",
             base_url=self.base_url or "https://api.openai.com/v1",
@@ -291,7 +308,7 @@ class LLMClient(BaseLLM):
         messages: list[LLMMessage],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        max_retries: int = 3,
+        max_retries: int = 1,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
     ) -> LLMResponse:
@@ -313,7 +330,11 @@ class LLMClient(BaseLLM):
                     create_kwargs["tools"] = tools
                     create_kwargs["tool_choice"] = "auto"
                 try:
-                    resp = await self.client.chat.completions.create(**create_kwargs)
+                    resp = await _with_timeout(
+                        self.client.chat.completions.create(**create_kwargs),
+                        LLM_REQUEST_TIMEOUT,
+                        "请求",
+                    )
                 except Exception as e:
                     if attempt < max_retries and _is_invalid_request(e):
                         # 思考字段不被该 API 认可时降级重试（不带 extra_body）
@@ -339,6 +360,11 @@ class LLMClient(BaseLLM):
                     tool_calls=_serialize_tool_calls(getattr(choice.message, "tool_calls", None)),
                     finish_reason=getattr(choice, "finish_reason", "") or "",
                 )
+            except asyncio.TimeoutError as e:
+                # 硬超时不再重试：600s 都拿不到响应的请求，重试大概率还是卡。
+                # 交给上层（可选步骤跳过/章节失败记录）继续推进。
+                logger.error("LLM 调用硬超时（%.0fs），放弃本次调用: %s", LLM_REQUEST_TIMEOUT, e)
+                raise
             except _get_retryable_errors() as e:
                 last_exc = e
                 if attempt >= max_retries:
@@ -360,7 +386,7 @@ class LLMClient(BaseLLM):
         messages: list[LLMMessage],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        max_retries: int = 3,
+        max_retries: int = 1,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
@@ -382,7 +408,11 @@ class LLMClient(BaseLLM):
                 if extra:
                     create_kwargs["extra_body"] = extra
                 try:
-                    stream = await self.client.chat.completions.create(**create_kwargs)
+                    stream = await _with_timeout(
+                        self.client.chat.completions.create(**create_kwargs),
+                        LLM_REQUEST_TIMEOUT,
+                        "流式首包",
+                    )
                 except Exception as e:
                     if extra and not yielded_any and _is_invalid_request(e):
                         logger.warning("思考开关被 %s 拒绝（流式），去掉后重试: %s", self.base_url, e)
@@ -390,7 +420,25 @@ class LLMClient(BaseLLM):
                         continue
                     raise
                 try:
-                    async for chunk in stream:
+                    iterator = stream.__aiter__()
+                    deadline = time.monotonic() + LLM_STREAM_TOTAL_TIMEOUT
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            logger.warning("LLM 流式总时长超时（%.0fs），取消本次请求",
+                                           LLM_STREAM_TOTAL_TIMEOUT)
+                            raise asyncio.TimeoutError("stream total timeout")
+                        try:
+                            chunk = await asyncio.wait_for(
+                                iterator.__anext__(),
+                                timeout=min(LLM_STREAM_IDLE_TIMEOUT, remaining),
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            logger.warning("LLM 流式 %.0fs 无新内容，取消本次请求",
+                                           LLM_STREAM_IDLE_TIMEOUT)
+                            raise
                         try:
                             if chunk.choices and chunk.choices[0].delta:
                                 kind, content = _delta_parts(chunk.choices[0].delta)
@@ -408,6 +456,9 @@ class LLMClient(BaseLLM):
                     except Exception as e:
                         logger.debug("关闭流式连接异常（忽略）: %s", e)
                 return  # 流式正常结束
+            except asyncio.TimeoutError as e:
+                logger.error("流式 LLM 调用硬超时（已产出=%s），放弃本次调用: %s", yielded_any, e)
+                raise
             except _get_retryable_errors() as e:
                 last_exc = e
                 # 已产出部分内容时绝不能从头重试——上游会把重复文本拼进正文

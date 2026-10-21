@@ -175,6 +175,11 @@ def _setup_logging():
         console_handler.setFormatter(_ColorFormatter(_LOG_FORMAT, _DATE_FORMAT))
         root.addHandler(console_handler)
 
+        # 第三方 HTTP 客户端每次请求都打 INFO（"HTTP Request ... 200 OK"），
+        # 一章几十次、几百章会把日志刷爆；只保留 WARNING+（错误仍有记录）。
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+
         _initialized = True
 
 

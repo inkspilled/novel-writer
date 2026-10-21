@@ -131,7 +131,7 @@ class NovelToolkit:
             from ..rag import get_retriever
             retriever = get_retriever(self.project_dir)
             retriever.load_chapters(10 ** 9)
-            text = retriever.retrieve(query, top_k=top_k)
+            text = retriever.retrieve(query, top_k=top_k, use_semantic=False)
         except Exception as e:
             return f"ERROR: 检索失败: {e}"
         return text or "（没有检索到相关段落）"

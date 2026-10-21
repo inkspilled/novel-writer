@@ -43,6 +43,24 @@ class ChapterWriteRejected(Exception):
     """章正文写入被拒（校验失败/空内容），不得推进断点。"""
 
 
+# 连续 N 章失败（常见于断网/API 不可达）就中止整跑：
+# 否则没网时会一口气把后面几百章全刷成 error，日志爆掉还白等。
+MAX_CONSECUTIVE_CHAPTER_FAILURES = 2
+
+
+def _is_network_error(exc: Exception) -> bool:
+    """断网/API 不可达：只记一行，不刷整屏 traceback。"""
+    name = type(exc).__name__
+    text = str(exc).lower()
+    return (
+        name in {"APIConnectionError", "APITimeoutError", "ConnectError", "ReadTimeout",
+                 "TimeoutError", "ConnectionError", "RemoteProtocolError"}
+        or "connection error" in text
+        or "all connection attempts failed" in text
+        or "timed out" in text
+    )
+
+
 class WorkflowRunner:
     """工作流执行器 — 技能匹配 + 文件传递。"""
 
@@ -69,6 +87,7 @@ class WorkflowRunner:
         self._skill_cycles: dict[str, Iterator[BaseAgent]] = {}
         self._build_skill_index()
         self._stop = False
+        self._abort_reason = ""
         self.total_usage: dict[str, int] = {}  # 本次运行累计 token 用量
         self._journal = None  # RunJournal（run_start 时创建）
         self._context_builder = ContextBuilder(project_dir, project_info, max_context_tokens)
@@ -189,6 +208,7 @@ class WorkflowRunner:
         """执行完整工作流，返回进度状态。"""
         logger.info("工作流开始执行: %s (%d 步骤)", workflow.name, len(workflow.steps))
         self._stop = False
+        self._abort_reason = ""
         if progress is None:
             progress = {}
         from .journal import RunJournal
@@ -326,6 +346,7 @@ class WorkflowRunner:
             # 首个写盘被拒的章：后续章可以继续写，但 current 不得越过这个洞，
             # 否则断点恢复会直接从 n+1 开始，把失败章永久跳过。
             blocked_at: int | None = None
+            consecutive_failures = 0
             for n in chapters_to_write:
                 if self._stop:
                     break
@@ -354,9 +375,24 @@ class WorkflowRunner:
                 except WorkflowError:
                     raise  # 配置类错误（如找不到智能体），继续重试无意义
                 except Exception as e:
-                    # 单章失败不终止整跑：记录后跳到下一章，结尾汇总
-                    logger.error("章节步骤失败（跳过继续）: 第%d章 - %s", n, e, exc_info=True)
+                    # 单章失败不终止整跑：记录后跳到下一章，但 current 不得越过这个洞，
+                    # 否则断点恢复会从 n+1 开始，把失败章永久跳过。
+                    logger.error("章节步骤失败（跳过继续）: 第%d章 - %s", n, e,
+                                 exc_info=not _is_network_error(e))
                     progress.setdefault("_errors", []).append(f"第{n}章: {e}")
+                    if blocked_at is None:
+                        blocked_at = n
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_CONSECUTIVE_CHAPTER_FAILURES:
+                        self._abort_reason = (
+                            f"连续 {consecutive_failures} 章失败，已中止；"
+                            f"最后错误：{type(e).__name__}: {e}"
+                        )
+                        logger.error("%s（网络恢复后可从断点继续）", self._abort_reason)
+                        if self.on_error:
+                            self.on_error(step.id, self._abort_reason)
+                        self._stop = True
+                        break
                     if self.on_error:
                         self.on_error(step.id, f"第{n}章写作失败: {e}")
                     continue
@@ -379,6 +415,13 @@ class WorkflowRunner:
                     break
                 # current 必须等章后链路全部跑完才落盘：否则在章后步骤/沉淀中途
                 # 崩溃或停止，恢复会从 n+1 开始，第 n 章的记忆与报告永久缺失。
+                # 网络恢复后重试成功：把该章之前的失败记录清掉，
+                # 否则结尾汇总/界面会一直显示已经不存在的「失败章」。
+                errors = progress.get("_errors")
+                if errors:
+                    prefix = f"第{n}章:"
+                    progress["_errors"] = [e for e in errors if not str(e).startswith(prefix)]
+                consecutive_failures = 0
                 if blocked_at is None:
                     progress[step.id] = {"current": n, "total": step.repeat}
                     self._save_progress(progress)
@@ -390,7 +433,7 @@ class WorkflowRunner:
                         n, n, step.repeat, tokens, len(progress.get("_errors") or []),
                     )
             if blocked_at is not None:
-                logger.warning("第%d章写盘被拒，进度停在 %d，恢复时会重试该章",
+                logger.warning("第%d章失败，进度停在 %d，恢复时会重试该章",
                                blocked_at, blocked_at - 1)
             errors = progress.get("_errors")
             if errors:
@@ -398,7 +441,21 @@ class WorkflowRunner:
                 if self.on_error:
                     self.on_error(step.id, f"共 {len(errors)} 章失败: {'；'.join(errors[-5:])}")
         else:
-            await self._execute_step(step, project, 1, progress)
+            try:
+                await self._execute_step(step, project, 1, progress)
+            except (WorkflowError, asyncio.CancelledError):
+                raise
+            except Exception as e:
+                if not step.optional:
+                    raise
+                # 可选步骤（细纲/标题/灵感等）失败不终止整跑：记 error 后继续，
+                # 下次断点恢复会重试；网络不好时尤其需要「断了就断」。
+                logger.warning("可选步骤 %s 失败，跳过继续: %s", step.id, e)
+                progress[step.id] = "error"
+                self._save_progress(progress)
+                if self.on_error:
+                    self.on_error(step.id, f"可选步骤失败（已跳过，恢复时重试）: {e}")
+                return
             progress[step.id] = "done"
             self._save_progress(progress)
 
@@ -408,7 +465,8 @@ class WorkflowRunner:
         try:
             await self._execute_step(ps, project, n, progress)
         except Exception as e:
-            logger.error("定时步骤失败（跳过继续）: %s 第%d章 - %s", ps.id, n, e, exc_info=True)
+            logger.error("定时步骤失败（跳过继续）: %s 第%d章 - %s", ps.id, n, e,
+                         exc_info=not _is_network_error(e))
             progress[ps_key] = "error"  # 恢复时 != "done" 会自动重试
             if self.on_error:
                 self.on_error(ps.id, f"第{n}章 {ps.id} 失败: {e}")
@@ -616,7 +674,8 @@ class WorkflowRunner:
                 # usage 由 BaseAgent.usage_sink 汇总（含内置步骤与工具循环）
                 logger.info("步骤完成: %s (第%d章)", step.id, n)
         except Exception as e:
-            logger.error("步骤执行失败: %s (第%d章) - %s", step.id, n, e, exc_info=True)
+            logger.error("步骤执行失败: %s (第%d章) - %s", step.id, n, e,
+                         exc_info=not _is_network_error(e))
             if self.on_error:
                 self.on_error(step.id, str(e))
             raise

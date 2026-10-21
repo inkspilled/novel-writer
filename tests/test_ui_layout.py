@@ -25,7 +25,8 @@ def test_main_window_layout_and_focus_mode(qapp):
     w.show()
     qapp.processEvents()
 
-    assert w.editor.tab_bar.count() == 3
+    assert w.editor.tab_bar.count() == 4
+    assert [w.editor.tab_bar.tabText(i) for i in range(4)] == ["正文", "规划", "世界", "写作台"]
     assert w.editor.planning_list.count() == 9
     assert w.splitter.count() == 3
 
@@ -270,3 +271,190 @@ def test_splash_finds_project_logo(qapp):
     assert found.exists()
     if LOGO_PATH.exists():
         assert found == LOGO_PATH
+
+
+def test_storyline_fields_are_wired(qapp, tmp_path):
+    """人物/卷组/回收章必须接上真实数据，而不是摆设输入框。"""
+    import json
+
+    from PySide6.QtCore import Qt
+
+    from src.novel_writer.core.story_threads import sync_story_threads
+    from src.novel_writer.core.world_state import WorldState
+    from src.novel_writer.ui.character.storyline_page import StorylinePage
+
+    (tmp_path / "planning").mkdir()
+    (tmp_path / "chapters").mkdir()
+    (tmp_path / "meta.json").write_text(
+        json.dumps({"title": "测试书", "target_chapters": 100}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    for n in range(1, 4):
+        (tmp_path / "chapters" / f"{n}_第{n}章.txt").write_text("正文", encoding="utf-8")
+    (tmp_path / "planning" / "主线.md").write_text(
+        "# 主线\n## 卷一 外门断事（1—50章）\n- 拜入宗门（第1章）\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "planning" / "人物设定.md").write_text(
+        "## 顾言\n- 主角\n## 赵九衡\n- 执事\n", encoding="utf-8"
+    )
+    (tmp_path / "planning" / "伏笔.md").write_text(
+        "# 伏笔\n- 陈年旧事（第1章埋设）\n", encoding="utf-8"
+    )
+    gs = WorldState(tmp_path)
+    gs.load()
+    gs.add_timeline_event(3, "顾言立下申辩状，赵九衡收进袖中", "执事堂")
+    gs.save()
+    sync_story_threads(tmp_path)
+
+    page = StorylinePage()
+    page.set_project_dir(tmp_path)
+    assert any("卷一" in page.edit_group.itemText(i) for i in range(page.edit_group.count()))
+    assert "顾言" in page._owner_names and "赵九衡" in page._owner_names
+
+    def find(title: str):
+        stack = [page.tree.topLevelItem(i) for i in range(page.tree.topLevelItemCount())]
+        while stack:
+            item = stack.pop(0)
+            data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+            if not data.get("group") and item.text(0) == title:
+                return item
+            stack.extend(item.child(i) for i in range(item.childCount()))
+        return None
+
+    timeline_item = find("顾言立下申辩状，赵九衡收进袖中")
+    assert timeline_item is not None
+    # 时间线也按卷分组（不再平铺）
+    parent = timeline_item.parent()
+    assert parent is not None and "卷一" in parent.text(0)
+
+    page.tree.setCurrentItem(timeline_item)
+    qapp.processEvents()
+    assert page.edit_owner.text() == "顾言、赵九衡"
+    assert page.edit_group.currentText().startswith("卷一")
+
+    # 标完成且没填回收章 → 自动补当前章（第 3 章）
+    foreshadow_item = find("陈年旧事")
+    assert foreshadow_item is not None
+    page.tree.setCurrentItem(foreshadow_item)
+    qapp.processEvents()
+    page.edit_status.setCurrentIndex(page.edit_status.findData("done"))
+    page._save_detail()
+    qapp.processEvents()
+    thread = page.ledger.get(page._current_id)
+    assert thread.resolve_chapter == 3
+    assert thread.status == "done"
+
+    # 列宽回归：标题列不能被长摘要/长人名挤没；窄窗口先收起人物列
+    page.resize(900, 780)
+    page.show()
+    qapp.processEvents()
+    assert page.tree.columnWidth(0) >= 200
+    page.resize(680, 780)
+    qapp.processEvents()
+    assert page.tree.isColumnHidden(3)
+    page.close()
+
+
+def test_stream_chapter_does_not_hijack_other_chapter(qapp):
+    """生成第14章时用户点了第9章：后续流式片段不能切回14，也不能写进9。"""
+    from src.novel_writer.models.chapter import Chapter
+    from src.novel_writer.ui.editor.editor_panel import EditorPanel
+
+    editor = EditorPanel()
+    editor.start_stream_chapter(14)
+    editor.append_stream_chapter(14, "第十四章内容")
+    assert editor.is_streaming_chapter(14)
+    assert "第十四章内容" in editor.get_content()
+
+    chapter9 = Chapter(number=9, title="第九章")
+    chapter9._content_cache = "第九章正文"
+    editor.load_chapter(chapter9)
+    assert not editor.is_streaming_chapter(14)
+
+    editor.append_stream_chapter(14, "不该出现的片段")
+    assert editor._current_chapter.number == 9
+    assert editor.get_content() == "第九章正文"
+    editor.end_stream_chapter()
+    editor.close()
+
+
+def test_project_dialog_loads_target_chapters(qapp):
+    """编辑项目时目标章节数必须回填，不能永远显示 100 并覆盖 500。"""
+    from src.novel_writer.ui.project.new_project_dialog import NewProjectDialog
+
+    dialog = NewProjectDialog(
+        project_data={
+            "title": "测试书",
+            "genre": "仙侠",
+            "style": "史诗宏大",
+            "target_words": 1200000,
+            "target_chapters": 500,
+            "theme": "测试",
+            "direction": "测试",
+        },
+        agents={},
+    )
+    assert dialog.chapters_spin.value() == 500
+    assert dialog.get_data()["target_chapters"] == 500
+    dialog.close()
+
+
+def test_assist_page_reads_chapter_artifacts(qapp, tmp_path):
+    """写作台：本章/全书 9 个子页都能读到对应产物。"""
+    import json
+
+    from src.novel_writer.ui.editor.assist_page import AssistPage
+
+    (tmp_path / "inspiration").mkdir()
+    (tmp_path / "inspiration" / "3_灵感.md").write_text("# 灵感\n\n让顾言在旧库发现残卷", encoding="utf-8")
+    (tmp_path / "sim_cache" / "pov").mkdir(parents=True)
+    (tmp_path / "sim_cache" / "sim_3.md").write_text("# 推演\n\n顾言会先试探", encoding="utf-8")
+    (tmp_path / "sim_cache" / "pov" / "panel_3.json").write_text(
+        json.dumps({"director": {"choice": "沈玄微", "reason": "压得住场"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (tmp_path / "planning").mkdir()
+    (tmp_path / "planning" / "章节细纲.md").write_text(
+        "## 第3章 测试\n- 事件：旧库对峙\n- 转折：残卷出现\n- 章末钩子：门外有人\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "chapters" / "versions").mkdir(parents=True)
+    (tmp_path / "chapters" / "3_第3章 测试.txt").write_text("# 第3章 测试\n\n正文", encoding="utf-8")
+    (tmp_path / "chapters" / "3_第3章 测试.summary.md").write_text(
+        "# 第3章 概要\n\n顾言进了旧库。", encoding="utf-8")
+    (tmp_path / "chapters" / "versions" / "3_1_abcd.txt").write_text("# 旧版本\n\n修订前正文", encoding="utf-8")
+    (tmp_path / "review").mkdir()
+    (tmp_path / "review" / "质量检查_第3章.md").write_text("# 质量\n\n总分 80", encoding="utf-8")
+    (tmp_path / "review" / "校对报告_第3章.md").write_text("# 校对\n\n第3段有错字", encoding="utf-8")
+    (tmp_path / "review" / "审核报告.md").write_text("# 全书审核\n\n节奏偏慢", encoding="utf-8")
+    (tmp_path / "summary").mkdir()
+    (tmp_path / "summary" / "第1-3章摘要.md").write_text("# 滚动摘要\n\n前三章内容", encoding="utf-8")
+    (tmp_path / "memory.json").write_text(json.dumps({
+        "character_state": [{
+            "subject": "顾言", "aspect": "位置", "value": "旧库",
+            "status": "active", "source_chapter": 3,
+        }]
+    }, ensure_ascii=False), encoding="utf-8")
+
+    page = AssistPage()
+    page.set_project_dir(tmp_path)
+    page.set_chapter(3, "测试")
+
+    checks = {
+        "inspiration": "旧库发现残卷",
+        "sim": "顾言会先试探",
+        "outline": "旧库对峙",
+        "summary": "顾言进了旧库",
+        "review": "第3段有错字",
+        "rolling_summary": "前三章内容",
+        "review_center": "节奏偏慢",
+        "memory": "顾言",
+        "versions": "修订前正文",
+    }
+    for key, expected in checks.items():
+        page.select_key(key)
+        qapp.processEvents()
+        text = page.browser.toPlainText()
+        assert expected in text, f"{key} 未显示 {expected!r}，实际：{text[:200]}"
+    page.close()

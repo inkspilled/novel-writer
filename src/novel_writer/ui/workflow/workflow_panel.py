@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
 import weakref
 import gc
 import time
@@ -12,6 +14,10 @@ from ..common.workers import _register_worker
 from ...core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# 兜底看门狗：任何一步超过 N 秒没有任何事件（LLM 卡死、工具/embedding 挂住、
+# 事件循环等待永不完成的 future），强制取消工作流，避免整夜挂机。
+WATCHDOG_IDLE_SECONDS = float(os.environ.get("NOVEL_WRITER_WATCHDOG", "300"))
 
 
 class WorkflowThread(QThread):
@@ -34,6 +40,9 @@ class WorkflowThread(QThread):
         self._task = None
         self._step_t0 = 0.0
         self._step_usage: dict = {}
+        self._last_activity = time.monotonic()
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
         _register_worker(self)  # 防止 run() 未结束就被 GC
 
     def _weak_callback(self, name: str):
@@ -70,6 +79,12 @@ class WorkflowThread(QThread):
         self.runner.on_event = self._weak_callback("_on_event")
         self.runner.on_chunk = self._weak_callback("_on_chunk")
 
+        self._last_activity = time.monotonic()
+        self._watchdog_stop.clear()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop, name="workflow-watchdog", daemon=True
+        )
+        self._watchdog_thread.start()
         try:
             # 开始横幅由 AgentPanel.on_workflow_started 统一输出，避免重复
             self._task = self._loop.create_task(
@@ -80,7 +95,12 @@ class WorkflowThread(QThread):
             if self.runner.journal_path:
                 self.log_message.emit(f"运行日志: {self.runner.journal_path}")
             if self.runner._stop:
-                logger.info("工作流已被用户停止")
+                reason = getattr(self.runner, "_abort_reason", "")
+                if reason:
+                    logger.error("工作流已中止: %s", reason)
+                    self.log_message.emit(f"⛔ {reason}（网络恢复后可点继续，从断点续跑）")
+                else:
+                    logger.info("工作流已被用户停止")
                 self.workflow_stopped.emit()
             else:
                 logger.info("工作流执行完成")
@@ -95,6 +115,7 @@ class WorkflowThread(QThread):
             self.log_message.emit(f"错误: {e}\n{traceback.format_exc()}")
             self.workflow_stopped.emit()
         finally:
+            self._watchdog_stop.set()
             # 断开 runner → callback → thread 的引用，避免线程结束后 GC 再 traverse 已销毁的 QThread
             for attr in ("on_step_start", "on_step_end", "on_error", "on_event", "on_chunk"):
                 try:
@@ -107,7 +128,32 @@ class WorkflowThread(QThread):
                 self._loop = None
                 self._task = None
 
+    def _touch(self):
+        self._last_activity = time.monotonic()
+
+    def _watchdog_loop(self):
+        while not self._watchdog_stop.wait(10.0):
+            idle = time.monotonic() - self._last_activity
+            if idle < WATCHDOG_IDLE_SECONDS:
+                continue
+            logger.error("工作流 %.0f 秒无任何进展，强制中断", idle)
+            self.log_message.emit(
+                f"⚠ 已 {idle / 60:.0f} 分钟没有进展，强制中断当前工作流（可重新开始并从断点继续）"
+            )
+            try:
+                self.runner.stop()
+            except Exception:
+                pass
+            loop, task = self._loop, self._task
+            if loop is not None and task is not None and not loop.is_closed() and not task.done():
+                try:
+                    loop.call_soon_threadsafe(task.cancel)
+                except Exception:
+                    pass
+            break
+
     def _on_event(self, kind: str, payload: dict):
+        self._touch()
         """工具调用/重试等结构化事件 → 工作流日志（DSH 风格的 trajectory）。"""
         try:
             if kind == "tool_call":
@@ -129,6 +175,7 @@ class WorkflowThread(QThread):
             logger.debug("工作流事件格式化失败（忽略）", exc_info=True)
 
     def _on_step_start(self, step_id, n, agent_title):
+        self._touch()
         self._step_t0 = time.monotonic()
         try:
             self._step_usage = dict(self.runner.total_usage)
@@ -139,6 +186,7 @@ class WorkflowThread(QThread):
         self.log_message.emit(f"▸ <b>{agent_title}</b> 开始 {step_id}{suffix}")
 
     def _on_step_end(self, step_id, n, agent_title, output):
+        self._touch()
         elapsed = max(0.0, time.monotonic() - self._step_t0) if self._step_t0 else 0.0
         total = dict(getattr(self.runner, "total_usage", {}) or {})
         delta = {k: int(total.get(k, 0)) - int(self._step_usage.get(k, 0)) for k in total}
@@ -157,9 +205,11 @@ class WorkflowThread(QThread):
         self.progress_updated.emit(self.progress)
 
     def _on_chunk(self, step_id, n, kind, text):
+        self._touch()
         self.chapter_chunk.emit(step_id, n, kind, text)
 
     def _on_error(self, step_id, error):
+        self._touch()
         self.step_error.emit(step_id, error)
         self.log_message.emit(f"✗ {step_id}: {error}")
 

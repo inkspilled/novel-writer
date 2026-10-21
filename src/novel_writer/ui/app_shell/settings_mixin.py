@@ -35,7 +35,10 @@ class SettingsMixin:
             "title": self.project.title,
             "genre": self.project.genre,
             "style": self.project.style,
+            "narrative_voice": self.project.narrative_voice,
+            "meme_level": self.project.meme_level,
             "target_words": self.project.target_words,
+            "target_chapters": self.project.target_chapters,
             "theme": self.project.theme,
             "direction": self.project.direction,
             "synopsis": self.project.synopsis,
@@ -49,7 +52,17 @@ class SettingsMixin:
             self.project.title = data["title"]
             self.project.genre = data["genre"]
             self.project.style = data["style"]
+            self.project.narrative_voice = data.get(
+                "narrative_voice", self.project.narrative_voice
+            )
+            self.project.meme_level = data.get("meme_level", self.project.meme_level)
             self.project.target_words = data["target_words"]
+            try:
+                chapters = int(data.get("target_chapters") or 0)
+            except (TypeError, ValueError):
+                chapters = 0
+            if chapters > 0:
+                self.project.target_chapters = chapters
             self.project.theme = data["theme"]
             self.project.direction = data["direction"]
             self.project.synopsis = data["synopsis"]

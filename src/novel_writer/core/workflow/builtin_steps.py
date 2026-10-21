@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import datetime
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .. import project_io
@@ -113,34 +114,91 @@ async def _run_toc(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
         runner.on_step_end(step.id, n, "系统", "目录已更新")
 
 
+_TITLE_PLACEHOLDERS = frozenset({"未命名", "暂定", "无题", "缺省", "新章", "正文"})
+_TITLE_PREFIX_RE = re.compile(r"^\s*第\s*[0-9零〇一二两三四五六七八九十百千]{1,6}\s*章\s*[:：\-—·\s]*")
+
+
+def _title_subtitle(title: str, number: int = 0) -> str:
+    """去掉「第N章：」前缀，返回作者真正起的标题部分。"""
+    text = _TITLE_PREFIX_RE.sub("", (title or "").strip()).strip()
+    return text
+
+
+def _pick_title_problems(chapters: list[dict]) -> tuple[list[dict], list[str]]:
+    """只挑出需要修的标题：空/占位/重复；正常标题一个都不动。"""
+    subtitles: dict[int, str] = {}
+    for ch in chapters:
+        subtitles[ch["number"]] = _title_subtitle(ch.get("title", ""), ch["number"])
+    counts: dict[str, int] = {}
+    for sub in subtitles.values():
+        if sub:
+            counts[sub] = counts.get(sub, 0) + 1
+    duplicates = {sub for sub, c in counts.items() if c > 1}
+    problems: list[dict] = []
+    for ch in chapters:
+        sub = subtitles[ch["number"]]
+        if (not sub
+                or sub in _TITLE_PLACEHOLDERS
+                or re.fullmatch(r"第?\s*\d+\s*章?", sub)
+                or sub in duplicates):
+            problems.append(ch)
+    problem_numbers = {ch["number"] for ch in problems}
+    style = [
+        subtitles[ch["number"]] for ch in chapters
+        if ch["number"] not in problem_numbers and subtitles[ch["number"]]
+    ][:8]
+    return problems, style
+
+
 @handler("fix_titles")
 async def _run_fix_titles(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    chapters = project_io.scan_chapters(runner.project_dir)
+    if not chapters:
+        return
+    meta = project_io.load_meta(runner.project_dir)
+    calibration = meta.get("title_calibration") or {}
+    if calibration.get("locked"):
+        logger.info("标题校准已锁定（%s），跳过", calibration.get("at", ""))
+        if runner.on_step_end:
+            runner.on_step_end(step.id, n, "系统", "标题已锁定，跳过（如需重校请清除 title_calibration）")
+        return
+    problems, style_titles = _pick_title_problems(chapters)
+    if not problems:
+        # 关键：标题已经正常时不再调 LLM、不再批量改名。
+        logger.info("标题已正常，跳过校准（不覆盖作者标题）")
+        if runner.on_step_end:
+            runner.on_step_end(step.id, n, "系统", "标题已正常，跳过（不覆盖作者标题）")
+        return
+
     agent = _fallback_agent(runner, (SKILL_REVIEW, SKILL_TYPO_CHECK))
     if not agent:
         logger.warning("标题校准跳过：没有可用的智能体")
         return
     if runner.on_step_start:
         runner.on_step_start(step.id, n, agent.title)
-    logger.info("执行标题校准（LLM）...")
-    chapters = project_io.scan_chapters(runner.project_dir)
-    if not chapters:
-        return
-    # 构建上下文：每章前 500 字
+    logger.info("标题校准：%d 个标题需要修（空/占位/重复），其余保持原样", len(problems))
     excerpts = []
-    for ch in chapters:
+    for ch in problems:
         content = project_io.read_md(ch["content_path"])
         excerpt = content[:500].replace("\n", " ")
         excerpts.append(f"第{ch['number']}章（当前标题：「{ch['title']}」）：\n{excerpt}")
-    prompt = build_fix_titles_prompt(excerpts)
+    prompt = build_fix_titles_prompt(excerpts, style_titles)
     try:
         resp = await agent.run(prompt, thinking="off", keep_history=False)
         # 稳健提取 JSON（兼容 ```json``` 包裹 / 思考噪声 / 嵌套对象）
         text = resp.content.strip()
         title_map = extract_json_object(text)
         if title_map:
+            allowed = {ch["number"] for ch in problems}
             logs = []
+            applied: dict[str, str] = {}
             for ch_num_str, new_title in title_map.items():
-                ch_num = int(ch_num_str)
+                try:
+                    ch_num = int(ch_num_str)
+                except (TypeError, ValueError):
+                    continue
+                if ch_num not in allowed:
+                    continue  # LLM 多返回的正常章节一律忽略
                 new_title_str = str(new_title).strip()
                 if not new_title_str:
                     logs.append(f"第{ch_num}章: 标题为空，跳过")
@@ -149,11 +207,22 @@ async def _run_fix_titles(runner: "WorkflowRunner", step: "WorkflowStep", n: int
                 if err:
                     logs.append(f"第{ch_num}章: {err}")
                 elif old:
+                    applied[str(ch_num)] = new_title_str
                     logs.append(f"第{ch_num}章: 「{old}」→「{new_title_str}」")
             # 刷新目录
             project_io.generate_toc(runner.project_dir)
-            # 同步更新 meta.json 中的章节标题
-            _update_meta_chapter_titles(runner.project_dir, title_map)
+            # 只同步真正改过的标题，避免把正常章节写回 meta
+            if applied:
+                _update_meta_chapter_titles(runner.project_dir, applied)
+                # 校准成功后锁定：同一版标题只校准一次，后续运行不再改，
+                # 避免「每次校准都不一样」。
+                meta = project_io.load_meta(runner.project_dir)
+                meta["title_calibration"] = {
+                    "locked": True,
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "applied": applied,
+                }
+                project_io.save_meta(runner.project_dir, meta)
             msg = f"标题校准完成，修正 {len(logs)} 处"
             logger.info(msg)
             if runner.on_step_end:
@@ -228,6 +297,8 @@ async def _run_world_state_update(runner: "WorkflowRunner", step: "WorkflowStep"
             logger.warning("大世界状态更新：LLM 返回格式异常")
     except Exception as e:
         logger.error("大世界状态更新失败: %s", e)
+        if runner.on_error:
+            runner.on_error(step.id, f"第{n}章世界状态更新失败: {e}")
 
 
 @handler("chapter_summary")
@@ -278,12 +349,22 @@ async def _run_quality_check(runner: "WorkflowRunner", step: "WorkflowStep", n: 
     content = project_io.read_md(existing_path)
     try:
         checker = QualityChecker(runner.project_dir)
-        report = checker.check_chapter(content, n)
+        meta = project_io.load_meta(runner.project_dir)
+        voice = runner.project_info.get("narrative_voice") or meta.get("narrative_voice", "")
+        meme_level = runner.project_info.get("meme_level") or meta.get("meme_level", "")
+        genre = runner.project_info.get("genre") or meta.get("genre", "")
+        report = checker.check_chapter(
+            content, n, voice=voice, meme_level=meme_level, genre=genre
+        )
         report_text = checker.generate_report_text(report)
         # 保存报告
         report_path = runner.project_dir / "review" / f"质量检查_第{n}章.md"
         project_io.write_md(report_path, report_text)
         msg = f"质量检查完成: {report.total_score:.1f}分"
+        if report.voice_issues:
+            msg += f"（语言质感提示 {len(report.voice_issues)} 条）"
+        if report.meme_issues:
+            msg += f"（梗密度提示 {len(report.meme_issues)} 条）"
         logger.info(msg)
         if runner.on_step_end:
             runner.on_step_end(step.id, n, "系统", msg)
