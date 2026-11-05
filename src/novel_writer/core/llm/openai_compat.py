@@ -59,16 +59,18 @@ class OpenAICompatLLM(BaseLLM):
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
+        effective_model = model or self.model
         create_kwargs: dict = dict(
-            model=self.model,
+            model=effective_model,
             messages=[{"role": m.role, "content": m.content} for m in messages],
             temperature=temperature,
             max_tokens=max_tokens,
         )
         extra = build_thinking_body(
             thinking,
-            model=self.model,
+            model=effective_model,
             base_url=self.base_url,
             dialect=self.extra.get("thinking_dialect"),
             off_body=parse_json_body(self.extra.get("thinking_off_body")),
@@ -91,9 +93,11 @@ class OpenAICompatLLM(BaseLLM):
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
+        effective_model = model or self.model
         create_kwargs: dict = dict(
-            model=self.model,
+            model=effective_model,
             messages=[{"role": m.role, "content": m.content} for m in messages],
             temperature=temperature,
             max_tokens=max_tokens,
@@ -101,7 +105,7 @@ class OpenAICompatLLM(BaseLLM):
         )
         extra = build_thinking_body(
             thinking,
-            model=self.model,
+            model=effective_model,
             base_url=self.base_url,
             dialect=self.extra.get("thinking_dialect"),
             off_body=parse_json_body(self.extra.get("thinking_off_body")),

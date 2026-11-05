@@ -17,6 +17,7 @@ import json
 import re
 from pathlib import Path
 from .logger import get_logger
+from .location_identity import resolve_location, ensure_identity, validate_spatial_record, duplicate_candidates
 
 logger = get_logger(__name__)
 
@@ -120,9 +121,73 @@ class WorldState:
 
     def add_location(self, name: str, info: dict) -> None:
         """地点是唯一实体：同名合并描述，不覆盖旧字段。"""
+        name = resolve_location(self.locations, name, str(info.get("parent") or ""))
         loc = self.locations.setdefault(name, {})
+        stable_id = loc.get("location_id")
         if isinstance(info, dict):
-            loc.update(info)
+            aliases = list(loc.get("aliases") or [])
+            geometry = dict(info)
+            if "coordinates" in geometry:
+                try:
+                    geometry = validate_spatial_record(self.locations, name, {**loc, **geometry})
+                except ValueError:
+                    # 模型提供的无效坐标不能覆盖已确认的坐标。
+                    for key in ("coordinates", "coordinate_frame", "coordinate_unit"):
+                        geometry.pop(key, None)
+            loc.update(geometry)
+            aliases.extend(loc.get("aliases") or [])
+            loc["aliases"] = aliases
+        self.locations[name] = ensure_identity(name, loc)
+        if stable_id:
+            self.locations[name]["location_id"] = stable_id
+
+    def canonical_location(self, name: str) -> str:
+        return resolve_location(self.locations, str(name))
+
+    def merge_locations(self, source: str, target: str) -> None:
+        if source == target or source not in self.locations or target not in self.locations:
+            raise ValueError("请选择两个不同的已有地点")
+        old = self.locations[source]
+        keep = self.locations[target]
+        merged = {**old, **keep}
+        merged["aliases"] = list(dict.fromkeys([*old.get("aliases", []), *keep.get("aliases", []), source]))
+        self.locations[target] = ensure_identity(target, merged)
+        del self.locations[source]
+        for group in (self.characters, self.items_catalog):
+            for record in group.values():
+                if isinstance(record, dict) and self.canonical_location(record.get("location", "")) == target:
+                    record["location"] = target
+        for event in [*self.location_log, *self.timeline]:
+            for key in ("location", "from"):
+                if event.get(key):
+                    event[key] = self.canonical_location(event[key])
+        for record in self.locations.values():
+            if record.get("parent") == source:
+                record["parent"] = target
+
+    def location_candidates(self, name: str):
+        return duplicate_candidates(self.locations, name)
+
+    def normalize_location_update(self, update: dict) -> dict:
+        update = copy.deepcopy(update)
+        known = copy.deepcopy(self.locations)
+        normalized = {}
+        for name, info in (update.get("locations") or {}).items():
+            info = info if isinstance(info, dict) else {}
+            canonical = resolve_location(known, name, str(info.get("parent") or ""))
+            if canonical != name:
+                info["aliases"] = list(dict.fromkeys([*(known[canonical].get("aliases") or []), name, *(info.get("aliases") or [])]))
+            normalized.setdefault(canonical, {}).update(info)
+            known[canonical] = {**known.get(canonical, {}), **info}
+        if "locations" in update:
+            update["locations"] = normalized
+        records = list((update.get("characters") or {}).values()) + list(update.get("timeline") or [])
+        items = update.get("items") or {}
+        records += list(items.get("new") or []) + list(items.get("move") or [])
+        for record in records:
+            if isinstance(record, dict) and record.get("location"):
+                record["location"] = resolve_location(known, str(record["location"]))
+        return update
 
     def referenced_locations(self) -> list[str]:
         """人物所在地 + 物品所在地/持有者所在地，去重排序。"""
@@ -148,7 +213,12 @@ class WorldState:
     def sync_locations(self) -> None:
         """把人物/物品引用到、但 locations 里缺的地点补成空记录。"""
         for name in self.referenced_locations():
-            self.locations.setdefault(name, {})
+            canonical = self.canonical_location(name)
+            self.add_location(canonical, {})
+        for group in (self.characters, self.items_catalog):
+            for record in group.values():
+                if isinstance(record, dict) and record.get("location"):
+                    record["location"] = self.canonical_location(record["location"])
 
     def characters_at(self, location: str) -> list[str]:
         """地点当前有哪些人（从角色 location 反查，多对多只存一边）。"""
@@ -274,6 +344,14 @@ class WorldState:
     def build_context_text(self) -> str:
         """生成大世界状态的文本摘要，用于注入 LLM 上下文。"""
         parts = []
+        if self.locations:
+            rows = []
+            for name, info in list(self.locations.items())[:60]:
+                aliases = "、".join(info.get("aliases") or [])
+                geometry = (f"；坐标系={info['coordinate_frame']}，坐标={info['coordinates']}，单位={info.get('coordinate_unit', '')}"
+                            if info.get("coordinates") is not None and info.get("coordinate_frame") else "")
+                rows.append(f"- {name}（ID={info.get('location_id', name)}；别名={aliases}；所属={info.get('parent', '')}）{geometry}：{str(info.get('description') or '')[:100]}")
+            parts.append("=== 统一地点台账 ===\n沿用已有地点名称/ID；别名指向同一地点，区域下的房间属于子地点；禁止为同一处场景反复改名新建。\n" + "\n".join(rows))
 
         # 世界信息
         w = self.world
@@ -332,7 +410,9 @@ class WorldState:
                 desc = info.get("effect", info.get("description", ""))
                 life = " [保命]" if info.get("life_save") else ""
                 uses = f" (剩余{info['uses']}次)" if info.get("uses", -1) > 0 else ""
-                item_lines.append(f"- {name}: {desc}{life}{uses}")
+                pos = info.get("holder") or info.get("location") or ""
+                pos_text = f"｜{pos}" if pos else ""
+                item_lines.append(f"- {name}: {desc}{life}{uses}{pos_text}")
             parts.append("\n".join(item_lines))
 
         return "\n\n".join(parts)
@@ -350,7 +430,7 @@ class WorldState:
         """
         if not isinstance(update_json, dict):
             return {}
-        u = copy.deepcopy(update_json)
+        u = self.normalize_location_update(update_json)
         u["_chapter"] = int(chapter or u.get("_chapter") or 0)
 
         chars = u.get("characters")
@@ -478,6 +558,7 @@ class WorldState:
           "date": "宗历1247年 秋 第2天"
         }
         """
+        update_json = self.normalize_location_update(update_json)
         logs = []
 
         # 更新角色

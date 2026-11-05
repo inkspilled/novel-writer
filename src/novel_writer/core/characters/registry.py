@@ -225,6 +225,37 @@ class CharacterRegistry:
             logger.debug("角色档案已从世界状态同步: %d 处", changed)
         return changed
 
+    def ensure_from_world_state(self, gs=None, chapter: int = 0) -> int:
+        """为 world_state 里已出现、但档案缺失的角色补 extra 卡。
+
+        ``sync_from_world_state`` 只更新已有档案；新角色若只进世界状态，
+        POV/感知抽取的名单里没有他，他的事件会被整体丢弃。这里只补最低限度
+        的档案（不打开 auto_sim，不猜人设），后续可由作者升档。
+        """
+        from ..world_state import WorldState  # 延迟导入，保持 core 内无环
+        if gs is None:
+            gs = WorldState(self.project_dir)
+            gs.load()
+        self._load()
+        added = 0
+        for name, data in gs.characters.items():
+            if not isinstance(data, dict) or not str(name).strip() or self.get(name):
+                continue
+            goals = data.get("goals")
+            norm_goals = [str(g).strip() for g in goals if str(g).strip()] if isinstance(goals, list) else []
+            self.create(
+                str(name),
+                chapter=chapter,
+                tier=CharacterTier.EXTRA,
+                goals=norm_goals,
+                location=str(data.get("location") or ""),
+                auto_sim=False,
+            )
+            added += 1
+        if added:
+            logger.debug("从世界状态补建角色档案: %d 人", added)
+        return added
+
     def push_to_world_state(self, gs=None) -> int:
         """把作者在 UI 里改的 location/goals 写回 world_state（手工编辑优先）。"""
         from ..world_state import WorldState

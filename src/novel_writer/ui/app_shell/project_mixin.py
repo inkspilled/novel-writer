@@ -11,6 +11,8 @@ from PySide6.QtGui import QDesktopServices
 from ..editor.editor_panel import PLANNING_DOCS
 from ..project.project_dialogs import OpenProjectDialog
 from ..project.new_project_dialog import NewProjectDialog
+from ..drama.drama_worker import DramaAIWorker
+from ..drama.drama_scope_dialog import DramaScopeDialog
 from ...models.project import Project
 from ...models.chapter import Chapter
 from ...core import project_io
@@ -22,7 +24,275 @@ from ...core.logger import get_logger
 logger = get_logger(__name__)
 
 class ProjectMixin:
+    # ── 顶层大页签：小说 / 短剧 ──
+
+    def _reset_drama_tab(self):
+        """切换/新建项目时卸载短剧页，避免把旧项目内容写进新项目。"""
+        self._drama_loaded_dir = None
+        self.drama_workspace.set_project(None)
+        self.drama_panel.set_project(None)
+
+    def _on_mode_tab_changed(self, index: int):
+        """短剧页签依附当前小说项目；切页时装载/保存，不新建项目。"""
+        if index == 1:
+            if not self.project.title or not self.project.project_dir:
+                QMessageBox.information(
+                    self, "短剧工作区",
+                    "短剧依附于小说项目。\n请先新建或打开一个小说项目。",
+                )
+                self.mode_tabs.blockSignals(True)
+                self.mode_tabs.setCurrentIndex(0)
+                self.mode_tabs.blockSignals(False)
+                return
+            if self._drama_loaded_dir != str(self.project.project_dir):
+                self.drama_workspace.set_project(self.project)
+                self.drama_panel.set_project(self.project)
+                self._drama_loaded_dir = str(self.project.project_dir)
+        else:
+            if (self._drama_loaded_dir and self.drama_workspace.store is not None
+                    and not self._drama_busy()):
+                self.drama_workspace.save_all(silent=True)
+
+    def _ensure_drama_loaded(self) -> bool:
+        if not self.project.project_dir:
+            return False
+        if self._drama_loaded_dir != str(self.project.project_dir):
+            self.drama_workspace.set_project(self.project)
+            self.drama_panel.set_project(self.project)
+            self._drama_loaded_dir = str(self.project.project_dir)
+        return True
+
+    def _drama_busy(self) -> bool:
+        return self._drama_worker is not None and self._drama_worker.isRunning()
+
+    def _on_drama_action(self, action: str):
+        """短剧工作流：改编/转剧本/分镜调真实模型；资产走本地提取。"""
+        if self._drama_busy():
+            QMessageBox.information(self, "短剧工作流", "短剧任务正在运行，先等它结束或点「停止」。")
+            return
+        if not self._ensure_drama_loaded():
+            QMessageBox.information(self, "短剧工作流", "请先新建或打开一个小说项目。")
+            return
+        self.drama_workspace.save_all(silent=True)
+        panel = self.drama_panel
+        if action == "assets":
+            self._drama_action_assets()
+            return
+        if action not in ("adapt", "script", "storyboard", "segment"):
+            panel.append_log(f"未知短剧动作：{action}")
+            return
+        if self.llm is None:
+            QMessageBox.warning(
+                self, "未配置模型",
+                "短剧一键生成需要调用大模型。\n请先到「模型与智能体」里配置 API Key / 模型。",
+            )
+            return
+        if action == "adapt" and self.drama_workspace.store.bible_text().strip():
+            ret = QMessageBox.question(
+                self, "一键改编",
+                "已存在改编圣经。将调用模型重新生成并覆盖，继续？",
+            )
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+        scope = "all"
+        if action in ("script", "storyboard", "segment"):
+            scope = self._ask_drama_scope(action)
+            if scope is None:
+                return
+        self._start_drama_worker(action, scope)
+
+    def _ask_drama_scope(self, action: str) -> str | None:
+        """让用户选当前章节/全部；返回 None 表示取消。"""
+        store = self.drama_workspace.store
+        if action == "segment":
+            if not any((c.content or "").strip() for c in self.project.chapters):
+                QMessageBox.information(self, "智能分集", "先写至少一章小说正文，再按剧情重新分集。")
+                return None
+            dialog = DramaScopeDialog(
+                "智能分集", "生成下一集（最多读5章，剩余素材顺延）",
+                "持续分集（处理待用正文，可随时停止）", self,
+                hint="按剧情选择连续章节合为一集，每集先规划再写剧本。\n"
+                     "已有来源映射会保留；只有剧本成功保存后才标记素材已使用，失败可继续。",
+            )
+            return dialog.scope() if dialog.exec() == QDialog.DialogCode.Accepted else None
+        if action == "script":
+            chapters = [c for c in self.project.chapters if (c.content or "").strip()]
+            if not chapters:
+                QMessageBox.information(self, "一键转剧本", "小说还没有正文。先写至少一章。")
+                return None
+            current = getattr(self.editor, "_current_chapter", None) or chapters[-1]
+            current_label = f"当前章节：第{current.number}章 {current.title}"
+            all_label = f"全部章节（{len(chapters)} 章有正文，逐章调用模型）"
+        else:
+            episodes = [
+                e for e in store.load_episodes()
+                if store.has_script(int(e["number"]))
+            ]
+            if not episodes:
+                QMessageBox.information(self, "一键分镜", "还没有剧本。先「一键转剧本」。")
+                return None
+            current_num = self.drama_workspace.script_page._current or int(episodes[-1]["number"])
+            current = next(
+                (e for e in episodes if int(e["number"]) == int(current_num)),
+                episodes[-1],
+            )
+            current_label = f"当前集：第{current['number']}集 {current['title']}"
+            all_label = f"全部集（{len(episodes)} 集有剧本，逐集调用模型）"
+        dialog = DramaScopeDialog(
+            "一键转剧本" if action == "script" else "一键分镜",
+            current_label,
+            all_label,
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.scope()
+
+    def _start_drama_worker(self, task: str, scope: str):
+        self._flush_content_save()
+        store = self.drama_workspace.store
+        if store is None:
+            return
+        chapters = [
+            {"number": c.number, "title": c.title, "text": c.content or ""}
+            for c in self.project.chapters
+        ]
+        current_chapter = getattr(self.editor, "_current_chapter", None)
+        current_episode = self.drama_workspace.script_page._current
+        project_info = {
+            "title": self.project.title,
+            "genre": self.project.genre,
+            "style": self.project.style,
+            "theme": self.project.theme,
+            "synopsis": self.project.synopsis,
+        }
+        worker = DramaAIWorker(
+            llm=self.llm,
+            store=store,
+            project_info=project_info,
+            task=task,
+            scope=scope,
+            chapters=chapters,
+            current_chapter=current_chapter.number if current_chapter else 0,
+            current_episode=current_episode,
+        )
+        worker.progress.connect(self._on_drama_progress)
+        worker.log.connect(self.drama_panel.append_log)
+        worker.agent_state.connect(self._on_drama_agent_state)
+        worker.finished_ok.connect(self._on_drama_done)
+        worker.failed.connect(self._on_drama_failed)
+        self._drama_worker = worker
+        self.drama_workspace.setEnabled(False)
+        self.drama_panel.set_running(True, task)
+        scope_text = "全部" if scope == "all" else "当前"
+        model = getattr(self.llm, "model", "当前模型")
+        self.drama_panel.set_status(f"准备调用模型（{scope_text}）…", 2)
+        self.drama_panel.append_log(
+            f"开始 {task}：范围={scope_text} · 模型={model} · 会逐章/逐集调用，真实耗时。"
+        )
+        worker.start()
+
+    def _on_drama_progress(self, message: str, percent: int):
+        self.drama_panel.set_status(message, percent)
+
+    def _on_drama_agent_state(self, name: str, state: str, task: str):
+        from ..agent.office_scene import AgentState
+        mapping = {
+            "working": AgentState.WORKING,
+            "done": AgentState.DONE,
+            "error": AgentState.ERROR,
+            "idle": AgentState.IDLE,
+        }
+        self.drama_panel.set_agent_state(name, mapping.get(state, AgentState.IDLE), task)
+
+    def _on_drama_done(self, summary: str):
+        worker = self._drama_worker
+        task = worker.task if worker else ""
+        self.drama_workspace.setEnabled(True)
+        self.drama_panel.set_running(False)
+        self.drama_panel.set_status(summary, 100)
+        self.drama_panel.append_log(summary)
+        store = self.drama_workspace.store
+        if store is not None:
+            self.drama_workspace.series_page.load(store, self.project)
+            self.drama_workspace.script_page.load(
+                store, keep=self.drama_workspace.script_page._current
+            )
+            self.drama_workspace.storyboard_page.load(
+                store, keep=self.drama_workspace.script_page._current
+            )
+            self.drama_workspace.assets_page.load(store)
+            page = {"adapt": 0, "script": 1, "segment": 1, "storyboard": 2}.get(task, 0)
+            self.drama_workspace.nav.setCurrentRow(page)
+        self._finish_drama_worker()
+
+    def _on_drama_failed(self, error: str):
+        self.drama_workspace.setEnabled(True)
+        self.drama_panel.set_running(False)
+        self.drama_panel.set_status("生成失败", 0)
+        self.drama_panel.append_log(f"生成失败：{error}")
+        QMessageBox.warning(self, "短剧生成失败", error)
+        self._finish_drama_worker()
+
+    def _finish_drama_worker(self):
+        worker = self._drama_worker
+        self._drama_worker = None
+        if worker is not None:
+            self._old_drama_workers.append(worker)
+
+    def _drama_stop(self, silent: bool = False):
+        worker = self._drama_worker
+        if worker is not None and worker.isRunning():
+            worker.request_stop()
+            self.drama_panel.set_status("正在停止…", 0)
+            if not silent:
+                self.drama_panel.append_log("已请求停止，当前这一次模型调用结束后会停。")
+
+    def _drama_action_assets(self):
+        """资产是本地规则提取，不调用模型；支持当前集/全部集。"""
+        store = self.drama_workspace.store
+        panel = self.drama_panel
+        if store is None:
+            return
+        episodes = [
+            e for e in store.load_episodes()
+            if store.load_storyboard(int(e["number"]))["shots"]
+        ]
+        if not episodes:
+            panel.append_log("还没有分镜，先「一键分镜」。")
+            panel.set_status("等待分镜", 0)
+            return
+        current_num = self.drama_workspace.storyboard_page._current or int(episodes[-1]["number"])
+        current = next(
+            (e for e in episodes if int(e["number"]) == int(current_num)),
+            episodes[-1],
+        )
+        dialog = DramaScopeDialog(
+            "一键资产",
+            f"当前集：第{current['number']}集 {current['title']}",
+            f"全部集（{len(episodes)} 集有分镜）",
+            self,
+            hint="资产提取是本地规则，不调用模型；会从已有分镜提取角色/地点占位。",
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        scope = dialog.scope()
+        targets = [current] if scope == "current" else episodes
+        from ..agent.office_scene import AgentState
+        panel.set_agent_state("prompt", AgentState.WORKING, "提取资产")
+        added = 0
+        for ep in targets:
+            added += store.extract_assets_from_storyboard(int(ep["number"]))
+        self.drama_workspace.nav.setCurrentRow(3)
+        self.drama_workspace.assets_page.load(store)
+        panel.set_agent_state("prompt", AgentState.DONE, f"新增 {added}")
+        panel.set_status(f"资产清单 +{added}", 100)
+        panel.append_log(f"已从 {len(targets)} 集分镜提取 {added} 个角色/地点资产占位。")
+
     def _new_project(self):
+        if self._drama_busy():
+            QMessageBox.information(self, "短剧生成中", "先停止当前短剧生成，再新建项目。")
+            return
         # 先保存当前项目
         if self.project.title:
             self._save_project()
@@ -63,11 +333,14 @@ class ProjectMixin:
             theme=data["theme"],
             direction=data["direction"],
             target_words=data["target_words"],
+            narrative_voice=data["narrative_voice"],
+            meme_level=data["meme_level"],
             target_chapters=data.get("target_chapters", 100),
             synopsis=data["synopsis"],
             cover=cover_rel,
         )
         self.project.set_project_dir(project_dir)
+
         project_io.init_project_dir(project_dir)
 
         # 保存立意文档
@@ -90,11 +363,16 @@ class ProjectMixin:
         self.sidebar.update_stats(0, self.project.target_words, len(self.project.chapters))
         self.editor.clear()
         self.editor.set_project_dir(project_dir)
+        self._reset_drama_tab()
+        self.mode_tabs.setCurrentIndex(0)
         self.statusBar().showMessage(t("status_created", title))
         logger.info("新项目已创建: %s (%s)", title, project_dir)
 
     def _open_project(self):
         """打开已有项目。"""
+        if self._drama_busy():
+            QMessageBox.information(self, "短剧生成中", "先停止当前短剧生成，再打开其他项目。")
+            return
         # 先保存当前项目
         if self.project.title:
             self._save_project()
@@ -110,16 +388,17 @@ class ProjectMixin:
             self._load_project_from_dir(dialog.selected_dir)
 
     def _load_project_from_dir(self, path: Path):
-        """从项目目录加载项目。"""
+        """从项目目录加载小说项目；短剧数据依附在同一项目的 drama/ 下。"""
         self._flush_content_save()
         try:
             # 先卸下旧项目的当前章节，避免 clear() 触发 content_changed 把旧章写空
             self.editor.detach_chapter()
             self.project = Project.load(path)
-            self._sync_world_state_from_canon(path)
             self.agent_panel.set_project_db(path)
-            self._load_workflow_for_project()
             self.sidebar.set_project_title(self.project.title)
+
+            self._sync_world_state_from_canon(path)
+            self._load_workflow_for_project()
             self.sidebar.load_chapters(self.project.chapters)
             self.sidebar.update_stats(
                 self.project.total_words(),
@@ -129,6 +408,8 @@ class ProjectMixin:
             self.editor.clear()
             self.editor.set_project_dir(self.project.project_dir)
             self._select_initial_chapter()
+            self._reset_drama_tab()
+            self.mode_tabs.setCurrentIndex(0)
             self.statusBar().showMessage(t("status_opened", self.project.title))
             logger.info("项目已加载: %s (%s)", self.project.title, path)
         except Exception as e:
@@ -233,6 +514,9 @@ class ProjectMixin:
         self._pending_chapter = None
         try:
             chapter.content = chapter._content_cache or ""
+            # 仍停留在这一章时才把状态改回「已保存」，避免切章后误标
+            if getattr(self.editor, "_current_chapter", None) is chapter:
+                self.editor.mark_saved()
         except Exception as e:
             logger.error("正文落盘失败: %s", e)
 
@@ -258,14 +542,21 @@ class ProjectMixin:
         self._flush_content_save()
         if not self.project.title:
             return
-        # 规划文档（含章节细纲）未落盘的编辑一并保存
-        saved_docs = self.editor.flush_planning_autosave()
         # 如果还没有项目目录（兼容旧流程），创建一个
         if not self.project.project_dir:
             safe_name = safe_project_dirname(self.project.title)
             project_dir = PROJECTS_DIR / safe_name
             project_dir.mkdir(parents=True, exist_ok=True)
             self.project.set_project_dir(project_dir)
+        # 短剧是当前小说的附加数据：只有装载过短剧页签才写 drama/
+        if (self._drama_loaded_dir == str(self.project.project_dir)
+                and self.drama_workspace.store and not self._drama_busy()):
+            try:
+                self.drama_workspace.save_all(silent=True)
+            except Exception as e:
+                logger.error("短剧数据保存失败（不影响小说保存）: %s", e)
+        # 规划文档（含章节细纲）未落盘的编辑一并保存
+        saved_docs = self.editor.flush_planning_autosave()
         try:
             self.project.save()
             n_ch = len(self.project.chapters)
@@ -338,6 +629,13 @@ class ProjectMixin:
 
     def _export(self, fmt: str):
         """导出当前项目（txt/epub/pdf）。"""
+        if getattr(self, "mode_tabs", None) and self.mode_tabs.currentIndex() == 1:
+            QMessageBox.information(
+                self, "导出",
+                "当前在「短剧」大页签。分镜请用分镜页的「导出 CSV / JSON」；\n"
+                "小说 TXT/EPUB/PDF 请切回「小说」页签。",
+            )
+            return
         if not self.project.project_dir:
             QMessageBox.warning(self, t("menu_export"), t("export_no_project"))
             return

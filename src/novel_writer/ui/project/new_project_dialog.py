@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -14,6 +15,8 @@ from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QPixmap
 
 from ...core.logger import get_logger
+from ...core.narrative_voice import VOICE_OPTIONS, DEFAULT_VOICE, normalize_voice
+from ...core.meme_style import MEME_LEVELS, DEFAULT_MEME_LEVEL, normalize_meme_level
 from ...locales import t
 
 logger = get_logger(__name__)
@@ -43,10 +46,11 @@ class _AIWorker(QThread):
     TIMEOUT_API = 120
     TIMEOUT_LOCAL = 600
 
-    def __init__(self, agent, prompt: str, parent=None):
+    def __init__(self, agent, prompt: str, parent=None, max_tokens: int = 0):
         super().__init__(parent)
         self.agent = agent
         self.prompt = prompt
+        self.max_tokens = max_tokens
         self._cancelled = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
@@ -78,8 +82,11 @@ class _AIWorker(QThread):
                 buf: list[str] = []  # 只收正文
                 gen = self.agent.stream_run(
                     self.prompt,
-                    thinking="auto",      # 允许思考，用户要看见
+                    # 600~800 字的结构化改写用不着 CoT：思考一旦开着，本地模型会把
+                    # 输出额度全花在思考上（60s 后正文 0 字），云模型也多花几倍时间。
+                    thinking="off",
                     keep_history=False,   # 每次独立，不背历史
+                    max_tokens=self.max_tokens or None,
                 )
                 try:
                     async for kind, piece in gen:
@@ -102,9 +109,17 @@ class _AIWorker(QThread):
                 return "".join(buf)
 
             self._task = loop.create_task(_call())
-            full = loop.run_until_complete(self._task)
+            full = loop.run_until_complete(asyncio.wait_for(self._task, self._timeout))
             if not self._cancelled:
-                self.completed.emit(full or "")
+                if not (full or "").strip():
+                    # 一个字正文都没有：绝不能当成功回填，否则会把用户草稿清空
+                    self.error.emit(
+                        "模型没有输出正文，只产生了思考内容（思考吃光了输出额度）。\n\n"
+                        "请再点一次；若反复出现，说明该模型不支持关闭思考，"
+                        "请在设置里换用非思考模型或云端模型。"
+                    )
+                else:
+                    self.completed.emit(full)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             if not self._cancelled:
                 self.error.emit(f"AI 润色超时（{self._timeout}秒），本地模型较慢请耐心等待或换用更快的模型")
@@ -175,13 +190,15 @@ class NewProjectDialog(QDialog):
         basic_form.setSpacing(14)
         basic_form.setContentsMargins(20, 28, 20, 20)
         basic_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.basic_form = basic_form
 
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("请输入小说名称")
         self.title_edit.setMinimumHeight(36)
         if self._project_data:
             self.title_edit.setEnabled(False)
-        basic_form.addRow("书名 *", self.title_edit)
+        self.title_label = QLabel("书名 *")
+        basic_form.addRow(self.title_label, self.title_edit)
 
         # 封面
         cover_row = QHBoxLayout()
@@ -228,6 +245,15 @@ class NewProjectDialog(QDialog):
         self.style_combo.setEditable(True)
         self.style_combo.setMinimumHeight(34)
         genre_form.addRow("风格 *", self.style_combo)
+        self.voice_combo = QComboBox()
+        self.voice_combo.addItems(VOICE_OPTIONS)
+        self.voice_combo.setToolTip("大白话：短句、口语、少成语少比喻；平实：克制修辞；文学：允许修辞和节奏经营。")
+        genre_form.addRow("叙述语言", self.voice_combo)
+        self.meme_combo = QComboBox()
+        self.meme_combo.addItems(MEME_LEVELS)
+        self.meme_combo.setCurrentText(DEFAULT_MEME_LEVEL)
+        self.meme_combo.setToolTip("无：不用；少：1–2个/章；中：3–5个/章；高：6–10个/章。只在符合人物和时代的场合使用。")
+        genre_form.addRow("梗密度", self.meme_combo)
 
         self.words_spin = QSpinBox()
         self.words_spin.setRange(10000, 10000000)
@@ -235,7 +261,8 @@ class NewProjectDialog(QDialog):
         self.words_spin.setValue(200000)
         self.words_spin.setSuffix(" 字")
         self.words_spin.setMinimumHeight(34)
-        genre_form.addRow("目标字数", self.words_spin)
+        self.words_label = QLabel("目标字数")
+        genre_form.addRow(self.words_label, self.words_spin)
 
         self.chapters_spin = QSpinBox()
         self.chapters_spin.setRange(10, 99999)
@@ -243,20 +270,23 @@ class NewProjectDialog(QDialog):
         self.chapters_spin.setValue(100)
         self.chapters_spin.setSuffix(" 章")
         self.chapters_spin.setMinimumHeight(34)
-        genre_form.addRow("目标章节数", self.chapters_spin)
+        self.chapters_label = QLabel("目标章节数")
+        genre_form.addRow(self.chapters_label, self.chapters_spin)
 
         top_row.addWidget(genre_group, 1)
         layout.addLayout(top_row)
 
         # ── 立意与方向（必填） ──
         concept_group = QGroupBox("立意与方向（必填）")
+        self.concept_group = concept_group
         concept_layout = QVBoxLayout(concept_group)
         concept_layout.setSpacing(16)
         concept_layout.setContentsMargins(20, 28, 20, 20)
 
         # 核心立意
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("核心立意 *"))
+        self.theme_label = QLabel("核心立意 *")
+        row1.addWidget(self.theme_label)
         row1.addStretch()
         self.btn_ai_theme = QPushButton("✨ AI 润色")
         self.btn_ai_theme.setFixedHeight(26)
@@ -266,22 +296,23 @@ class NewProjectDialog(QDialog):
         row1.addWidget(self.btn_ai_theme)
         concept_layout.addLayout(row1)
 
-        hint1 = QLabel("小说要表达什么？核心卖点是什么？")
-        hint1.setStyleSheet("font-size: 11px; color: gray; margin-bottom: 2px;")
-        concept_layout.addWidget(hint1)
+        self.theme_hint = QLabel("小说要表达什么？核心卖点是什么？")
+        self.theme_hint.setStyleSheet("font-size: 11px; color: gray; margin-bottom: 2px;")
+        concept_layout.addWidget(self.theme_hint)
 
         self.theme_edit = QTextEdit()
         self.theme_edit.setPlaceholderText(
             "例：在末世废墟中，一个失去记忆的少年通过破解一个个诡异规则，\n"
             "逐渐发现自己是唯一能终结这场灾难的关键。核心卖点是规则解密+身份悬疑。"
         )
-        self.theme_edit.setMinimumHeight(90)
-        self.theme_edit.setMaximumHeight(140)
+        self.theme_edit.setMinimumHeight(110)
+        self.theme_edit.setMaximumHeight(200)
         concept_layout.addWidget(self.theme_edit)
 
         # 规划方向
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("规划方向 *"))
+        self.direction_label = QLabel("规划方向 *")
+        row2.addWidget(self.direction_label)
         row2.addStretch()
         self.btn_ai_dir = QPushButton("✨ AI 润色")
         self.btn_ai_dir.setFixedHeight(26)
@@ -291,17 +322,17 @@ class NewProjectDialog(QDialog):
         row2.addWidget(self.btn_ai_dir)
         concept_layout.addLayout(row2)
 
-        hint2 = QLabel("整体构思、卷数规划、节奏安排")
-        hint2.setStyleSheet("font-size: 11px; color: gray; margin-bottom: 2px;")
-        concept_layout.addWidget(hint2)
+        self.direction_hint = QLabel("整体构思、卷数规划、节奏安排")
+        self.direction_hint.setStyleSheet("font-size: 11px; color: gray; margin-bottom: 2px;")
+        concept_layout.addWidget(self.direction_hint)
 
         self.direction_edit = QTextEdit()
         self.direction_edit.setPlaceholderText(
             "例：全书分3卷，第1卷（30章）新手村生存，第2卷（50章）势力对抗，\n"
             "第3卷（40章）终极真相。前期密集解谜，中期格局扩大，后期情感爆发。"
         )
-        self.direction_edit.setMinimumHeight(90)
-        self.direction_edit.setMaximumHeight(140)
+        self.direction_edit.setMinimumHeight(110)
+        self.direction_edit.setMaximumHeight(200)
         concept_layout.addWidget(self.direction_edit)
         layout.addWidget(concept_group)
 
@@ -328,7 +359,7 @@ class NewProjectDialog(QDialog):
 
         self._stream_view = QTextEdit()
         self._stream_view.setReadOnly(True)
-        self._stream_view.setPlaceholderText("点「AI 润色」后，这里实时显示思考过程和润色结果…")
+        self._stream_view.setPlaceholderText("点「AI 润色」后，这里实时显示 AI 输出…")
         self._stream_view.setMinimumHeight(0)
         self._stream_view.setMaximumHeight(0)  # 初始收起，润色时展开
         self._stream_view.setStyleSheet("font-size: 12px;")
@@ -417,44 +448,48 @@ class NewProjectDialog(QDialog):
 
         if field == "theme":
             ref = f"\n\n【已有规划方向（必须保持一致）】\n{current_direction}" if current_direction else ""
-            prompt = f"""你是小说主编。请润色下面这段核心立意草稿：保留用户原意和关键信息，补全结构、压缩废话、提升表达。必须严格贴合给定的题材与风格，书名相关表述不得偏离。
+            prompt = f"""你是小说主编。请润色下面这段核心立意草稿：保留用户原意和关键信息，补全结构、展开细节、提升表达。必须严格贴合给定的题材与风格，书名相关表述不得偏离。
 
 题材：{genre}  风格：{style}  书名：《{title}》{ref}
 
 用户草稿：
 {draft}
 
-严格按以下格式输出，总字数不超过200字：
+严格按以下格式输出，总字数 600~800 字，每个小节都要写，不许省略、不许合并；写不满就补具体的人名、事件、冲突，不要用形容词凑数：
 
-【核心主题】（10字内的一句话概括）
-【立意】（2-3句话阐述核心内涵，不超过80字）
-【卖点】（2-3个，每个10字内，用逗号分隔）
-【读者】（目标读者群体，20字内）
+【核心主题】（15字内的一句话概括，要有记忆点）
+【立意】（200字左右：故事讲什么、主角最想要什么、最大的阻力是什么、贯穿全书的根本矛盾）
+【世界观钩子】（100字左右：这个世界最独特的一条规则或最抓人的设定，要能直接衍生剧情）
+【卖点】（4-5条，每条25字左右，用顿号分隔；写“读者为什么会追”，不要堆形容词）
+【读者】（80字左右：目标读者画像 + 2-3部对标作品）
+【一句话简介】（100字左右，能直接当书页简介的钩子）
 
-不要有任何多余解释。"""
+直接输出上面六个小节，不要有任何多余解释，不要输出思考过程或 Markdown 代码块。"""
         else:
             ref = f"\n\n【已有核心立意（必须严格保持一致的题材和风格）】\n{current_theme}" if current_theme else ""
-            prompt = f"""你是小说策划。请润色下面这段规划方向草稿：保留用户原意和卷章安排，补全结构、压缩废话、提升表达。必须严格贴合给定的题材与风格，卷章规划不得偏离书名调性。
+            prompt = f"""你是小说策划。请润色下面这段规划方向草稿：保留用户原意和卷章安排，补全结构、展开细节、提升表达。必须严格贴合给定的题材与风格，卷章规划不得偏离书名调性；用户说“不用分卷”就不要硬编卷名，按阶段（如“开局10章”）列。
 
 题材：{genre}  风格：{style}  书名：《{title}》{ref}
 
 用户草稿：
 {draft}
 
-严格按以下格式输出，总字数不超过200字：
+严格按以下格式输出，总字数 600~800 字，每个小节都要写，不许省略、不许合并；写不满就补具体事件与转折，不要用形容词凑数：
 
-【整体构思】（30字内概括）
-【分卷】（用"→"连接各卷，格式：卷名(章节数)→卷名(章节数)→…）
-【节奏】（20字内说明高潮分布）
-【预估字数】（如"约60万字"）
+【整体构思】（150字左右：一句话主线 + 结构类型 + 与同类作品的差异）
+【卷章安排】（草稿里有几期就写几行，一行一个阶段，不许合并成一段；每行格式：名称(章节数)：本段核心冲突 + 段末转折 + 主角状态变化，每条40~60字）
+【节奏】（120字左右：前期/中期/后期各压什么爽点，最大的几处高潮大概在第几章）
+【人物弧线】（100字左右：主角从什么样变成什么样，关键转折点在哪个阶段）
+【预估字数】（如“约60万字”）
 
-不要有任何多余解释。"""
+直接输出上面五个小节，不要有任何多余解释，不要输出思考过程或 Markdown 代码块。"""
 
         self._set_generating(True, field)
         self._ai_busy = True
         logger.info("AI 润色调用: field=%s agent=%s prompt_len=%d", field, agent_name, len(prompt))
         # 不设 parent：对话框关闭时由 closeEvent 等待线程结束后再销毁
-        worker = _AIWorker(agent, prompt, None)
+        # 输出配额按 800 字给足：模型若不理 thinking=off，也不能因为额度不够把正文截断
+        worker = _AIWorker(agent, prompt, None, max_tokens=max(agent.config.max_tokens, 3000))
         worker.chunk.connect(self._on_ai_chunk)
         worker.completed.connect(lambda text: self._on_ai_done(field, text))
         worker.error.connect(lambda err: self._on_ai_error(err, field))
@@ -513,34 +548,62 @@ class NewProjectDialog(QDialog):
 
     # 每个字段只保留自己那几节，防止模型顺手把另一个字段的格式也吐出来
     _FIELD_KEYS = {
-        "theme": ("核心主题", "立意", "卖点", "读者"),
-        "direction": ("整体构思", "分卷", "节奏", "预估字数"),
+        "theme": ("核心主题", "立意", "世界观钩子", "卖点", "读者", "一句话简介"),
+        "direction": ("整体构思", "卷章安排", "分卷", "节奏", "人物弧线", "预估字数"),
     }
+
+    # 完整输出应包含的小节（同组别名任一命中即可）
+    _REQUIRED_SECTIONS = {
+        "theme": (("核心主题",), ("立意",), ("世界观钩子",), ("卖点",), ("读者",), ("一句话简介",)),
+        "direction": (("整体构思",), ("卷章安排", "分卷"), ("节奏",), ("人物弧线",), ("预估字数",)),
+    }
+
+    # 独立一行的元信息（如「（总字数：约650字）」）不是正文，回填时丢掉
+    _META_LINE = re.compile(
+        r"^[（(]?\s*(?:总字数|字数|全文)?\s*[:：]?\s*约?\s*\d+\s*[-~～到至]?\s*\d*\s*字[)）]?[。.]?$"
+    )
+
+    @classmethod
+    def _clean_section(cls, content: str) -> str:
+        # 去开头「30字内：」这类字数提示
+        content = re.sub(r"^\d+\s*字内\s*[：:]\s*", "", content)
+        # 去结尾「（约650字）」
+        content = re.sub(r"[（(]\s*约?\s*\d+\s*[-~～]?\s*\d*\s*字[)）]\s*$", "", content)
+        # 在「。约20字…」「。控制总字数」处截断元评论
+        content = re.split(
+            r"[。．]\s*(?=约?\s*\d+\s*字|控制总字数|格式准确|微调|不要有多余)",
+            content,
+        )[0]
+        return content.strip()
 
     @classmethod
     def _extract_formatted(cls, body: str, field: str = "") -> str:
-        """从润色正文里只抽出 【xxx】 格式行，去掉元评论；按 field 过滤小节。"""
-        import re
+        """从润色正文里只抽出 【xxx】 小节，去掉元评论；按 field 过滤。
+
+        小节正文可能换行（长段落、卖点列表），续行必须接回上一个小节，
+        否则长输出会被逐行丢弃成半截。
+        """
         allowed = cls._FIELD_KEYS.get(field, ())
-        kept: list[str] = []
-        for line in body.splitlines():
-            line = line.strip()
+        sections: list[list[str]] = []  # [[title, content], ...]
+        keep_current = False
+        for raw in body.splitlines():
+            line = raw.strip()
+            if not line or cls._META_LINE.match(line):
+                continue
             m = re.match(r"^(【([^】]+)】)(.*)$", line)
-            if not m:
+            if m:
+                title, key = m.group(1), m.group(2).strip()
+                # 只留本字段的小节（theme 不写整体构思，反之亦然）
+                keep_current = not (field and allowed and key not in allowed)
+                if keep_current:
+                    sections.append([title, cls._clean_section(m.group(3).strip())])
                 continue
-            title, key, content = m.group(1), m.group(2).strip(), m.group(3).strip()
-            # 只留本字段的小节（theme 不写整体构思，反之亦然）
-            if field and allowed and key not in allowed:
-                continue
-            # 去开头「30字内：」这类字数提示
-            content = re.sub(r"^\d+\s*字内\s*[：:]\s*", "", content)
-            # 在「。约20字…」「。控制总字数」处截断元评论
-            content = re.split(
-                r"[。．]\s*(?=约?\s*\d+\s*字|控制总字数|格式准确|微调|不要有多余)",
-                content,
-            )[0].strip()
-            kept.append(f"{title}{content}")
-        return "\n".join(kept) if kept else body.strip()
+            if sections and keep_current:
+                sections[-1][1] = (sections[-1][1] + "\n" + line).strip()
+
+        if not sections:
+            return body.strip()
+        return "\n".join(f"{title}{content}" for title, content in sections if content)
 
     def _on_ai_done(self, field: str, text: str):
         logger.info("AI 润色完成: field=%s raw_len=%d", field, len(text or ""))
@@ -551,19 +614,63 @@ class NewProjectDialog(QDialog):
         extracted = self._extract_formatted(body, field=field)
         # 抽不出格式段时回退原文，绝不能出现「润色完了框里是空的」
         text = extracted if extracted.strip() else body
-        if len(text) > 300:
+        if not text.strip():
+            # 空结果一律不回填：宁可保留草稿，也不能把用户写的内容清掉
+            self._status_label.setText("AI 没有返回正文，草稿已保留")
+            QMessageBox.warning(
+                self, "AI 没有返回正文",
+                "模型这次没有给出任何正文（多半是把输出额度都用在思考上了）。\n\n"
+                "你的草稿没有被改动，请重试或换个模型。",
+            )
+            return
+        if len(text) > 1500:
+            # 只防跑飞：目标 600~800 字，超过 1500 才按句/段边界收一刀
             for sep in ["\n\n", "\n", "。", "；"]:
-                idx = text.rfind(sep, 0, 300)
-                if idx > 100:
+                idx = text.rfind(sep, 0, 1500)
+                if idx > 800:
                     text = text[:idx + 1]
                     break
             else:
-                text = text[:300]
+                text = text[:1500]
         if field == "theme":
             self.theme_edit.setPlainText(text)
         else:
             self.direction_edit.setPlainText(text)
-        self._status_label.setText("润色完成，结果已填入上方输入框（思考过程见底部）")
+        missing = self._missing_sections(field, text)
+        if missing:
+            # 本地小模型偶尔只写一两段就收尾：别当完整结果，提示用户再点一次
+            self._status_label.setText(
+                f"润色完成（{len(text)} 字）——{'；'.join(missing)}，建议再点一次补全"
+            )
+        else:
+            self._status_label.setText(f"润色完成（{len(text)} 字），结果已填入上方输入框（原始输出见底部）")
+
+    def _missing_sections(self, field: str, text: str) -> list[str]:
+        """检查输出是否缺小节 / 卷章安排是否只写了 1 段（本地小模型常见）。"""
+        missing: list[str] = []
+        for group in self._REQUIRED_SECTIONS.get(field, ()):
+            if not any(f"【{key}】" in text for key in group):
+                missing.append(f"缺【{group[0]}】")
+        if field == "direction" and not missing:
+            block = re.search(r"【(?:卷章安排|分卷)】(.*?)(?=\n【|\Z)", text, re.S)
+            if self._stage_count(block.group(1) if block else "") < 2:
+                missing.append("卷章安排只写了 1 段")
+        return missing
+
+    @staticmethod
+    def _stage_count(block: str) -> int:
+        """数卷章安排写了几期：按行数 + 「(10章)」「第一期」「第十章」这类标记取大者。
+
+        模型的分期写法很野（(1-10 章)、第一阶段（1-10章）、第一章至第十章），
+        只看一种格式会把写全的结果误判成只写了一段。
+        """
+        lines = len([ln for ln in block.splitlines() if ln.strip()])
+        markers = len(re.findall(
+            r"[（(]\s*\d+\s*[-~—至到]?\s*\d*\s*章\s*[)）]"
+            r"|第[一二三四五六七八九十百千0-9]+\s*(?:章|期|阶段|卷|篇)",
+            block,
+        ))
+        return max(lines, markers)
 
     def _on_ai_error(self, error: str, field: str = ""):
         logger.error("AI 润色失败: field=%s err=%s", field, error)
@@ -581,7 +688,7 @@ class NewProjectDialog(QDialog):
             self.btn_ai_theme.setText("润色中...")
             self.btn_ai_dir.setText("润色中...")
             self.btn_create.setEnabled(False)
-            self._status_label.setText("AI 正在润色（思考过程见下）…")
+            self._status_label.setText("AI 正在润色（实时输出见下）…")
             # 展开流式窗并清空
             self._stream_chunks = []
             self._stream_view.clear()
@@ -623,7 +730,10 @@ class NewProjectDialog(QDialog):
         self.title_edit.setText(data.get("title", ""))
         self.genre_combo.setCurrentText(data.get("genre", ""))
         self.style_combo.setCurrentText(data.get("style", ""))
+        self.voice_combo.setCurrentText(normalize_voice(data.get("narrative_voice", DEFAULT_VOICE)))
+        self.meme_combo.setCurrentText(normalize_meme_level(data.get("meme_level", DEFAULT_MEME_LEVEL)))
         self.words_spin.setValue(data.get("target_words", 200000))
+        self.chapters_spin.setValue(data.get("target_chapters", 100))
         self.theme_edit.setPlainText(data.get("theme", ""))
         self.direction_edit.setPlainText(data.get("direction", ""))
         self.synopsis_edit.setPlainText(data.get("synopsis", ""))
@@ -667,6 +777,8 @@ class NewProjectDialog(QDialog):
             "title": self.title_edit.text().strip(),
             "genre": self.genre_combo.currentText(),
             "style": self.style_combo.currentText(),
+            "narrative_voice": self.voice_combo.currentText(),
+            "meme_level": self.meme_combo.currentText(),
             "target_words": self.words_spin.value(),
             "target_chapters": self.chapters_spin.value(),
             "theme": self.theme_edit.toPlainText().strip(),

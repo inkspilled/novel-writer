@@ -69,9 +69,10 @@ class OllamaLLM(BaseLLM):
         max_tokens: int,
         stream: bool,
         thinking: ThinkingMode,
+        model: str | None = None,
     ) -> dict:
         payload: dict = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "stream": stream,
             "options": {"temperature": temperature, "num_predict": max_tokens},
@@ -86,12 +87,15 @@ class OllamaLLM(BaseLLM):
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
         """使用共享客户端进行 HTTP 调用，避免频繁创建连接。"""
         try:
             resp = await self._client.post(
                 f"{self.base}/api/chat",
-                json=self._build_payload(messages, temperature, max_tokens, False, thinking),
+                json=self._build_payload(
+                    messages, temperature, max_tokens, False, thinking, model=model,
+                ),
             )
             resp.raise_for_status()
             data = resp.json()
@@ -117,13 +121,16 @@ class OllamaLLM(BaseLLM):
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         """流式输出，逐块返回 (kind, text)。"""
         try:
             async with self._client.stream(
                 "POST",
                 f"{self.base}/api/chat",
-                json=self._build_payload(messages, temperature, max_tokens, True, thinking),
+                json=self._build_payload(
+                    messages, temperature, max_tokens, True, thinking, model=model,
+                ),
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

@@ -127,11 +127,18 @@ class NovelToolkit:
         if not query:
             return "ERROR: query 不能为空"
         top_k = max(1, min(8, _as_int(args.get("top_k"), 5)))
+        chapter = _as_int(args.get("chapter"), 0) or None
+        scene_type = str(args.get("scene_type") or "").strip() or None
         try:
             from ..rag import get_retriever
             retriever = get_retriever(self.project_dir)
             retriever.load_chapters(10 ** 9)
-            text = retriever.retrieve(query, top_k=top_k)
+            text = retriever.retrieve(
+                query,
+                top_k=top_k,
+                chapter=chapter,
+                scene_type=scene_type,
+            )
         except Exception as e:
             return f"ERROR: 检索失败: {e}"
         return text or "（没有检索到相关段落）"
@@ -247,12 +254,19 @@ class NovelToolkit:
             ),
             "search_chapters": Tool(
                 "search_chapters",
-                "按关键词/语义检索历史章节段落，返回最相关的片段与出处",
+                "按关键词/语义检索历史章节的场景块（按叙事场景切块，带章节/场景类型/人物元数据）。"
+                "问到特定章节或场景类型时，用 chapter / scene_type 先缩小范围，精度更高",
                 {
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "检索词或一句话描述"},
                         "top_k": {"type": "integer", "description": "返回条数，1-8，默认 5"},
+                        "chapter": {"type": "integer", "description": "限定章节号（可选），如 3 表示只在第3章里找"},
+                        "scene_type": {
+                            "type": "string",
+                            "enum": ["对话", "战斗", "日常", "回忆"],
+                            "description": "限定场景类型（可选）",
+                        },
                     },
                     "required": ["query"],
                 },

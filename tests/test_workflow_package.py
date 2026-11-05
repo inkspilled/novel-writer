@@ -20,20 +20,22 @@ from src.novel_writer.core.workflow import (
 EXPECTED_DEFAULT_IDS = [
     "ideation", "outline", "characters", "world", "timeline",
     "main_plot", "sub_plot", "foreshadow", "chapter_outline", "fix_titles",
-    "inspiration", "sim", "character_panel", "chapter", "chapter_summary", "world_state_update",
-    "toc", "polish", "percept_extract", "seal_chapter", "offscreen_tick", "proofread", "summary",
-    "update_outline", "update_characters", "update_foreshadow",
+    "inspiration", "sim", "character_panel", "chapter", "polish", "chapter_digest",
+    "proofread", "toc", "chapter_summary", "quality_check",
+    "world_state_update", "percept_extract", "seal_chapter", "offscreen_tick", "summary",
+    "update_characters",
     "update_chapter_outline", "review_panel",
-    "quality_check", "review",
+    "review",
 ]
 
 EXPECTED_CONTINUE_IDS = [
     "fix_titles", "chapter_outline",
-    "inspiration", "sim", "character_panel", "chapter", "chapter_summary", "world_state_update",
-    "toc", "polish", "percept_extract", "seal_chapter", "offscreen_tick", "proofread", "summary",
-    "update_outline", "update_characters", "update_foreshadow",
+    "inspiration", "sim", "character_panel", "chapter", "polish", "chapter_digest",
+    "proofread", "toc", "chapter_summary", "quality_check",
+    "world_state_update", "percept_extract", "seal_chapter", "offscreen_tick", "summary",
+    "update_characters",
     "update_chapter_outline", "review_panel",
-    "quality_check", "review",
+    "review",
 ]
 
 EXPECTED_VALIDATE_IDS = ["fix_titles", "toc", "review", "proofread"]
@@ -47,6 +49,13 @@ EXPECTED_PLANNING_IDS = [
 class TestTemplateEquivalence:
     def test_default_step_order(self):
         assert [s["id"] for s in DEFAULT_WORKFLOW["steps"]] == EXPECTED_DEFAULT_IDS
+
+    def test_polish_runs_before_post_extraction(self):
+        """润色必须先于概要/世界状态/沉淀，否则章后数据基于草稿。"""
+        ids = [s["id"] for s in DEFAULT_WORKFLOW["steps"]]
+        assert ids.index("chapter") < ids.index("polish") < ids.index("chapter_summary")
+        assert ids.index("polish") < ids.index("world_state_update")
+        assert ids.index("polish") < ids.index("percept_extract")
 
     def test_continue_step_order(self):
         assert [s["id"] for s in CONTINUE_WORKFLOW["steps"]] == EXPECTED_CONTINUE_IDS
@@ -69,16 +78,17 @@ class TestTemplateEquivalence:
         assert continue_ids & planning_ids == {"chapter_outline"}
 
     def test_periodic_steps_preserved(self):
-        """定时步骤的 every 间隔必须保持不变。"""
+        """定时步骤的 every 间隔：高频只留必要项，规划反哺降到 10 章。"""
         by_id = {s["id"]: s for s in DEFAULT_WORKFLOW["steps"]}
         assert by_id["inspiration"]["every"] == 3
         assert by_id["sim"]["every"] == 1
         assert by_id["polish"]["every"] == 2
         assert by_id["summary"]["every"] == 5
-        for sid in ("update_outline", "update_characters", "update_foreshadow",
-                    "update_chapter_outline"):
-            assert by_id[sid]["every"] == 5
-            assert by_id[sid]["update_planning"] is True
+        assert by_id["update_chapter_outline"]["every"] == 5
+        assert by_id["update_characters"]["every"] == 10
+        assert by_id["update_characters"]["update_planning"] is True
+        # 伏笔不再回写规划稿：台账是唯一来源
+        assert "update_foreshadow" not in by_id
 
     def test_templates_not_mutated_by_build(self):
         """build_workflow 的深拷贝不能污染模块级模板。"""
@@ -118,8 +128,33 @@ class TestBuiltinStepHandlers:
             "proofread", "review",  # 批处理改造后由 handler 自行编排 LLM（分批校对/审核）
             "chapter_outline", "update_chapter_outline", "review_panel", "pov_sim",
             "character_panel",
-            "percept_extract", "seal_chapter", "offscreen_tick",
+            "percept_extract", "seal_chapter", "offscreen_tick", "chapter_digest",
         }
+
+    def test_digest_runs_after_polish_and_before_consumers(self):
+        """章后抽取必须读润色后的最终正文，且早于四个消费步骤。"""
+        ids = [s["id"] for s in DEFAULT_WORKFLOW["steps"]]
+        assert ids.index("polish") < ids.index("chapter_digest")
+        for consumer in ("chapter_summary", "world_state_update", "percept_extract"):
+            assert ids.index("chapter_digest") < ids.index(consumer)
+
+    def test_parallel_post_steps_are_adjacent_and_disjoint(self):
+        """parallel_ok 只用在不写同一份文件的步骤；相邻才真的会并发。"""
+        steps = {s["id"]: s for s in DEFAULT_WORKFLOW["steps"]}
+        parallel = [sid for sid, s in steps.items() if s.get("parallel_ok")]
+        assert "polish" not in parallel
+        assert "world_state_update" not in parallel
+        assert "percept_extract" not in parallel
+        ids = [s["id"] for s in DEFAULT_WORKFLOW["steps"]]
+        positions = [ids.index(sid) for sid in parallel]
+        assert positions == list(range(min(positions), max(positions) + 1))
+
+    def test_chapter_step_drops_archived_planning_docs(self):
+        """四份归档规划稿不再进正文上下文；主线/伏笔改由台账反哺。"""
+        chapter = next(s for s in DEFAULT_WORKFLOW["steps"] if s["id"] == "chapter")
+        for name in ("时间线.md", "主线.md", "支线.md", "伏笔.md"):
+            assert f"planning/{name}" not in chapter["input"]
+        assert "planning/大纲.md" in chapter["input"]
 
     def test_tool_steps_have_no_needs(self):
         """纯工具步骤没有 needs；proofread/review 走注册表分发但不在此列。"""
@@ -175,3 +210,40 @@ class TestCompressContext:
         rag = _cn_part("=== RAG ===\n", 600)
         result = compress_context([rag, other], max_tokens=500)
         assert other in result  # other 不可裁剪，只能靠 rag 腾空间
+
+
+class TestPolishContext:
+    def test_polish_gets_full_chapter_not_rag_fragments(self, tmp_path):
+        """润色必须看到完整正文；只给 top-5 片段会让模型无米下锅。"""
+        from src.novel_writer.core.workflow.context import ContextBuilder
+
+        chapters = tmp_path / "chapters"
+        chapters.mkdir()
+        opening = "开头独一无二：凌尘推开山门，风雪灌了进来。"
+        ending = "结尾独一无二：他握紧骨牌，决定明日下山。"
+        body = opening + "\n\n" + ("中间段落，用于制造足够长的正文。" * 40) + "\n\n" + ending
+        (chapters / "1_风雪.txt").write_text(body, encoding="utf-8")
+
+        ctx = ContextBuilder(tmp_path, {"title": "测试书"}, 48_000).build(
+            ["chapters/{n}_chapter.txt"], 1, "polish")
+        assert "当前章节正文（全文，待润色）" in ctx
+        assert opening in ctx
+        assert ending in ctx
+
+    def test_summary_context_gets_recent_chapter_summaries(self, tmp_path):
+        """滚动摘要/update_* 至少要看近几章的结构化概要，不能只二次压缩旧摘要。"""
+        from src.novel_writer.core.workflow.context import ContextBuilder
+
+        chapters = tmp_path / "chapters"
+        chapters.mkdir()
+        for i, title in ((1, "开端"), (2, "转折")):
+            (chapters / f"{i}_{title}.txt").write_text(
+                f"第{i}章正文，用于占位。", encoding="utf-8")
+            (chapters / f"{i}_{title}.summary.md").write_text(
+                f"第{i}章核心事件：独一无二的事件{i}。", encoding="utf-8")
+
+        ctx = ContextBuilder(tmp_path, {"title": "测试书"}, 48_000).build(
+            ["prev_chapters"], 2, "summary")
+        assert "=== 近章结构化概要 ===" in ctx
+        assert "独一无二的事件1" in ctx
+        assert "独一无二的事件2" in ctx

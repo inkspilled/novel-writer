@@ -13,13 +13,13 @@ from PySide6.QtCore import Qt, QTimer
 
 from ..common.workers import TestConnectionWorker, FetchModelsWorker
 from ...locales import t
-from ...core.app_config import PROJECT_ROOT
+from ...core.app_config import BUNDLED_CONFIG_DIR
 from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 配置目录在项目根（与 core.agents 一致）；原先 parents[3] 误指到 src/
-_CONFIG_DIR = PROJECT_ROOT / "config"
+# 随包配置目录（开发 = 项目根 config/，打包 = _internal/config/），与 core.agents 一致
+_CONFIG_DIR = BUNDLED_CONFIG_DIR
 
 
 def load_default_providers() -> list[dict]:
@@ -167,6 +167,17 @@ class ModelDialog(QDialog):
         model_row.addWidget(self._btn_fetch_models)
         pg.addRow(t("settings_model_name"), model_row)
 
+        # 快速模型：只给抽取/校对/推演等辅助步骤，正文与润色仍用主模型
+        self.fast_model_input = QLineEdit()
+        self.fast_model_input.setPlaceholderText("留空 = 辅助步骤同主模型；如 deepseek-chat")
+        pg.addRow("快速模型（辅助）", self.fast_model_input)
+        fast_hint = QLabel(
+            "抽取、校对、推演等辅助步骤走这个模型；正文与润色仍用上方主模型。\n"
+            "必须是同一 API 地址/Key 下的模型，否则会调用失败；留空则全部用主模型。")
+        fast_hint.setWordWrap(True)
+        fast_hint.setStyleSheet("color: gray; font-size: 12px;")
+        pg.addRow("", fast_hint)
+
         self._model_status = QLabel()
         self._model_status.setStyleSheet("color: gray; font-size: 12px;")
         pg.addRow("", self._model_status)
@@ -202,6 +213,34 @@ class ModelDialog(QDialog):
         self._embed_api_key_input.setPlaceholderText("留空则使用上方 API Key")
         eg.addRow("API Key", self._embed_api_key_input)
         scroll_layout.addWidget(embed_group)
+
+        # ── 重排序（Reranker，可选） ──
+        rerank_group = QGroupBox("重排序（可选）")
+        rg = QFormLayout(rerank_group)
+        rg.setSpacing(10)
+
+        rerank_hint = QLabel(
+            "配置任意兼容 /rerank 接口的重排序模型（Qwen3-Reranker / BGE / Cohere / Jina 等）后，\n"
+            "检索先取 Top 20–50 候选，再由重排模型精排后取 Top 5；未配置或失败时保留召回排序。")
+        rerank_hint.setWordWrap(True)
+        rerank_hint.setStyleSheet("color: gray; font-size: 12px;")
+        rg.addRow(rerank_hint)
+
+        self._rerank_model_input = QLineEdit()
+        self._rerank_model_input.setPlaceholderText(
+            "如 BAAI/bge-reranker-v2-m3（模型名自由填写，留空=不启用）")
+        rg.addRow("Reranker 模型", self._rerank_model_input)
+
+        self._rerank_base_url_input = QLineEdit()
+        self._rerank_base_url_input.setPlaceholderText(
+            "如 http://localhost:8000/v1（留空则使用上方 API 地址）")
+        rg.addRow("API 地址", self._rerank_base_url_input)
+
+        self._rerank_api_key_input = QLineEdit()
+        self._rerank_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._rerank_api_key_input.setPlaceholderText("留空则使用上方 API Key")
+        rg.addRow("API Key", self._rerank_api_key_input)
+        scroll_layout.addWidget(rerank_group)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -462,10 +501,15 @@ class ModelDialog(QDialog):
             self.api_key_input.setText(saved_provider.get("api_key", ""))
             self.base_url_input.setText(saved_provider.get("base_url", ""))
             self._set_model_text(saved_provider.get("model", ""))
+        self.fast_model_input.setText(self.config.get("fast_model", ""))
         embed = self.config.get("embedding") or {}
         self._embed_model_input.setText(embed.get("model", ""))
         self._embed_base_url_input.setText(embed.get("base_url", ""))
         self._embed_api_key_input.setText(embed.get("api_key", ""))
+        rerank = self.config.get("rerank") or {}
+        self._rerank_model_input.setText(rerank.get("model", ""))
+        self._rerank_base_url_input.setText(rerank.get("base_url", ""))
+        self._rerank_api_key_input.setText(rerank.get("api_key", ""))
 
     def _save_config_only(self):
         """仅保存配置到内存，不关闭对话框。"""
@@ -476,11 +520,17 @@ class ModelDialog(QDialog):
             "model": self._get_model_text(),
         }
         self.config["saved_models"] = self._saved_models
+        self.config["fast_model"] = self.fast_model_input.text().strip()
         self.config["max_context_tokens"] = self._ctx_tokens_spin.value()
         self.config["embedding"] = {
             "model": self._embed_model_input.text().strip(),
             "base_url": self._embed_base_url_input.text().strip(),
             "api_key": self._embed_api_key_input.text().strip(),
+        }
+        self.config["rerank"] = {
+            "model": self._rerank_model_input.text().strip(),
+            "base_url": self._rerank_base_url_input.text().strip(),
+            "api_key": self._rerank_api_key_input.text().strip(),
         }
         default_names = {p["name"] for p in load_default_providers()}
         custom_providers = [p for p in self._providers if p["name"] not in default_names]

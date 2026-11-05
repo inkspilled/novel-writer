@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..characters.registry import CharacterRecord, CharacterRegistry
+from ..characters.registry import CharacterRecord, CharacterRegistry, CharacterStatus
 from ..json_extract import extract_json_object
 from ..logger import get_logger
 from .events import CanonEvent, CanonLog
@@ -54,6 +54,7 @@ def build_percept_prompt(chapter_text: str, names: list[str], chapter: int) -> s
 5. 每章最多 {PERCEPT_MAX_EVENTS} 条；没有可抽取事件时输出空 events 数组。
 6. 不要逐句记录走路、站立、转身、看、坐下等无信息动作；同类动作合并，只保留改变关系/位置/认知/资源的动作。
 7. 不要输出 Markdown 代码块以外的解释。
+8. type=death 时，actor 必须是**死亡的角色**，targets 写在场的动手者/目击者；不要把凶手写成 actor。
 
 【正文】
 {chapter_text[:12000]}
@@ -138,6 +139,29 @@ def apply_percept_payload(
     if written:
         logger.info("第%d章感知抽取写入 %d 条正典事件", chapter, len(written))
     return written
+
+
+def apply_death_events(
+    events: list[CanonEvent],
+    registry: CharacterRegistry,
+    chapter: int,
+) -> list[str]:
+    """把 death 事件落到角色状态机：冻结 knowledge_cutoff、关闭 auto_sim。
+
+    契约：death 事件的 actor 是死亡角色（prompt 已显式约束），targets 写在场者。
+    返回被标记死亡的角色名（幂等：已死亡角色不重复处理）。
+    """
+    affected: list[str] = []
+    for event in events:
+        if event.type != "death" or not event.actor:
+            continue
+        current = registry.get(event.actor)
+        if current is None or current.status == CharacterStatus.DEAD:
+            continue
+        rec = registry.mark_dead(event.actor, chapter, cause=event.observable[:120])
+        if rec is not None and rec.name not in affected:
+            affected.append(rec.name)
+    return affected
 
 
 async def extract_percepts(

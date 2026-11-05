@@ -11,6 +11,7 @@
 - 微兑现检查：是否有小回报
 - 一致性检查：角色名、人称是否一致
 - 句式检查：是否有重复句式
+- 语言质感检查：成语/书面腔/比喻/凑字副词/句长是否超标（不参与总分）
 """
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .logger import get_logger
+from .meme_style import DEFAULT_MEME_LEVEL, measure_memes
+from .narrative_voice import DEFAULT_VOICE, measure_voice
 from .text_signals import COOL_KEYWORDS, HOOK_KEYWORDS, MICRO_KEYWORDS
 
 logger = get_logger(__name__)
@@ -42,6 +45,12 @@ class QualityReport:
     sentence_variety_score: float = 0.0  # 句式多样性得分
     issues: list[str] = field(default_factory=list)  # 问题列表
     suggestions: list[str] = field(default_factory=list)  # 建议列表
+    voice: str = DEFAULT_VOICE  # 语言质感档位
+    voice_metrics: dict = field(default_factory=dict)  # 语言质感指标
+    voice_issues: list[str] = field(default_factory=list)  # 文绉绉/书面腔提示
+    meme_level: str = DEFAULT_MEME_LEVEL  # 梗密度档位
+    meme_metrics: dict = field(default_factory=dict)  # 现代梗指标
+    meme_issues: list[str] = field(default_factory=list)  # 梗过多/过少提示
 
 
 class QualityChecker:
@@ -50,9 +59,28 @@ class QualityChecker:
     def __init__(self, project_dir: Path):
         self.project_dir = project_dir
 
-    def check_chapter(self, content: str, chapter: int) -> QualityReport:
-        """检查章节质量，返回报告。"""
-        report = QualityReport(chapter=chapter)
+    def check_chapter(
+        self,
+        content: str,
+        chapter: int,
+        voice: str = "",
+        meme_level: str = "",
+        genre: str = "",
+    ) -> QualityReport:
+        """检查章节质量，返回报告。
+
+        Args:
+            content: 章节正文
+            chapter: 章号
+            voice: 项目叙述语言（大白话/平实/文学）；空串按大白话
+            meme_level: 项目梗密度（无/少/中/高）；空串按少
+            genre: 题材（仙侠/都市…），用于判断现代梗是否出戏
+        """
+        report = QualityReport(
+            chapter=chapter,
+            voice=voice or DEFAULT_VOICE,
+            meme_level=meme_level or DEFAULT_MEME_LEVEL,
+        )
         
         # 篇幅检查
         self._check_word_count(content, report)
@@ -84,10 +112,28 @@ class QualityChecker:
         # 句式多样性检查
         self._check_sentence_variety(content, report)
         
+        # 语言质感 / 梗密度检查（不参与总分，只给写作反馈）
+        self._check_voice(content, report)
+        self._check_memes(content, report, genre)
+
         # 计算总分
         self._calculate_total_score(report)
         
         return report
+
+    def _check_voice(self, content: str, report: QualityReport):
+        """检查语言质感：长篇最常见的问题是句子太漂亮、书面腔太重。"""
+        metrics = measure_voice(content, report.voice)
+        report.voice = metrics.voice
+        report.voice_metrics = metrics.as_dict()
+        report.voice_issues = list(metrics.issues)
+
+    def _check_memes(self, content: str, report: QualityReport, genre: str = ""):
+        """检查梗密度：太少没味、太多出戏、重复尴尬。"""
+        metrics = measure_memes(content, report.meme_level, genre)
+        report.meme_level = metrics.level
+        report.meme_metrics = metrics.as_dict()
+        report.meme_issues = list(metrics.issues)
 
     def _check_word_count(self, content: str, report: QualityReport):
         """检查字数。"""
@@ -461,6 +507,44 @@ class QualityChecker:
             f"- 一致性：{report.consistency_score:.1f}",
             f"- 句式多样性：{report.sentence_variety_score:.1f}",
         ]
+
+        if report.voice_metrics:
+            m = report.voice_metrics
+            lines.extend([
+                "",
+                f"### 语言质感（{report.voice}，不计入总分）",
+                f"- 平均句长：{m.get('avg_sentence_len', 0)} 字",
+                f"- 成语/四字词：{m.get('idiom_per_k', 0)} 个/千字",
+                f"- 书面腔：{m.get('bookish_per_k', 0)} 个/千字",
+                f"- 比喻：{m.get('simile_per_k', 0)} 处/千字",
+                f"- 凑字副词：{m.get('filler_per_k', 0)} 个/千字",
+                f"- 对话占比：{m.get('dialogue_ratio', 0):.0%}",
+            ])
+            if report.voice_issues:
+                lines.append("- 提示：")
+                for issue in report.voice_issues:
+                    lines.append(f"  - {issue}")
+            else:
+                lines.append("- 提示：未发现明显的文绉绉/书面腔")
+
+        if report.meme_metrics:
+            mm = report.meme_metrics
+            lines.extend([
+                "",
+                f"### 梗密度（{report.meme_level}，不计入总分）",
+                f"- 现代梗：{mm.get('count', 0)} 个（{mm.get('per_k', 0)} 个/千字）",
+            ])
+            hits = mm.get("hits") or {}
+            if hits:
+                lines.append("- 命中：" + "、".join(
+                    f"{name}×{count}" if count > 1 else name for name, count in hits.items()
+                ))
+            if report.meme_issues:
+                lines.append("- 提示：")
+                for issue in report.meme_issues:
+                    lines.append(f"  - {issue}")
+            else:
+                lines.append("- 提示：梗的用量在目标区间内")
         
         if report.issues:
             lines.append("")

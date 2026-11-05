@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -20,7 +21,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QComboBox, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
     QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QHeaderView, QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QHeaderView, QScrollArea, QSplitter, QToolButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -60,6 +61,31 @@ def _pill(text: str, tag: str) -> str:
         f"color: {colors['fg']}; background: {colors['bg']};"
         "border-radius: 8px; padding: 1px 8px; font-size: 11px; font-weight: 600;"
     )
+
+
+def _opaque_over(css: str, base: QColor) -> QColor:
+    """把主题里的 rgba(...) 色按 base 底色合成为不透明 QColor。
+
+    QPalette 只认 ``#RRGGBB``/具名色，直接 ``QColor("rgba(...)")`` 会得到黑色；
+    树的分支/缩进区由 palette 绘制，必须先合成再塞进 Highlight。
+    """
+    match = re.fullmatch(r"rgba?\(([^)]*)\)", css.strip())
+    if not match:
+        return QColor(css)
+    parts = [part.strip() for part in match.group(1).split(",")]
+    if len(parts) < 3:
+        return QColor(css)
+    try:
+        red, green, blue = (int(float(part)) for part in parts[:3])
+        alpha = float(parts[3]) if len(parts) > 3 else 1.0
+    except ValueError:
+        return QColor(css)
+    alpha = min(1.0, max(0.0, alpha))
+
+    def mix(channel: int, base_channel: int) -> int:
+        return round(channel * alpha + base_channel * (1 - alpha))
+
+    return QColor(mix(red, base.red()), mix(green, base.green()), mix(blue, base.blue()))
 
 
 class _KpiCard(QFrame):
@@ -170,16 +196,31 @@ class StorylinePage(QWidget):
         self.btn_jump.clicked.connect(self._jump_current)
         self.btn_sync = QPushButton("同步台账")
         self.btn_sync.setToolTip(
-            "重新解析 时间线/主线/支线/伏笔 四份规划文档，"
-            "并与记忆、大世界状态对账（手工编辑优先，不会被覆盖）"
+            "只做记忆/世界状态对账；时间线/主线/支线/伏笔以本页台账为唯一可编辑来源"
         )
-        self.btn_sync.clicked.connect(lambda: self.sync(force=True))
+        self.btn_sync.clicked.connect(lambda: self.sync(force=False))
+        reimport_menu = QMenu(self)
+        reimport_action = reimport_menu.addAction("从归档规划稿重导入…")
+        reimport_action.triggered.connect(self._reimport_planning)
+        self.btn_reimport = QToolButton()
+        self.btn_reimport.setText("···")
+        self.btn_reimport.setFixedSize(28, 24)
+        self.btn_reimport.setStyleSheet("font-size: 12px; padding: 0; border-radius: 4px;")
+        self.btn_reimport.setArrowType(Qt.ArrowType.NoArrow)
+        self.btn_reimport.setToolTip("更多：从 planning/ 归档稿重导入时间线/主线/支线/伏笔")
+        self.btn_reimport.setMenu(reimport_menu)
+        self.btn_reimport.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.btn_add = QPushButton("＋ 新增")
         self.btn_add.clicked.connect(self._add)
+        self.detail_toggle = QPushButton("详情")
+        self.detail_toggle.setCheckable(True)
+        self.detail_toggle.setToolTip("显示/收起右侧详情编辑区（未选中线程时默认收起）")
+        self.detail_toggle.toggled.connect(self._on_detail_toggled)
         self.btn_del = QPushButton("删除")
         self.btn_del.setObjectName("danger")
         self.btn_del.clicked.connect(self._delete)
-        for b in (self.btn_jump, self.btn_sync, self.btn_add, self.btn_del):
+        for b in (self.btn_jump, self.btn_sync, self.btn_reimport,
+                  self.btn_add, self.detail_toggle, self.btn_del):
             bl.addWidget(b)
         root.addWidget(bar)
 
@@ -224,8 +265,8 @@ class StorylinePage(QWidget):
         body.setChildrenCollapsible(False)
 
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(4)
-        self.tree.setHeaderLabels(["线程", "状态", "章节", "备注"])
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["线程", "状态", "章节"])
         self.tree.setRootIsDecorated(True)
         self.tree.setAlternatingRowColors(False)
         self.tree.setUniformRowHeights(True)
@@ -234,10 +275,14 @@ class StorylinePage(QWidget):
         self._apply_tree_style()
         header = self.tree.header()
         header.setStretchLastSection(False)
+        header.setMinimumSectionSize(48)
+        # 只有「线程」吃掉剩余宽度；状态/章节用固定窄列，避免被分组汇总
+        # 或个别长章号撑开，把标题挤成「约…」。（备注/人物只在右侧详情展示）
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in (1, 2, 3):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.setColumnWidth(1, 110)
+        for column in (1, 2):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        self.tree.setColumnWidth(1, 96)
+        self.tree.setColumnWidth(2, 128)
         self.tree.currentItemChanged.connect(self._on_tree_selected)
         self.tree.itemDoubleClicked.connect(self._on_tree_activated)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -323,6 +368,7 @@ class StorylinePage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(panel)
+        self.detail_scroll = scroll
         body.addWidget(scroll)
         body.setStretchFactor(0, 3)
         body.setStretchFactor(1, 2)
@@ -330,6 +376,8 @@ class StorylinePage(QWidget):
         root.addWidget(body, 1)
 
         self._set_enabled(False)
+        # 未选中线程时不占 320px：树先独占整行，选中后自动展开详情
+        self._set_detail_visible(False)
 
     # ── 主题 ──
 
@@ -344,14 +392,22 @@ class StorylinePage(QWidget):
 
     def _apply_tree_style(self):
         t = self._theme_colors()
+        # 选中底色合成成实色：item 与左侧缩进区各画一次，半透明会叠成更深的色带
+        selected_bg = _opaque_over(t["accent_bg"], QColor(t["surface"]))
         self.tree.setStyleSheet(
             f"QTreeWidget {{ background: {t['surface']}; color: {t['fg']};"
             " border: none; border-radius: 10px; padding: 4px; font-size: 13px; outline: none; }"
             "QTreeWidget::item { padding: 6px 10px; border-radius: 6px; margin: 1px 2px; }"
-            f"QTreeWidget::item:selected {{ background: {t['accent_bg']}; color: {t['accent']}; }}"
+            f"QTreeWidget::item:selected {{ background: {selected_bg.name()}; color: {t['accent']}; }}"
             f"QHeaderView::section {{ background: {t['surface']}; color: {t['fg2']};"
             f" border: none; border-bottom: 1px solid {t['border']}; padding: 6px 8px; font-size: 11px; }}"
         )
+        # 选中行左侧缩进/分支区由 QTreeView 用 palette 绘制，QSS 的 item:selected 管不到；
+        # 把 Highlight 同步成同一实色，避免出现一条深色断色带。
+        pal = self.tree.palette()
+        pal.setColor(QPalette.ColorRole.Highlight, selected_bg)
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor(t["accent"]))
+        self.tree.setPalette(pal)
 
     def refresh_theme(self):
         """主题切换后重刷树样式（MainWindow._apply_theme 调用）。"""
@@ -370,6 +426,17 @@ class StorylinePage(QWidget):
             w.setEnabled(on)
         self.btn_restore.setVisible(False)
 
+    def _on_detail_toggled(self, visible: bool):
+        self.detail_scroll.setVisible(visible)
+
+    def _set_detail_visible(self, visible: bool):
+        """收起/展开详情区；按钮状态同步但不重复触发信号。"""
+        self.detail_scroll.setVisible(visible)
+        if self.detail_toggle.isChecked() != visible:
+            self.detail_toggle.blockSignals(True)
+            self.detail_toggle.setChecked(visible)
+            self.detail_toggle.blockSignals(False)
+
     # ── 项目切换 / 刷新 ──
 
     def set_project_dir(self, project_dir: Path | None):
@@ -387,7 +454,7 @@ class StorylinePage(QWidget):
             self._clear_detail()
 
     def sync(self, force: bool = False):
-        """与规划/记忆/世界状态对账；force=True 忽略文档签名强制重解析。"""
+        """与记忆/世界状态对账；force=True 时额外从归档规划稿重导入。"""
         if not self._project_dir:
             return
         try:
@@ -397,6 +464,19 @@ class StorylinePage(QWidget):
             self.detail_status.setText(f"同步失败：{e}")
             return
         self.refresh()
+
+    def _reimport_planning(self):
+        """显式从 planning/ 归档稿重建四类线程（日常同步不再回灌）。"""
+        if not self._project_dir:
+            return
+        ret = QMessageBox.question(
+            self, "重导入规划",
+            "将按 planning/ 下归档的时间线/主线/支线/伏笔重新导入台账。\n"
+            "章号/状态会按规划表重新解析（例如 8-96 会记成第8→96章），"
+            "可能改变自动推导的进度；手工改过的字段会保留。\n确定继续？",
+        )
+        if ret == QMessageBox.StandardButton.Yes:
+            self.sync(force=True)
 
     def reload(self):
         """与规划/记忆/世界状态对账后重绘（WorldPage.reload 统一入口）。"""
@@ -472,13 +552,16 @@ class StorylinePage(QWidget):
                 continue
             progress = self.ledger.progress()
             summary = self._kind_summary(kind, items, progress)
-            group = QTreeWidgetItem([f"{_KIND_ICONS.get(kind, '')} {KIND_LABELS[kind]}", summary, "", ""])
+            label = f"{_KIND_ICONS.get(kind, '')} {KIND_LABELS[kind]}"
+            group = QTreeWidgetItem([f"{label}    {summary}", "", ""])
+            group.setToolTip(0, f"{label}\n{summary}")
             font = group.font(0)
             font.setBold(True)
             group.setFont(0, font)
-            group.setFirstColumnSpanned(False)
             group.setData(0, Qt.ItemDataRole.UserRole, {"kind": kind, "group": True})
             self.tree.addTopLevelItem(group)
+            # 跨列标题必须在入树之后设置，否则标记会在 addTopLevelItem 时丢失
+            group.setFirstColumnSpanned(True)
 
             # 按卷/分组做二级分组（时间线直接平铺）
             buckets: dict[str, list] = {}
@@ -488,7 +571,7 @@ class StorylinePage(QWidget):
             for bucket, rows in buckets.items():
                 parent = group
                 if bucket:
-                    parent = QTreeWidgetItem([bucket, "", "", ""])
+                    parent = QTreeWidgetItem([bucket, "", ""])
                     parent.setData(0, Qt.ItemDataRole.UserRole, {"kind": kind, "group": True})
                     group.addChild(parent)
                 for thread in rows:
@@ -502,8 +585,7 @@ class StorylinePage(QWidget):
 
     def _append_thread_row(self, parent, thread, current_chapter: int):
         status_text, tag = thread.ui_status(current_chapter)
-        notes = thread.notes or (thread.owner or "")
-        row = QTreeWidgetItem([thread.title, status_text, thread.chapter_text(), notes])
+        row = QTreeWidgetItem([thread.title, status_text, thread.chapter_text()])
         row.setData(0, Qt.ItemDataRole.UserRole,
                     {"kind": thread.kind, "id": thread.id, "group": False})
         colors = get_status_colors(tag)
@@ -511,14 +593,16 @@ class StorylinePage(QWidget):
         font = row.font(1)
         font.setBold(True)
         row.setFont(1, font)
-        row.setToolTip(0, thread.detail or thread.title)
+        # 窄列会省略过长文本：状态/章节补全量 tooltip
+        row.setToolTip(1, status_text)
+        row.setToolTip(2, thread.chapter_text())
         if thread.kind == ThreadKind.TIMELINE.value and thread.happened:
             row.setForeground(0, QColor(colors["fg"]))
         if not thread.active:
             row.setForeground(0, QColor(palette().color(QPalette.ColorRole.PlaceholderText)))
-        if thread.owner:
-            row.setToolTip(3, thread.owner)
         hint = f"{thread.kind_label} · {thread.status_label}"
+        if thread.owner:
+            hint += f"\n人物：{thread.owner}"
         if thread.detail:
             hint += f"\n{thread.detail}"
         if thread.notes:
@@ -583,6 +667,7 @@ class StorylinePage(QWidget):
             self._clear_detail()
             return
         self._current_id = data.get("id")
+        self._set_detail_visible(True)
         self._load_detail()
 
     def _on_tree_activated(self, item, _column):
@@ -659,6 +744,7 @@ class StorylinePage(QWidget):
             self._clear_detail()
 
     def _clear_detail(self):
+        self._set_detail_visible(False)
         self.detail_title.setText("选择左侧一条线程查看/编辑")
         self.detail_meta.setText("")
         self.detail_status.setText("")

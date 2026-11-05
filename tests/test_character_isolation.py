@@ -53,11 +53,15 @@ def test_canon_append_only_and_known_to(tmp_path: Path):
 def test_canon_tamper_detected(tmp_path: Path):
     canon = CanonLog(tmp_path)
     canon.append(seed_event(1, "药圃", "林牧", "林牧醒来", ["林牧"]))
+    # 先验一次，把实例缓存与类级 (mtime,size) 缓存都填上：
+    # 之后等长改写可能落在同一 mtime 刻度，verify_chain 必须强制重读磁盘。
+    assert canon.verify_chain() is True
     path = canon.path
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[0] = lines[0].replace("林牧醒来", "林牧被杀")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert CanonLog(tmp_path).verify_chain() is False
+    assert canon.verify_chain() is False
 
 
 # ── 生命周期 ──
@@ -185,11 +189,11 @@ class FakeLLM(BaseLLM):
         self.content = content
         self.messages: list = []
 
-    async def chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None):
+    async def chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None, model=None):
         self.messages = list(messages)
         return LLMResponse(content=self.content, usage={"total_tokens": 3})
 
-    async def stream_chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None):
+    async def stream_chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None, model=None):
         if False:  # pragma: no cover
             yield "", ""
 

@@ -35,6 +35,9 @@ class SettingsMixin:
             "title": self.project.title,
             "genre": self.project.genre,
             "style": self.project.style,
+            "narrative_voice": self.project.narrative_voice,
+            "meme_level": self.project.meme_level,
+            "target_chapters": self.project.target_chapters,
             "target_words": self.project.target_words,
             "theme": self.project.theme,
             "direction": self.project.direction,
@@ -49,6 +52,9 @@ class SettingsMixin:
             self.project.title = data["title"]
             self.project.genre = data["genre"]
             self.project.style = data["style"]
+            self.project.narrative_voice = data["narrative_voice"]
+            self.project.meme_level = data["meme_level"]
+            self.project.target_chapters = data["target_chapters"]
             self.project.target_words = data["target_words"]
             self.project.theme = data["theme"]
             self.project.direction = data["direction"]

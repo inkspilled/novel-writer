@@ -81,21 +81,30 @@ class CanonLog:
 
     # ── 读 ──
 
-    def _load(self) -> None:
-        if self._loaded:
+    def _load(self, fresh: bool = False) -> None:
+        """解析 JSONL。
+
+        ``fresh=True`` 绕过 (mtime,size) 缓存与实例内缓存，直接重读磁盘——
+        审计（``verify_chain``）必须看到真实文件内容：Windows 上同一时间刻度内
+        等长改写的 mtime/size 可能不变，缓存会漏掉篡改。
+        """
+        if self._loaded and not fresh:
             return
         self._loaded = True
+        self._events = []
         if not self.path.exists():
             return
-        try:
-            st = self.path.stat()
-            key = (st.st_mtime_ns, st.st_size)
-            cached = self._CACHE.get(self.path)
-            if cached and cached[0] == key:
-                self._events = list(cached[1])
-                return
-        except OSError:
-            key = (0, 0)
+        key = None
+        if not fresh:
+            try:
+                st = self.path.stat()
+                key = (st.st_mtime_ns, st.st_size)
+                cached = self._CACHE.get(self.path)
+                if cached and cached[0] == key:
+                    self._events = list(cached[1])
+                    return
+            except OSError:
+                key = (0, 0)
         try:
             for line in self.path.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
@@ -108,10 +117,11 @@ class CanonLog:
         except OSError as e:
             logger.error("正典事件读取失败: %s", e)
             return
-        try:
-            self._CACHE[self.path] = (key, list(self._events))
-        except Exception:
-            pass
+        if key is not None:
+            try:
+                self._CACHE[self.path] = (key, list(self._events))
+            except Exception:
+                pass
 
     def all(self) -> list[CanonEvent]:
         self._load()
@@ -152,8 +162,8 @@ class CanonLog:
         return out
 
     def verify_chain(self) -> bool:
-        """校验 prev_hash 链接与事件内容哈希。"""
-        self._load()
+        """校验 prev_hash 链接与事件内容哈希（强制重读磁盘，不信缓存）。"""
+        self._load(fresh=True)
         prev = ""
         for e in self._events:
             if e.prev_hash != prev:

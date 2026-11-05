@@ -142,7 +142,10 @@ def build_world_state_prompt(n: int, gs_summary: str, content: str) -> str:
         f'  "timeline": [{{"event": "事件描述", "location": "地点"}}],\n' 
         f'  "date": "时间"\n'
         f'}}\n\n'
-        f"只输出本章发生变化的部分，没变化的字段不要输出。角色位置变化必须写 location；目标发生变化时必须输出新的 goals（整组替换，不要只写增量）；timeline 只写本章2-3条关键转折，不要逐段复述。系统会据此生成地点进出流水。"
+        f"只输出本章发生变化的部分，没变化的字段不要输出。角色位置变化必须写 location；目标发生变化时必须输出新的 goals（整组替换，不要只写增量）；timeline 只写本章2-3条关键转折，不要逐段复述。"
+        f"如果本章时间推进（跨日/跨夜/闭关/赶路/时间跳跃），必须输出新的 date（沿用世界观纪年格式）；时间没变不要输出 date。系统会据此生成地点进出流水。"
+        "地点沿用已有 ID/标准名，确认的别称放入 aliases，所属区域写 parent，不得为同一地点反复新建。"
+        "coordinates 仅在正文/设定有明确坐标依据时输出，并同时给出 coordinate_frame 和 coordinate_unit；不能凭空编造坐标。"
     )
 
 
@@ -192,6 +195,101 @@ def build_chapter_summary_prompt(n: int, ch_title: str, content: str) -> str:
         f"- **情绪走向**：如 惊疑→震怒→决心\n"
         f"- **承接点**：本章结尾留给下一章的悬念（1句）\n\n"
         f"正文（全文）：\n{content}"
+    )
+
+
+def build_chapter_digest_prompt(
+    n: int,
+    content: str,
+    *,
+    world_text: str = "",
+    roster: list[str] | None = None,
+    active_loops: list[dict] | None = None,
+    threads_context: str = "",
+) -> str:
+    """章后抽取：一次调用同时产出概要/世界状态/感知事件/记忆/台账推进。
+
+    前四段 schema 分别来自 chapter_summary / world_state_update /
+    percept_extract / sediment 的原有提示词；第五段 ``threads`` 让主线/支线
+    按台账标题自动推进，不依赖作者手工改。
+    """
+    names = "、".join((roster or [])[:40]) or "（未登记）"
+    loops = ""
+    if active_loops:
+        loops = "\n".join(
+            f"- {item.get('subject', '')}：{str(item.get('value', ''))[:40]}"
+            for item in active_loops[:15]
+        )
+    else:
+        loops = "（无）"
+
+    return (
+        f"你是小说章节书记员。通读第{n}章正文，一次性产出五份章后数据，"
+        f"严格输出一个 JSON 对象，不要输出解释或 Markdown 代码块。\n\n"
+        f"【角色名单】\n{names}\n\n"
+        f"【当前世界状态】\n{world_text[:6000]}\n\n"
+        f"【当前未解伏笔】（若本章剧情已回收其中某条，把它的 subject 原样放进 "
+        f"memory.resolved；没回收的不要动）\n{loops}\n\n"
+        f"【当前主线/支线台账】（threads 只能引用这些标题；主线不新造，支线新开用 new=true）\n"
+        f"{threads_context or '（暂无）'}\n\n"
+        f"【第{n}章正文】\n{content[:16000]}\n\n"
+        f"【输出格式】\n"
+        f"{{\n"
+        f'  "summary": "## 第{n}章 标题 概要\\n- **地点**：主要场景\\n- **出场人物**：人物列表\\n'
+        f'- **核心事件**：本章关键事情（2-3句）\\n- **伏笔/悬念**：埋设或回收\\n'
+        f'- **情绪走向**：如 惊疑→震怒→决心\\n- **承接点**：留给下一章的悬念（1句）",\n'
+        f'  "world": {{\n'
+        f'    "characters": {{"角色名": {{"gold": 0, "cultivation": {{"level": "炼气", "sub_level": "三层"}}, '
+        f'"location": "地点", "goals": ["目标"], "hp": 0, "sp": 0, '
+        f'"inventory": [{{"name": "物品", "type": "类型"}}]}}}},\n'
+        f'    "items": {{"new": [{{"name": "物品", "type": "类型", "effect": "效果", "location": "地点", "holder": "持有者"}}], '
+        f'"move": [{{"item": "物品", "location": "新地点", "holder": ""}}], '
+        f'"give": [{{"character": "角色", "item": "物品"}}], '
+        f'"remove": [{{"character": "角色", "item": "物品"}}]}},\n'
+        f'    "locations": {{"地点名": {{"type": "类型", "description": "描述"}}}},\n'
+        f'    "timeline": [{{"event": "事件", "location": "地点"}}],\n'
+        f'    "date": "时间"\n'
+        f"  }},\n"
+        f'  "percept": {{\n'
+        f'    "scene": "地点/时间（一句话）",\n'
+        f'    "events": [{{\n'
+        f'      "actor": "角色名（必须在名单中）",\n'
+        f'      "targets": ["相关角色名"],\n'
+        f'      "type": "action|dialogue|reveal|death|state_change|belief",\n'
+        f'      "observable": "旁人能看到/听到的客观行为（1-2 句）",\n'
+        f'      "hidden": "只有 actor 自己知道的意图；没有就空字符串",\n'
+        f'      "visibility": "private|participants|public|world",\n'
+        f'      "known_by": ["在场或被告知、确实能知道这件事的角色名"]\n'
+        f"    }}]\n"
+        f"  }},\n"
+        f'  "memory": {{\n'
+        f'    "character_state": [{{"subject": "角色名", "aspect": "实力|身体|位置|身份", "value": "变化描述"}}],\n'
+        f'    "open_loops": [{{"value": "本章新埋设的伏笔/悬念"}}],\n'
+        f'    "resolved": ["本章已回收的伏笔 subject（与上面列表逐字一致）"],\n'
+        f'    "reader_promises": [{{"subject": "承诺主题", "value": "对读者许下的承诺"}}],\n'
+        f'    "relationships": [{{"subject": "角色A↔角色B", "value": "关系变化"}}],\n'
+        f'    "world_rules": [{{"subject": "规则名", "value": "本章揭示的规则/禁忌"}}]\n'
+        f"  }},\n"
+        f'  "threads": {{\n'
+        f'    "main": [{{"title": "台账里的主线标题", "status": "active|done"}}],\n'
+        f'    "subplot": [{{"title": "台账里的支线标题或新支线", "status": "active|done", "new": false}}]\n'
+        f"  }}\n"
+        f"}}\n\n"
+        f"【五段要求】\n"
+        f"1. summary：严格按模板，总长 200 字内，只写本章内容。\n"
+        f"2. world：只写本章发生变化的部分，没变化就不输出该字段。角色位置变化必须写 "
+        f"location；目标变化必须输出整组 goals；timeline 只写 2-3 条关键转折；时间推进时"
+        f"必须输出新 date，时间没变不要输出。\n"
+        f"3. percept：observable 只写角色能感知到的内容，hidden 只写 actor 的真实意图，"
+        f"known_by 只能列名单中的角色；死亡/重伤/身份揭露/关键承诺单独成条；"
+        f"每章最多 8 条，同类无信息动作合并；type=death 时 actor 必须是死者。\n"
+        f"4. memory：只记录确定发生的事实，假设/设想/心理活动不算；没有变化的数组输出空数组；"
+        f"每条 value 控制在 40 字内。\n"
+        f"5. threads：只写本章真正推进/完成的主线/支线；title 必须与上面台账逐字一致"
+        f"（新支线除外，且必须 new=true）；没推进就输出空数组；不要复述未变化的条目。\n\n"
+        f"【硬规则】\n"
+        f"- 五段都必须出现；没有内容的段输出空对象/空数组，不要省略键。\n"
+        f"- 不确定的事实宁可留空，不要编造；不要输出 JSON 以外的任何字符。"
     )
 
 

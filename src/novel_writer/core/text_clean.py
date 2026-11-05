@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 
 _TAG_RE = re.compile(
-    r"<(thought|thinking|reasoning|analysis)>.*?</\1>",
+    r"<(think|thought|thinking|reasoning|analysis)>.*?</\1>",
     re.IGNORECASE | re.DOTALL,
 )
 _META_RE = re.compile(
@@ -56,6 +56,9 @@ def clean_model_text(text: str, step_id: str = "") -> str:
         return ""
     text = text.replace("\ufeff", "").strip()
     text = _TAG_RE.sub("", text).strip()
+    # 被输出预算截断的思考块也不是正文，不能把剩余分析落盘。
+    text = re.sub(r"<(?:think|thought|thinking|reasoning|analysis)>.*$", "", text,
+                  flags=re.IGNORECASE | re.DOTALL).strip()
     stripped = text.lstrip()
     if stripped.startswith(("{", "[")):
         return text

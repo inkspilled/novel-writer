@@ -23,6 +23,26 @@ class TestThinkingDialect:
         assert detect_dialect("qwen3:8b", "http://localhost:11434") == "none"
         assert detect_dialect("qwen3:8b", "http://127.0.0.1:11434") == "none"
 
+    def test_local_server_uses_chat_template_kwargs(self):
+        """本地 llama.cpp：模型文件名里带 qwen，但方言必须按 base_url 判成 llamacpp。
+
+        顶层 enable_thinking 会被本地服务静默忽略（模型照常思考、吃光额度），
+        只有 chat_template_kwargs.enable_thinking 才真正传给模板。
+        """
+        assert detect_dialect(
+            "D:\\aiModels\\Qwen3.5-9B-IQ4_XS.gguf", "http://localhost:8080/v1"
+        ) == "llamacpp"
+        assert detect_dialect("qwen3:8b", "http://127.0.0.1:1234/v1") == "llamacpp"
+        off = build_thinking_body(
+            "off", model="D:\\aiModels\\Qwen3.5-9B.gguf", base_url="http://localhost:8080/v1"
+        )
+        assert off == {"chat_template_kwargs": {"enable_thinking": False}}
+        # 云端 qwen 仍是顶层 enable_thinking，不能被本地分支带偏
+        assert build_thinking_body(
+            "off", model="qwen-max",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        ) == {"enable_thinking": False}
+
     def test_mimo_payload(self):
         off = build_thinking_body("off", model="mimo-7b", base_url="https://api.milai.com/v1")
         on = build_thinking_body("on", model="mimo-7b", base_url="https://api.milai.com/v1")

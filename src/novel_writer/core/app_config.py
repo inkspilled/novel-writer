@@ -60,6 +60,14 @@ else:
     ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
     LOGO_PATH = PROJECT_ROOT / "logo.png"
 
+# 随包产品配置（agents/providers 等只读基准）：
+# 开发 = 项目根 config/；打包 = bundle(_internal)/config。
+# 注意不能用 PROJECT_ROOT/源码层数 parent 推导——打包后那些会指到安装根目录而非 _internal。
+if _is_frozen():
+    BUNDLED_CONFIG_DIR = _bundle_dir() / "config"
+else:
+    BUNDLED_CONFIG_DIR = PROJECT_ROOT / "config"
+
 
 def _atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     """先写临时文件再 rename，避免中途崩溃留下空/半截文件。"""

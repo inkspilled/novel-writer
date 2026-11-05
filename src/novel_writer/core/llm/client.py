@@ -24,9 +24,18 @@ os.environ['SHIBOKEN_DISABLE_FEATURE_IMPORT_CHECK'] = '1'
 
 
 def _get_retryable_errors():
-    """懒加载可重试的异常类型，避免 PySide6 shiboken 导入冲突。"""
-    from openai import RateLimitError, APITimeoutError, APIConnectionError
-    return (RateLimitError, APITimeoutError, APIConnectionError)
+    """懒加载可重试的异常类型，避免 PySide6 shiboken 导入冲突。
+
+    InternalServerError 覆盖 5xx：DeepSeek 高峰期会返 503「Service is too busy」，
+    以前这类错误不重试，直接把整个规划步骤打挂。
+    """
+    from openai import (
+        APIConnectionError,
+        APITimeoutError,
+        InternalServerError,
+        RateLimitError,
+    )
+    return (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)
 
 
 # ── 全局限流器：默认不人为拖延；仅 429 后进入冷却 ──
@@ -220,11 +229,15 @@ class LLMClient(BaseLLM):
         logger.info("LLM 客户端初始化: model=%s, base_url=%s, stream_text=%s",
                     model, base_url, self.supports_content_stream)
 
-    def _thinking_body(self, thinking: ThinkingMode) -> dict:
-        """按模型方言构造思考字段；支持配置覆盖。"""
+    def _thinking_body(self, thinking: ThinkingMode, model: str | None = None) -> dict:
+        """按模型方言构造思考字段；支持配置覆盖。
+
+        ``model`` 用于单次调用的模型覆盖：方言要跟着实际模型走，否则用主模型
+        的方言给快模型发字段，可能被拒或行为不一致。
+        """
         return build_thinking_body(
             thinking,
-            model=self.model,
+            model=model or self.model,
             base_url=self.base_url,
             dialect=self.extra.get("thinking_dialect"),
             off_body=parse_json_body(self.extra.get("thinking_off_body")),
@@ -294,15 +307,17 @@ class LLMClient(BaseLLM):
         max_retries: int = 3,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
         self._sync_loop()
+        effective_model = (model or self.model).strip()
         last_exc: Exception | None = None
-        extra = self._thinking_body(thinking)
+        extra = self._thinking_body(thinking, effective_model)
         for attempt in range(max_retries + 1):
             try:
                 await _global_limiter.acquire()
                 create_kwargs: dict = dict(
-                    model=self.model,
+                    model=effective_model,
                     messages=_serialize_messages(messages),
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -346,10 +361,13 @@ class LLMClient(BaseLLM):
                     raise
                 # 指数退避 + 随机抖动，429 限流时等待更久
                 base_wait = min(2 ** attempt, 15)
-                from openai import RateLimitError
+                from openai import InternalServerError, RateLimitError
                 if isinstance(e, RateLimitError):
                     base_wait = max(base_wait + attempt * 2, 8)
                     _global_limiter.penalize(base_wait)  # 冷却，别再怼
+                elif isinstance(e, InternalServerError):
+                    # 5xx（503 Service is too busy）：隔 1~2 秒重试往往还是忙，退避拉到 4/8/16s
+                    base_wait = min(4 * (2 ** attempt), 30)
                 wait = base_wait + random.uniform(0, 1)
                 logger.warning("LLM 调用遇到可重试错误 (%s)，第 %d 次重试，等待 %.1f 秒...", e, attempt + 1, wait)
                 await asyncio.sleep(wait)
@@ -363,17 +381,19 @@ class LLMClient(BaseLLM):
         max_retries: int = 3,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         # 流式 + 工具调用语义复杂，自由对话保持纯文本；工作流工具走 chat()
         self._sync_loop()
+        effective_model = (model or self.model).strip()
         last_exc: Exception | None = None
-        extra = self._thinking_body(thinking)
+        extra = self._thinking_body(thinking, effective_model)
         for attempt in range(max_retries + 1):
             yielded_any = False
             try:
                 await _global_limiter.acquire()
                 create_kwargs: dict = dict(
-                    model=self.model,
+                    model=effective_model,
                     messages=_serialize_messages(messages),
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -418,10 +438,13 @@ class LLMClient(BaseLLM):
                     logger.error("流式 LLM 调用重试 %d 次后仍然失败: %s", attempt + 1, e)
                     raise
                 base_wait = min(2 ** attempt, 15)
-                from openai import RateLimitError
+                from openai import InternalServerError, RateLimitError
                 if isinstance(e, RateLimitError):
                     base_wait = max(base_wait + attempt * 2, 8)
                     _global_limiter.penalize(base_wait)  # 冷却，别再怼
+                elif isinstance(e, InternalServerError):
+                    # 5xx（503 Service is too busy）：隔 1~2 秒重试往往还是忙，退避拉到 4/8/16s
+                    base_wait = min(4 * (2 ** attempt), 30)
                 wait = base_wait + random.uniform(0, 1)
                 logger.warning("流式 LLM 调用遇到可重试错误 (%s)，第 %d 次重试，等待 %.1f 秒...", e, attempt + 1, wait)
                 await asyncio.sleep(wait)

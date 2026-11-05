@@ -95,8 +95,8 @@ class SkillRegistry:
         if self.project_dir:
             dirs.append((self.project_dir / "skills", "project"))
         try:
-            from .app_config import PROJECT_ROOT
-            dirs.append((PROJECT_ROOT / "config" / "skills", "config"))
+            from .app_config import BUNDLED_CONFIG_DIR
+            dirs.append((BUNDLED_CONFIG_DIR / "skills", "config"))
         except Exception:
             pass
         dirs.append((self.builtin_dir(), "builtin"))

@@ -55,6 +55,7 @@ class ClaudeLLM(BaseLLM):
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
         # M-05 修复：多条 system 消息拼接，不静默丢失
         system_parts = []
@@ -67,7 +68,7 @@ class ClaudeLLM(BaseLLM):
         system_msg = "\n\n".join(system_parts) if system_parts else ""
 
         create_kwargs: dict = dict(
-            model=self.model,
+            model=model or self.model,
             system=system_msg,
             messages=chat_messages,
             temperature=temperature,
@@ -92,6 +93,7 @@ class ClaudeLLM(BaseLLM):
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         # M-05 修复：多条 system 消息拼接，不静默丢失
         system_parts = []
@@ -104,7 +106,7 @@ class ClaudeLLM(BaseLLM):
         system_msg = "\n\n".join(system_parts) if system_parts else ""
 
         create_kwargs: dict = dict(
-            model=self.model,
+            model=model or self.model,
             system=system_msg,
             messages=chat_messages,
             temperature=temperature,

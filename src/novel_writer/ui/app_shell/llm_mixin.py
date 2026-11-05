@@ -31,11 +31,31 @@ class LlmMixin:
             extra["thinking_on_body"] = provider["thinking_on_body"]
         return LLMClient(model=model, api_key=api_key, base_url=base_url, **extra)
 
+    def _service_config(self, key: str) -> dict | None:
+        """解析检索服务配置（embedding / rerank）：model 为空 = 不启用；地址/Key 回落当前供应商。"""
+        cfg = dict(self.config.get(key) or {})
+        if not cfg.get("model"):
+            return None
+        provider = self.config.get("current_provider") or {}
+        if not cfg.get("base_url"):
+            cfg["base_url"] = provider.get("base_url", "")
+        if not cfg.get("api_key"):
+            cfg["api_key"] = provider.get("api_key", "")
+        return cfg
+
+    def _configure_retrieval(self):
+        """把 embedding / rerank 配置注入检索层（启动、改设置、跑工作流前都调用）。"""
+        from ...core.rag import configure_embedding
+        from ...core.rerank import configure_rerank
+        configure_embedding(self._service_config("embedding"))
+        configure_rerank(self._service_config("rerank"))
+
     def _init_llm(self):
         provider = self.config.get("current_provider")
         if not provider:
             return
         self.llm = self._create_llm(provider)
+        self._configure_retrieval()
 
     def _init_agents(self):
         self.agents.clear()
@@ -49,30 +69,17 @@ class LlmMixin:
         if not self.llm:
             return
 
-        saved_models = self.config.get("saved_models", {})
-
+        # 所有 Agent 共用同一个 LLM/模型：跨 Agent 换模型会让同一本书的
+        # 措辞、判断标准与上下文理解不一致，长跑时更容易写崩。
         for name, info in agents_cfg.items():
-            agent_model_key = info.get("model", "").strip()
-            if agent_model_key:
-                saved = saved_models.get(agent_model_key)
-                if saved:
-                    llm = self._create_llm(saved) or self.llm
-                else:
-                    provider = self.config.get("current_provider", {}).copy()
-                    provider["model"] = agent_model_key
-                    llm = self._create_llm(provider) or self.llm
-            else:
-                llm = self.llm
-
             agent_config = AgentConfig(
                 name=name,
                 role=info.get("title", name),
                 title=info.get("title", name),
                 system_prompt=info.get("system_prompt", ""),
                 skills=info.get("skills", []),
-                model=agent_model_key,
                 temperature=info.get("temperature", 0.7),
                 max_tokens=info.get("max_tokens", 4096),
             )
-            self.agents[name] = BaseAgent(agent_config, llm)
+            self.agents[name] = BaseAgent(agent_config, self.llm)
 

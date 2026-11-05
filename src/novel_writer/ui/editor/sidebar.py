@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QBrush, QColor
 
 from ...locales import t
+from ..common.titles import chapter_display_title
 
 
 class Sidebar(QWidget):
@@ -84,7 +85,7 @@ class Sidebar(QWidget):
         for i, ch in enumerate(chapters):
             item = QTreeWidgetItem()
             icon = icons.get(ch.status.value if hasattr(ch.status, 'value') else ch.status, "📝")
-            item.setText(0, f"{icon}  {ch.title or t('sidebar_unnamed_chapter')}")
+            item.setText(0, f"{icon}  {chapter_display_title(ch.number, ch.title)}")
             item.setData(0, Qt.ItemDataRole.UserRole, i)
             self.chapter_tree.addTopLevelItem(item)
         if not chapters:

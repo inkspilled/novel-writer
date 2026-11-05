@@ -18,7 +18,7 @@ class LongRunLLM(BaseLLM):
     def __init__(self):
         super().__init__(model="fake")
 
-    async def chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None):
+    async def chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None, model=None):
         text = "\n".join(str(m.content or "") for m in messages)
         if "你是小说场记" in text:
             m = re.search(r"第(\d+)章", text)
@@ -42,7 +42,7 @@ class LongRunLLM(BaseLLM):
             "knowledge_used": [], "confidence": 0.7,
         }, ensure_ascii=False))
 
-    async def stream_chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None):
+    async def stream_chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None, model=None):
         if False:  # pragma: no cover
             yield "", ""
 

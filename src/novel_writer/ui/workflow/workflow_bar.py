@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QProgressBar, QTextEdit, QSizePolicy,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 
 from ...locales import t
 from datetime import datetime
@@ -19,6 +19,8 @@ class WorkflowMiniBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._log_expanded = False
+        self._fill = False
+        self._has_log = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -90,9 +92,25 @@ class WorkflowMiniBar(QWidget):
         self._log_area.setVisible(False)
         layout.addWidget(self._log_area)
 
+        # 空日志占位：不要用一个空的深灰 QTextEdit 撑满右栏，换成一句说明。
+        self._log_hint = QLabel(t("workflow_log_hint"))
+        self._log_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._log_hint.setWordWrap(True)
+        self._log_hint.setStyleSheet(
+            "font-size: 11px; color: palette(placeholderText); padding: 12px;"
+        )
+        self._log_hint.setVisible(False)
+        layout.addWidget(self._log_hint, 1)
+
+    def _refresh_log_visibility(self):
+        """日志区只在「有内容」或「用户主动展开」时出现；空的时候显示提示。"""
+        wanted = self._fill or self._log_expanded
+        self._log_area.setVisible(wanted and self._has_log)
+        self._log_hint.setVisible(wanted and not self._has_log)
+
     def _toggle_log(self):
         self._log_expanded = not self._log_expanded
-        self._log_area.setVisible(self._log_expanded)
+        self._refresh_log_visibility()
 
     def set_summary(self, text: str, percent: int | None = None):
         """标题位显示两段式进度（规划/正文）；percent 给正文进度时覆盖进度条。"""
@@ -114,10 +132,14 @@ class WorkflowMiniBar(QWidget):
 
     def set_fill_available(self, fill: bool):
         """聊天折叠时让日志区吃掉剩余高度；展开时恢复 160px 上限。"""
+        self._fill = fill
         self._log_area.setMaximumHeight(16777215 if fill else 180)
         self.setMaximumHeight(16777215 if fill else 160)
-        self._log_area.setVisible(True if fill else self._log_expanded)
         self._log_area.setSizePolicy(
+            QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
+        )
+        self._log_hint.setSizePolicy(
             QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
         )
@@ -125,6 +147,7 @@ class WorkflowMiniBar(QWidget):
             QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Expanding if fill else QSizePolicy.Policy.Preferred,
         )
+        self._refresh_log_visibility()
 
     def set_usage(self, usage: dict | None):
         usage = usage or {}
@@ -151,10 +174,11 @@ class WorkflowMiniBar(QWidget):
         # 自动滚动到底部
         sb = self._log_area.verticalScrollBar()
         sb.setValue(sb.maximum())
-        # 有新日志时自动展开
-        if not self._log_expanded:
+        # 有新日志时才把空占位换成日志区
+        self._has_log = True
+        if not self._log_expanded and not self._fill:
             self._log_expanded = True
-            self._log_area.setVisible(True)
+        self._refresh_log_visibility()
 
     def apply_theme(self, colors: dict):
         accent = colors.get("accent", "#6e8efb")

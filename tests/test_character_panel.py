@@ -19,11 +19,11 @@ class FakeLLM(BaseLLM):
         self.responses = list(responses)
         self.calls = []
 
-    async def chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None):
+    async def chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None, model=None):
         self.calls.append(messages)
         return self.responses.pop(0)
 
-    async def stream_chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None):
+    async def stream_chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None, model=None):
         if False:  # pragma: no cover
             yield "", ""
 
@@ -105,6 +105,29 @@ def test_offscreen_tick_batches_and_filters(tmp_path: Path):
     data = asyncio.run(run_offscreen_tick(tmp_path, 5, TickAgent(), registry=reg))
     assert data and len(data["ticks"]) == 2
     assert (tmp_path / "sim_cache" / "offscreen" / "tick_5.json").exists()
+    # 目标变化要写回档案，而不是只留在 JSON 里
+    assert CharacterRegistry(tmp_path).get("楚夜").goals == ["确认林牧是否知情"]
+
+
+def test_latest_offscreen_tick_survives_until_next_tick(tmp_path: Path):
+    """tick 每 5 章一次，后续 4 章都应看到最近一次 tick，而不是第 n-1 章文件。"""
+    from src.novel_writer.core.workflow.context import ContextBuilder
+    import json
+
+    root = tmp_path / "sim_cache" / "offscreen"
+    root.mkdir(parents=True)
+    (root / "tick_5.json").write_text(json.dumps(
+        {"chapter": 5, "ticks": [{"character": "林牧", "summary": "在藏经阁查符文"}]},
+        ensure_ascii=False), encoding="utf-8")
+    (root / "tick_10.json").write_text(json.dumps(
+        {"chapter": 10, "ticks": [{"character": "楚夜", "summary": "暗中跟踪"}]},
+        ensure_ascii=False), encoding="utf-8")
+
+    builder = ContextBuilder(tmp_path, {"title": "测试书"})
+    text_8 = builder._load_offscreen_tick(8)
+    assert "林牧" in text_8 and "第5章 tick" in text_8
+    text_12 = builder._load_offscreen_tick(12)
+    assert "楚夜" in text_12 and "第10章 tick" in text_12
 
 
 def test_panel_director_gets_scene_brief(tmp_path: Path):

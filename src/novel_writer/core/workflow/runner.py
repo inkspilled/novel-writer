@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from .. import project_io
-from ..agents.base import BaseAgent
+from ..agents.base import (
+    BaseAgent,
+    reset_model_override,
+    set_model_override,
+)
 from ..llm.base import LLMResponse
 from ..logger import get_logger
 from ..text_clean import clean_model_text
@@ -28,6 +32,7 @@ from .constants import (
 )
 from .context import ContextBuilder
 from .definition import WorkflowDef, WorkflowStep
+from .digest import digest_section
 from .prompts import build_memory_sediment_prompt, build_pacing_context, build_title_constraint
 from .sediment import extract_chapter_title, sediment_chapter
 from ..json_extract import extract_json_object
@@ -61,6 +66,8 @@ class WorkflowRunner:
         self.max_context_tokens = max_context_tokens
         # 只读工具（规划/前文/记忆/技能）开关；模型不支持时自动降级为纯文本
         self.enable_tools = enable_tools
+        # 步骤级快模型：步骤声明 model="fast" 时用这个；留空则同主模型
+        self.fast_model = str(project_info.get("fast_model") or "").strip()
         self._skill_registry = None
         # 同技能多 Agent 轮换开关：默认关闭。规划链（大纲→人物→世界观）
         # 依赖同一 Agent 实例的对话历史传递，轮换会打断该机制，故需显式开启
@@ -313,6 +320,14 @@ class WorkflowRunner:
     ):
         """执行单个步骤（含 repeat 循环逻辑）。"""
         if step.repeat > 0:
+            # 开写前先 seed 台账：四份归档规划稿 → 主线/支线/伏笔/时间线。
+            # 台账是四类线程的唯一可编辑来源，seed 只在该类型尚无条目时发生；
+            # 这样第 1 章上下文就能拿到台账块，而不是等第 1 章写完后才导入。
+            try:
+                from ..story_threads import sync_story_threads
+                sync_story_threads(self.project_dir)
+            except Exception as e:
+                logger.warning("开写前故事线台账 seed 失败（不影响正文）: %s", e)
             default_start = project.get("_start_chapter", 1)
             # current 记录的是「已完成的最后一章」，恢复时从下一章继续
             step_progress = progress.get(step.id, "pending")
@@ -338,7 +353,7 @@ class WorkflowRunner:
                 for ps in periodic_steps:
                     if self._stop:
                         break
-                    if ps.id in self._pre_ids and n % ps.every == 0:
+                    if ps.id in self._pre_ids and self._periodic_due(ps, n):
                         if progress.get(f"{ps.id}_{n}") != "done":
                             await self._run_periodic(ps, project, n, progress)
                 try:
@@ -360,12 +375,26 @@ class WorkflowRunner:
                     if self.on_error:
                         self.on_error(step.id, f"第{n}章写作失败: {e}")
                     continue
-                for ps in periodic_steps:
+                post_due = [
+                    ps for ps in periodic_steps
+                    if ps.id in self._post_ids and self._periodic_due(ps, n)
+                    and progress.get(f"{ps.id}_{n}") != "done"
+                ]
+                for batch in self._group_parallel(post_due):
                     if self._stop:
                         break
-                    if ps.id in self._post_ids and n % ps.every == 0:
-                        if progress.get(f"{ps.id}_{n}") != "done":
-                            await self._run_periodic(ps, project, n, progress)
+                    if len(batch) == 1:
+                        await self._run_periodic(batch[0], project, n, progress)
+                        continue
+                    # 无写冲突的章后步骤并发：同一章的报告/概要/目录互不依赖。
+                    # 会写同一份角色档案（characters.json）的步骤绝不能同批，
+                    # 否则后写者用旧快照覆盖前者的新增角色。
+                    logger.info(
+                        "第%d章并行执行章后步骤: %s", n, [ps.id for ps in batch],
+                    )
+                    await asyncio.gather(
+                        *(self._run_periodic(ps, project, n, progress) for ps in batch)
+                    )
                 # 写后沉淀：等全部章后步骤（含润色改写正文）跑完后，
                 # 从最终落盘正文提取记忆——草稿不是正典，润色前的文本不入账
                 sediment_ok = await self._run_sediment(n, progress)
@@ -402,6 +431,32 @@ class WorkflowRunner:
             progress[step.id] = "done"
             self._save_progress(progress)
 
+    @staticmethod
+    def _group_parallel(steps: list[WorkflowStep]) -> list[list[WorkflowStep]]:
+        """把章后步骤切成并发批：相邻 `parallel_ok` 合批，依赖前一批的另起一批。
+
+        例：`chapter_digest` 与 `proofread` 可同时跑；`chapter_summary` 依赖
+        digest 的产出，必须等 digest 落盘后再开始——它声明 `depends_on` 后
+        会另起一批。会写同一份文件的步骤（world_state_update / percept_extract）
+        不标 `parallel_ok`，各自独立成批。
+        """
+        groups: list[list[WorkflowStep]] = []
+        for step in steps:
+            if step.parallel_ok and groups and groups[-1][0].parallel_ok:
+                current_ids = {s.id for s in groups[-1]}
+                if not (set(step.depends_on) & current_ids):
+                    groups[-1].append(step)
+                    continue
+            groups.append([step])
+        return groups
+
+    @staticmethod
+    def _periodic_due(step: WorkflowStep, n: int) -> bool:
+        """周期步骤在该章是否触发；offset 用于把第一批对齐到起始章。"""
+        if step.every <= 0:
+            return False
+        return (n - step.offset) % step.every == 0
+
     async def _run_periodic(self, ps: WorkflowStep, project: dict, n: int, progress: dict):
         """执行章前/章后定时步骤 — 失败降级为记录错误并继续，不终止整跑。"""
         ps_key = f"{ps.id}_{n}"
@@ -431,7 +486,12 @@ class WorkflowRunner:
         content = project_io.read_md(self.project_dir / "chapters" / chapter_file)
         if not content:
             return True
-        llm_data = await self._llm_sediment(n, content)
+        # 沉淀也是抽取类：老项目没有 digest 时让它走快模型，别用主模型烧一遍
+        token = set_model_override(self.fast_model or None)
+        try:
+            llm_data = await self._llm_sediment(n, content)
+        finally:
+            reset_model_override(token)
         try:
             sediment_chapter(self.project_dir, n, content, llm_data=llm_data)
             progress[f"sediment_{n}"] = "done"
@@ -448,12 +508,18 @@ class WorkflowRunner:
             return False
 
     def _sync_story_ledger(self, n: int) -> None:
-        """写后反哺：规划 + 记忆 + 世界状态 → 故事线台账，并通知 UI 刷新。
+        """写后反哺：digest 台账段 + 记忆 + 世界状态 → 故事线台账，并通知 UI 刷新。
 
-        纯规则、零 LLM 调用、失败不阻塞章节循环；事件 ``story_track`` 供前端即时刷新。
+        主线/支线由章后抽取的 ``threads`` 段自动推进（不需要人工改台账）；
+        伏笔/时间线由 memory / world_state 对账推进。零额外 LLM 调用。
         """
         try:
-            from ..story_threads import sync_story_threads
+            from ..story_threads import apply_thread_updates, sync_story_threads
+            threads_payload = digest_section(self.project_dir, n, "threads")
+            if isinstance(threads_payload, dict):
+                changed = apply_thread_updates(self.project_dir, threads_payload, n)
+                if changed:
+                    logger.info("[THREADS] 第%d章自动推进 %d 条主线/支线", n, changed)
             ledger = sync_story_threads(self.project_dir)
             progress = ledger.progress()
             logger.info("[STORY] 第%d章台账已同步: %s", n, progress.headline())
@@ -478,6 +544,12 @@ class WorkflowRunner:
             沉淀 JSON；无可用 Agent、返回非 JSON 或调用失败时返回 None
             （sediment_chapter 据此回退正则，不抛异常）。
         """
+        # 章后抽取已经把 memory 段取回来时直接复用，省一次「重读全章 + 重发上下文」。
+        # 放在取 Agent 之前：没有智能体时也能用上已经抽好的记忆。
+        digest_memory = digest_section(self.project_dir, n, "memory")
+        if isinstance(digest_memory, dict) and digest_memory:
+            logger.debug("第%d章沉淀复用章后抽取结果", n)
+            return digest_memory
         agent = _fallback_agent(self, (SKILL_REVIEW, SKILL_PROOFREAD))
         if not agent:
             return None
@@ -497,7 +569,28 @@ class WorkflowRunner:
             return None
         return data
 
+    def resolve_model(self, step: WorkflowStep) -> str | None:
+        """步骤声明的模型覆盖；``fast`` 映射到配置的快速模型（未配置则 None）。"""
+        raw = (getattr(step, "model", "") or "").strip()
+        if not raw:
+            return None
+        if raw == "fast":
+            return self.fast_model or None
+        return raw
+
     async def _run_single(self, step: WorkflowStep, project: dict, n: int, progress: dict):
+        """在步骤级模型覆盖的上下文里执行单步。
+
+        用 contextvar 而不是改 agent 属性：章后 digest / proofread / toc 会并发，
+        共享 Agent 上的临时属性会互相串模型；contextvar 随 asyncio 任务隔离。
+        """
+        token = set_model_override(self.resolve_model(step))
+        try:
+            return await self._run_single_impl(step, project, n, progress)
+        finally:
+            reset_model_override(token)
+
+    async def _run_single_impl(self, step: WorkflowStep, project: dict, n: int, progress: dict):
         # ── 内置特殊步骤（不走标准 LLM 流程） ──
         builtin = BUILTIN_STEP_HANDLERS.get(step.id)
         if builtin:
@@ -510,6 +603,21 @@ class WorkflowRunner:
                 logger.debug("步骤 %s 未找到匹配智能体，已跳过（optional=True）", step.id)
                 return
             raise WorkflowError(f"没有智能体能做「{step.needs}」")
+
+        # 规划文档已有内容：本步不必再跑。
+        # 新建项目时「立意.md」由对话框直接写入，而写入前的保护要到落盘才触发——
+        # 不预检就会白烧一次整篇调用（曾遇到 638s 才回 1 token 的请求，10 分钟全打水漂）。
+        out_rel = (step.output or "").strip()
+        if (out_rel.startswith("planning/") and not step.update_planning
+                and "{n}" not in out_rel):
+            out_path = self.project_dir / out_rel
+            if out_path.exists() and out_path.stat().st_size > 0:
+                logger.info("[跳过] %s 已有内容，不覆写", out_rel)
+                if self.on_step_start:
+                    self.on_step_start(step.id, n, agent.title)
+                if self.on_step_end:
+                    self.on_step_end(step.id, n, agent.title, f"[跳过] {out_rel} 已有内容，不覆写")
+                return
 
         # 章节写作：提前检查是否已有内容，跳过 LLM 调用
         if step.id == "chapter":
@@ -627,6 +735,16 @@ class WorkflowRunner:
             logger.warning("步骤 %s 剥离模型思考前缀 %d 字符", step.id, len(original) - len(cleaned))
             response.content = cleaned
         if not cleaned.strip():
+            self._emit_event("retry", step=step.id, n=n, attempt=1,
+                             reason="没有可写内容，关闭思考并直接生成一次")
+            response = await agent.run(
+                prompt + "\n\n请直接输出最终内容，不要分析过程或思考标签。",
+                context=context, thinking="off", keep_history=False,
+                max_tokens=max(int(step.max_tokens or 0), 8192),
+            )
+            cleaned = clean_model_text(response.content or "", step.id)
+            response.content = cleaned
+        if not cleaned.strip():
             logger.error("步骤 %s 返回空内容（可能只有思考过程）", step.id)
             if self.on_error:
                 self.on_error(step.id, "模型只返回了思考过程，没有正文")
@@ -644,6 +762,10 @@ class WorkflowRunner:
                     raise ChapterWriteRejected(f"第{n}章正文未通过校验，未写入")
                 return
 
+        if step.repeat == 0:
+            # 先记 done 再回调：UI 的「规划 N/9」和进度条在 on_step_end 里读这份 progress，
+            # 顺序反了会一直显示上一步的计数（曾出现规划跑完仍显示 0/9）。
+            progress[step.id] = "done"
         if self.on_step_end:
             self.on_step_end(step.id, n, agent.title, response.content)
 
@@ -682,6 +804,14 @@ class WorkflowRunner:
             if not step.update_planning:
                 if self.on_step_end:
                     self.on_step_end(step.id, n, agent.title, f"[跳过] {output} 已有内容，不覆写")
+                return False
+            # 反哺步骤允许覆盖，但拒绝「模型只回半篇」把原规划截断
+            original = project_io.read_md(out_path)
+            if original and len(content.strip()) < len(original.strip()) * 0.5:
+                logger.warning("反哺输出过短（%d < 原文 50%%），跳过覆写: %s",
+                               len(content.strip()), output)
+                if self.on_error:
+                    self.on_error(step.id, f"{output} 反哺输出过短，已跳过覆写")
                 return False
             logger.info("反哺更新规划文档: %s", output)
 

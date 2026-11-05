@@ -29,6 +29,8 @@ class CharacterPage(QWidget):
         self._project_dir: Path | None = None
         self.registry: CharacterRegistry | None = None
         self._current: CharacterRecord | None = None
+        self._form_snapshot = {}
+        self._pending_edits = {}
         self._setup_ui()
         self._set_enabled(False)
 
@@ -49,7 +51,7 @@ class CharacterPage(QWidget):
         tl.addWidget(self.hint_label)
         tl.addStretch()
         self.btn_refresh = QPushButton("刷新")
-        self.btn_refresh.clicked.connect(self.reload)
+        self.btn_refresh.clicked.connect(lambda: self.reload(force=True))
         tl.addWidget(self.btn_refresh)
         self.btn_add = QPushButton("＋ 新增")
         self.btn_add.clicked.connect(self._add)
@@ -71,6 +73,13 @@ class CharacterPage(QWidget):
         self.list = QListWidget()
         self.list.currentItemChanged.connect(self._on_selected)
         lv.addWidget(self.list, 1)
+        # 老项目只有 world_state、没有 canon 档案时的兜底入口（不是自动导入，
+        # 避免用户手动删掉的卡一开页又被建回来）
+        self.btn_import = QPushButton("从世界状态导入角色")
+        self.btn_import.setToolTip("world_state 里已有角色，但还没有角色档案")
+        self.btn_import.setVisible(False)
+        self.btn_import.clicked.connect(self._import_from_world_state)
+        lv.addWidget(self.btn_import)
         self.btn_del = QPushButton("删除")
         self.btn_del.setObjectName("danger")
         self.btn_del.clicked.connect(self._delete)
@@ -120,24 +129,34 @@ class CharacterPage(QWidget):
     # ── 项目切换 ──
 
     def set_project_dir(self, project_dir: Path | None):
+        self._current = None
+        self._form_snapshot = {}
+        self._pending_edits = {}
         self._project_dir = Path(project_dir) if project_dir else None
         self.registry = CharacterRegistry(self._project_dir) if self._project_dir else None
         self.reload()
 
-    def reload(self):
+    def reload(self, force=False):
         if not self.registry:
             self._set_enabled(False)
             self.list.clear()
             self._current = None
             self.name_label.setText("打开项目后管理角色")
+            self._refresh_import_button()
             return
-        # 世界状态是 location/goals 的事实来源：打开/刷新页面时先同步
+        if not force and (self._pending_edits or (self._current and self._form_values() != self._form_snapshot)):
+            self.status_label.setText("有未保存编辑，已保留；保存后刷新后台状态")
+            return
+        current_id = self._current.id if self._current else ""
+        self._current = None
+        self._pending_edits = {}
+        self.registry.reload()
+        # 必须先重载磁盘档案，否则 UI 的长生命周期缓存会盖掉后台新增/死亡状态。
         try:
             self.registry.sync_from_world_state()
         except Exception as e:
             self.status_label.setText(f"世界状态同步失败：{e}")
         self._set_enabled(True)
-        current_id = self._current.id if self._current else ""
         self.list.blockSignals(True)
         self.list.clear()
         for rec in self.registry.all():
@@ -159,6 +178,38 @@ class CharacterPage(QWidget):
             self._current = None
             self.name_label.setText("还没有角色")
             self.status_label.setText("工作流会从人物设定自动建卡，也可以手动新增")
+        self.btn_del.setEnabled(bool(self.list.count()))
+        self._refresh_import_button()
+
+    def _refresh_import_button(self):
+        """有 world_state 角色但档案为空时，给一个显式导入入口。"""
+        count = 0
+        if self.registry and self._project_dir:
+            try:
+                from ...core.world_state import WorldState
+                gs = WorldState(self._project_dir)
+                gs.load()
+                known = {rec.name for rec in self.registry.all()}
+                known |= {rec.id for rec in self.registry.all()}
+                count = sum(1 for name in gs.characters if name not in known)
+            except Exception:
+                count = 0
+        self.btn_import.setText(t("character_import_from_world", count))
+        self.btn_import.setVisible(count > 0)
+
+    def _import_from_world_state(self):
+        if not self.registry or not self._project_dir:
+            return
+        from ...core.world_state import WorldState
+        try:
+            gs = WorldState(self._project_dir)
+            gs.load()
+            added = self.registry.ensure_from_world_state(gs, chapter=0)
+        except Exception as e:
+            self.status_label.setText(f"导入失败：{e}")
+            return
+        self.reload()
+        self.status_label.setText(f"已从世界状态导入 {added} 个角色")
 
     def _set_enabled(self, on: bool):
         for w in (self.list, self.btn_add, self.btn_save, self.btn_del,
@@ -183,24 +234,38 @@ class CharacterPage(QWidget):
         self.location.setText(rec.location)
         self.goals.setPlainText("\n".join(rec.goals))
         self.notes.setPlainText(rec.notes)
+        self._form_snapshot = self._form_values()
         self.status_label.setText(f"{rec.id} · 首次第{rec.first_seen}章 · 最近第{rec.last_seen}章")
+
+    def _form_values(self):
+        return {"tier": CharacterTier(self.tier_combo.currentData()),
+                "status": CharacterStatus(self.status_combo.currentData()),
+                "auto_sim": self.auto_sim.isChecked(), "location": self.location.text().strip(),
+                "goals": [g.strip() for g in self.goals.toPlainText().splitlines() if g.strip()],
+                "notes": self.notes.toPlainText().strip()}
 
     def _sync_current(self):
         rec = self._current
         if not rec:
             return
-        rec.tier = CharacterTier(self.tier_combo.currentData())
-        rec.status = CharacterStatus(self.status_combo.currentData())
-        rec.auto_sim = self.auto_sim.isChecked()
-        rec.location = self.location.text().strip()
-        rec.goals = [g.strip() for g in self.goals.toPlainText().splitlines() if g.strip()]
-        rec.notes = self.notes.toPlainText().strip()
+        for key, value in self._form_values().items():
+            if value != self._form_snapshot.get(key):
+                self._pending_edits.setdefault(rec.id, {})[key] = value
+                setattr(rec, key, value)
 
     def save(self):
         if not self.registry:
             return
         self._sync_current()
+        self.registry.reload()
+        for char_id, updates in self._pending_edits.items():
+            rec = self.registry.get(char_id)
+            if rec:
+                for key, value in updates.items():
+                    setattr(rec, key, value)
         self.registry.save()
+        self._pending_edits = {}
+        self._current = None
         # 作者手改的位置/目标回写世界状态，避免两套数据各说各话
         try:
             self.registry.push_to_world_state()

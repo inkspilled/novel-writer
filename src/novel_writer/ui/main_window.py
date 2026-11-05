@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QMainWindow, QSplitter,
+    QMainWindow, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 
 from .editor.sidebar import Sidebar
 from .editor.editor_panel import EditorPanel
+from .drama.drama_workspace import DramaWorkspace
+from .drama.drama_panel import DramaAgentPanel
+from .drama.drama_worker import DramaAIWorker
 from .agent.agent_panel import AgentPanel
 from .common.workers import AgentWorker
 from .app_shell import (
@@ -57,6 +60,9 @@ class MainWindow(
         if LOGO_PATH.exists():
             self.setWindowIcon(QIcon(str(LOGO_PATH)))
         self.project = Project()
+        self._drama_loaded_dir: str | None = None
+        self._drama_worker: DramaAIWorker | None = None
+        self._old_drama_workers: list[DramaAIWorker] = []
         self.agents: dict[str, BaseAgent] = {}
         self.llm: LLMClient | None = None
         self._worker: AgentWorker | None = None
@@ -79,6 +85,12 @@ class MainWindow(
     # ── UI 构建 ──
 
     def _setup_ui(self):
+        # 顶层大页签：小说 / 短剧。短剧依附当前小说项目，不单独建项目。
+        self.mode_tabs = QTabWidget()
+        self.mode_tabs.setObjectName("modeTabs")
+        self.mode_tabs.setDocumentMode(True)
+
+        # ── 小说页签：侧栏 + 正文/规划/世界 + 智能体 ──
         self.splitter = splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(1)
         splitter.setChildrenCollapsible(False)
@@ -97,7 +109,35 @@ class MainWindow(
         self.sidebar.setMinimumWidth(200)
         self.sidebar.setMaximumWidth(320)
         self.agent_panel.setMinimumWidth(340)
-        self.setCentralWidget(splitter)
+        novel_page = QWidget()
+        novel_layout = QVBoxLayout(novel_page)
+        novel_layout.setContentsMargins(0, 0, 0, 0)
+        novel_layout.setSpacing(0)
+        novel_layout.addWidget(splitter)
+        self.mode_tabs.addTab(novel_page, "小说")
+
+        # ── 短剧页签：独立工作区 + 独立工作流入口 ──
+        self.drama_workspace = DramaWorkspace()
+        self.drama_panel = DramaAgentPanel()
+        drama_splitter = QSplitter(Qt.Orientation.Horizontal)
+        drama_splitter.setHandleWidth(1)
+        drama_splitter.setChildrenCollapsible(False)
+        drama_splitter.addWidget(self.drama_workspace)
+        drama_splitter.addWidget(self.drama_panel)
+        drama_splitter.setStretchFactor(0, 4)
+        drama_splitter.setStretchFactor(1, 1)
+        drama_splitter.setSizes([900, 320])
+        self.drama_splitter = drama_splitter
+        drama_page = QWidget()
+        drama_layout = QVBoxLayout(drama_page)
+        drama_layout.setContentsMargins(0, 0, 0, 0)
+        drama_layout.setSpacing(0)
+        drama_layout.addWidget(drama_splitter)
+        self.drama_page = drama_page
+        self.mode_tabs.addTab(drama_page, "短剧")
+        self.mode_tabs.setTabToolTip(1, "短剧依附当前小说项目，数据写在 drama/；页面与工作流独立")
+
+        self.setCentralWidget(self.mode_tabs)
         self.statusBar().showMessage(t("status_ready"))
 
         self.sidebar.chapter_selected.connect(self._on_chapter_selected)
@@ -107,12 +147,27 @@ class MainWindow(
         self.agent_panel.agent_run_requested.connect(self._on_agent_run)
         self.agent_panel.chapter_apply_requested.connect(self._on_chapter_apply)
         self.editor.content_changed.connect(self._on_content_changed)
-        self.editor.save_requested.connect(self._save_project)
         self.editor.planning_save_requested.connect(self._on_planning_save)
         self.editor.chapter_activate_requested.connect(self._open_chapter_number)
+        self.drama_workspace.status_message.connect(
+            lambda msg: self.statusBar().showMessage(msg, 3000)
+        )
+        self.drama_panel.action_requested.connect(self._on_drama_action)
+        self.drama_panel.stop_requested.connect(self._drama_stop)
+        self.mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
 
     def closeEvent(self, event):
         self._stop_worker()
+        if self._drama_worker is not None and self._drama_worker.isRunning():
+            self._drama_worker.request_stop()
+            if not self._drama_worker.wait(8000):
+                logger.warning("短剧生成线程 8s 内未退出，继续关闭")
+        if self._drama_worker is not None:
+            self._old_drama_workers.append(self._drama_worker)
+            self._drama_worker = None
+        for old in list(self._old_drama_workers):
+            if old.isRunning():
+                old.wait(3000)
         # 工作流线程必须先停并等它退出，否则 QThread: Destroyed while running
         if self._wf_thread is not None and self._wf_thread.isRunning():
             self._wf_thread.request_stop()

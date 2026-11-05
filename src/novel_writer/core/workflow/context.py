@@ -14,7 +14,9 @@ from pathlib import Path
 from .. import project_io
 from ..anti_patterns import AntiPatternTracker
 from ..character_sim import load_sim_cache
+from ..meme_style import build_meme_constraint, normalize_meme_level
 from ..memory import LOOP_OVERDUE_URGENCY, MemoryScratchpad, loop_urgency
+from ..narrative_voice import build_voice_constraint
 from ..rag import BM25Index, Chunk, get_retriever
 from ..reading_power import ReadingPowerTracker
 from ..world_state import WorldState
@@ -43,7 +45,7 @@ def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> 
     """动态压缩上下文：两级策略，先块内缩量，仍超限再整段丢弃。
 
     阶段一（缩量，保留信息骨架）：
-    - RAG 块：只留前 2 条，每条正文截 120 字
+    - RAG 块：只留前 2 条，每条正文截 400 字
     - 旧章全文：保留章号最大（最近）的一章完整，其余截 600 字
     - 规划块：相关片段留前 2 条截 100 字；摘要块截 300 字
     - 角色推演：截 600 字
@@ -85,7 +87,8 @@ def compress_context(parts: list[str], max_tokens: int = MAX_CONTEXT_TOKENS) -> 
                 newest_ch, newest_idx = ch_num, i
     for i, (tag, p) in enumerate(tagged):
         if tag == "rag":
-            tagged[i] = (tag, _shrink_rag_block(p, keep=2, text_cap=120))
+            # 场景块比旧段落分块更大：压缩时保留 2×400 字，避免只留开头一句
+            tagged[i] = (tag, _shrink_rag_block(p, keep=2, text_cap=400))
         elif tag == "chapter_full" and i != newest_idx:
             tagged[i] = (tag, _truncate_block(p, cap=600))
         elif tag == "planning":
@@ -159,12 +162,23 @@ class ContextTier(Enum):
     WORKING = 3     # + 工作记忆层（章节概要/全文/推演/RAG）
 
 
+# 需要语言质感约束的步骤：直接写正文的步骤（规划/审稿不必背大白话规矩）
+_VOICE_STEP_IDS = frozenset({"chapter", "polish"})
+# 只有新写正文才「加梗」；润色只保留原梗，不加不减
+_MEME_STEP_IDS = frozenset({"chapter"})
+
 # 步骤 → 上下文层级映射
 # 需要注入「故事线台账」的步骤：只有真正推动剧情/审稿的步骤才值得这 2.6K 上限
 _STORY_LEDGER_STEP_IDS = frozenset({
     "chapter", "chapter_outline", "update_chapter_outline",
-    "chapter_summary", "summary", "inspiration", "pov_sim",
-    "review", "review_panel", "quality_check", "sim",
+    "inspiration", "sim",
+    "review", "review_panel", "quality_check",
+})
+
+# 需要「近章结构化概要」的步骤：滚动摘要/规划反哺都在改写长期记忆，
+# 只给上一份累计摘要会让它们看不到最近几章到底发生了什么。
+_RECENT_SUMMARY_STEP_IDS = frozenset({
+    "summary", "update_outline", "update_characters", "update_foreshadow",
 })
 
 STEP_CONTEXT_TIERS: dict[str, ContextTier] = {
@@ -262,6 +276,7 @@ class ContextBuilder:
 
         # 角色锚定硬约束 — 放最前面，确保模型最先看到
         char_file_content = ""
+        chapter_docs: list[tuple[Path, str]] = []
         planning_docs_for_rag: list[tuple[Path, str]] = []
         for f in input_files:
             if f == "prev_chapters":
@@ -269,6 +284,10 @@ class ContextBuilder:
             for p, content in self._resolve_input_files(f, n):
                 if p.name.endswith("人物设定.md"):
                     char_file_content = content
+                elif p.parent.name == project_io.CHAPTERS_DIR:
+                    # 润色等步骤的 input 是当前章正文：必须全文注入，
+                    # 不能当规划文档做 RAG（否则只给模型 5 个片段却让它重写全章）。
+                    chapter_docs.append((p, content))
                 else:
                     planning_docs_for_rag.append((p, content))
 
@@ -277,6 +296,16 @@ class ContextBuilder:
             if constraint:
                 head.append(constraint)
 
+        # 语言质感硬约束：长篇正文的最大风险是文绉绉，放在高注意力区
+        if step_id in _VOICE_STEP_IDS:
+            voice_block = self._build_voice_block()
+            if voice_block:
+                head.append(voice_block)
+        if step_id in _MEME_STEP_IDS:
+            meme_block = self._build_meme_block()
+            if meme_block:
+                head.append(meme_block)
+
         # 活性记忆卡：按本章相关实体（从大纲提取）精准拉取状态
         active_cards = self._build_active_memory_cards(gs, mem, n)
         if active_cards:
@@ -284,6 +313,8 @@ class ContextBuilder:
 
         # ═══ 中部：参考材料（可被压缩裁剪） ═══
         middle: list[str] = []
+        for _p, chapter_text in chapter_docs:
+            middle.append(f"=== 当前章节正文（全文，待润色） ===\n{chapter_text}")
         self._add_world_brief(middle, gs)
         char_states = build_merged_character_states(gs, mem)
         if char_states:
@@ -331,6 +362,10 @@ class ContextBuilder:
         if rolling_summary:
             middle.append(f"=== 剧情摘要 ===\n{rolling_summary}")
 
+        # 滚动摘要/规划反哺：补最近几章的结构化概要，避免只基于上一份累计摘要再生成
+        if step_id in _RECENT_SUMMARY_STEP_IDS:
+            self._add_recent_chapter_summaries(middle, n)
+
         if tier.value >= ContextTier.WORKING.value:
             # 工作记忆也放中部（历史章节体量大）
             self._add_working_memory(middle, input_files, n, step_id)
@@ -345,6 +380,40 @@ class ContextBuilder:
         logger.debug("上下文组装完成: step=%s n=%d tier=%s tokens≈%d chars=%d",
                      step_id, n, tier.name, est_tokens, len(result))
         return result
+
+    def _project_meta_field(self, key: str) -> str:
+        value = self.project_info.get(key, "")
+        if value:
+            return str(value)
+        try:
+            return str(project_io.load_meta(self.project_dir).get(key, "") or "")
+        except Exception:
+            return ""
+
+    def _build_voice_block(self) -> str:
+        """读取项目叙述语言；旧 workflow.json 没带该字段时回退读 meta.json。"""
+        voice = self._project_meta_field("narrative_voice")
+        try:
+            return build_voice_constraint(
+                voice,
+                self.project_info.get("style", ""),
+                self._project_meta_field("meme_level"),
+            )
+        except Exception as e:
+            logger.debug("语言质感约束构建失败（忽略）: %s", e)
+            return ""
+
+    def _build_meme_block(self) -> str:
+        """梗密度约束：只对正文写作注入，润色不新增梗。"""
+        try:
+            return build_meme_constraint(
+                normalize_meme_level(self._project_meta_field("meme_level")),
+                self.project_info.get("genre", ""),
+                self._project_meta_field("narrative_voice"),
+            )
+        except Exception as e:
+            logger.debug("梗密度约束构建失败（忽略）: %s", e)
+            return ""
 
     def _meta_line(self) -> str:
         if not self.project_info.get("title"):
@@ -373,17 +442,24 @@ class ContextBuilder:
         if locs:
             lines = []
             for name, info in list(locs.items())[:12]:
+                info = info if isinstance(info, dict) else {}
                 desc = ""
                 if isinstance(info, dict):
                     desc = str(info.get("desc") or info.get("description") or "")
                 people = gs.characters_at(name)
                 line = f"- {name}"
+                if info.get("aliases"):
+                    line += f"（别名：{'、'.join(info['aliases'])}）"
+                if info.get("parent"):
+                    line += f"｜所属：{info['parent']}"
+                if info.get("coordinates") is not None and info.get("coordinate_frame"):
+                    line += f"｜{info['coordinate_frame']}坐标：{info['coordinates']} {info.get('coordinate_unit', '')}"
                 if desc:
                     line += f"：{desc[:60]}"
                 if people:
                     line += f"｜在场：{'、'.join(people)}"
                 lines.append(line)
-            parts.append("=== 地点 ===\n" + "\n".join(lines))
+            parts.append("=== 地点（统一名称与别名，优先复用已有场景，禁止同一地点反复换名新建） ===\n" + "\n".join(lines))
         items = gs.items_catalog or {}
         if items:
             lines = []
@@ -794,17 +870,56 @@ class ContextBuilder:
                 if content:
                     parts.append(f"=== 第{i}章 ===\n{content}")
 
+    def _add_recent_chapter_summaries(self, parts: list[str], n: int, window: int = 5):
+        """注入最近 window 章的结构化概要（每章 chapter_summary 的产物）。
+
+        summary/update_* 的 prompt 都要求「根据前 n 章实际内容」，但它们的
+        context tier 是 NARRATIVE，不会注入章节全文；至少要把近几章的概要给到，
+        否则模型只能拿上一份累计摘要二次压缩，事件会逐轮失真。
+        """
+        lines: list[str] = []
+        start = max(1, n - window + 1)
+        for i in range(start, n + 1):
+            chapter_file = project_io.find_chapter_file(self.project_dir, i)
+            if not chapter_file:
+                continue
+            m = project_io._CHAPTER_RE.match(chapter_file)
+            if not m:
+                continue
+            title = m.group(2)
+            summary_path = project_io.chapter_summary_path(self.project_dir, i, title)
+            if not summary_path.exists():
+                continue
+            text = project_io.read_md(summary_path).strip()
+            if text:
+                lines.append(f"【第{i}章《{title}》】\n{text[:900]}")
+        if lines:
+            parts.append("=== 近章结构化概要 ===\n" + "\n\n".join(lines)[:5000])
+
     def _load_offscreen_tick(self, n: int) -> str:
-        """读取上一章的离场 tick，给写手做背景参考。"""
+        """读取最近一次（章号 <= n-1）的离场 tick，给写手做背景参考。
+
+        tick 每 5 章才跑一次，不能只认 tick_{n-1}，否则只有紧接的那一章能看到，
+        后面 4 章全部丢失。
+        """
         import json
-        path = self.project_dir / "sim_cache" / "offscreen" / f"tick_{max(1, n - 1)}.json"
-        if not path.exists():
+        root = self.project_dir / "sim_cache" / "offscreen"
+        if not root.exists():
             return ""
+        candidates: list[tuple[int, Path]] = []
+        for path in root.glob("tick_*.json"):
+            m = re.match(r"tick_(\d+)\.json$", path.name)
+            if m and int(m.group(1)) <= n - 1:
+                candidates.append((int(m.group(1)), path))
+        if not candidates:
+            return ""
+        tick_chapter, path = max(candidates, key=lambda item: item[0])
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             ticks = data.get("ticks") or []
             return "\n".join(
                 f"【{t.get('character')}】{str(t.get('summary') or '')[:160]}"
+                f"（第{tick_chapter}章 tick）"
                 for t in ticks if isinstance(t, dict) and t.get("summary")
             )[:1200]
         except Exception:

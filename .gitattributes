@@ -1,0 +1,6 @@
+# Windows 批处理必须 CRLF：LF 会让 cmd 解析错乱（碎片当命令执行）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# Inno Setup 脚本与语言包保持原样字节
+*.iss -text
+*.isl -text

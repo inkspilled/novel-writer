@@ -4,7 +4,8 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLabel, QPushButton,
-    QTabWidget, QListWidget, QListWidgetItem,
+    QTabWidget, QListWidget, QListWidgetItem, QStackedWidget, QTextBrowser,
+    QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import (
@@ -16,21 +17,20 @@ from ...locales import t
 from ...core import project_io
 from ...core.logger import get_logger
 from ..character.world_page import WorldPage
+from ..common.titles import chapter_display_title
 
 logger = get_logger(__name__)
 
 
 # planning/ 文档（按依赖顺序；含全书章节细纲）
+# 时间线/主线/支线/伏笔不在规划页展示：它们由规划步骤生成一次作为种子，
+# 之后唯一可编辑来源是「世界 → 故事线」台账（story_threads.json）。
 PLANNING_DOCS = [
     ("立意", "planning/立意.md"),
     ("大纲", "planning/大纲.md"),
     ("章节细纲", "planning/章节细纲.md"),
     ("人物设定", "planning/人物设定.md"),
     ("世界观", "planning/世界观.md"),
-    ("时间线", "planning/时间线.md"),
-    ("主线", "planning/主线.md"),
-    ("支线", "planning/支线.md"),
-    ("伏笔", "planning/伏笔.md"),
 ]
 
 # 规划文档静默自动保存间隔（防抖）
@@ -83,7 +83,6 @@ def _planning_status_icon(exists: bool) -> QIcon:
 class EditorPanel(QWidget):
 
     content_changed = Signal()
-    save_requested = Signal()
     planning_save_requested = Signal(str)  # 发送 planning 文档名称
     chapter_activate_requested = Signal(int)  # 世界→故事线双击线程：跳转到第 N 章
 
@@ -144,19 +143,40 @@ class EditorPanel(QWidget):
         self.word_count_label.setMinimumWidth(60)
         toolbar_layout.addWidget(self.word_count_label)
 
-        self.save_btn = QPushButton(t("editor_save"))
-        self.save_btn.setObjectName("primary")
-        self.save_btn.setFixedHeight(32)
-        self.save_btn.setFixedWidth(72)
-        self.save_btn.setStyleSheet("font-size: 12px; padding: 4px 12px;")
-        self.save_btn.clicked.connect(self.save_requested.emit)
-        toolbar_layout.addWidget(self.save_btn)
+        self.preview_btn = QPushButton("预览")
+        self.preview_btn.setCheckable(True)
+        self.preview_btn.setFixedHeight(28)
+        self.preview_btn.setStyleSheet("font-size: 12px; padding: 2px 10px;")
+        self.preview_btn.setToolTip("只读预览：渲染 Markdown 标题/强调，不改正文")
+        self.preview_btn.toggled.connect(self._on_preview_toggled)
+        toolbar_layout.addWidget(self.preview_btn)
+
+        self.autosave_label = QLabel("")
+        self.autosave_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.autosave_label.setMinimumWidth(76)
+        self.autosave_label.setStyleSheet("font-size: 11px; color: palette(placeholderText);")
+        self.autosave_label.setToolTip("正文停止输入 350ms 后自动保存；Ctrl+S 可立即保存")
+        toolbar_layout.addWidget(self.autosave_label)
 
         chapter_layout.addWidget(toolbar)
 
         self.content_edit = _make_editor(t("editor_ph_content"))
         self.content_edit.textChanged.connect(self._on_text_changed)
-        chapter_layout.addWidget(self.content_edit, 1)
+
+        # 只读 Markdown 预览：正文仍是纯文本，预览只做渲染
+        self.preview_view = QTextBrowser()
+        self.preview_view.setOpenExternalLinks(False)
+        self.preview_view.setFrameShape(QFrame.Shape.NoFrame)
+        self.preview_view.setFont(self.content_edit.font())
+        self.preview_view.document().setDocumentMargin(28)
+        self.preview_view.setStyleSheet(
+            "QTextBrowser { background: transparent; border: none; }"
+        )
+
+        self.content_stack = QStackedWidget()
+        self.content_stack.addWidget(self.content_edit)
+        self.content_stack.addWidget(self.preview_view)
+        chapter_layout.addWidget(self.content_stack, 1)
 
         self.tab_bar.addTab(chapter_page, t("editor_tab_content"))
 
@@ -232,12 +252,47 @@ class EditorPanel(QWidget):
 
     def _apply_editor_margins(self):
         """宽窗口用左右 viewport margin 把正文夹到 ~920px，窄窗口自动贴边。"""
-        for edit in (self.content_edit, self.planning_edit):
+        for edit in (self.content_edit, self.planning_edit, self.preview_view):
             try:
                 side = max(0, (edit.width() - 920) // 2)
                 edit.setViewportMargins(side, 0, side, 0)
             except Exception:
                 pass
+
+    # ── 正文预览（只读 Markdown 渲染） ─────────────────────────────────
+
+    def _on_preview_toggled(self, enabled: bool):
+        if enabled:
+            self._render_preview()
+            self.content_stack.setCurrentWidget(self.preview_view)
+            self.preview_btn.setText("编辑")
+            self.content_edit.setReadOnly(True)
+        else:
+            self.content_stack.setCurrentWidget(self.content_edit)
+            self.preview_btn.setText("预览")
+            # 流式写作期间仍保持只读，避免预览切回来就能改到半成品
+            self.content_edit.setReadOnly(self._stream_preview)
+
+    def _render_preview(self):
+        text = self.content_edit.toPlainText()
+        try:
+            self.preview_view.setMarkdown(text)
+        except Exception:
+            self.preview_view.setPlainText(text)
+        self._apply_preview_spacing()
+
+    def _apply_preview_spacing(self):
+        """Markdown 默认段落间距为 0，中文长文会挤成一块；补段后距 + 1.6 倍行高。"""
+        doc = self.preview_view.document()
+        cursor = QTextCursor(doc)
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        while True:
+            fmt = cursor.blockFormat()
+            fmt.setBottomMargin(8)
+            fmt.setLineHeight(160.0, QTextBlockFormat.ProportionalHeight.value)
+            cursor.setBlockFormat(fmt)
+            if not cursor.movePosition(QTextCursor.MoveOperation.NextBlock):
+                break
 
     # ── 规划文档状态 ────────────────────────────────────────────────────
 
@@ -503,6 +558,8 @@ class EditorPanel(QWidget):
     def start_stream_chapter(self, number: int, title: str = ""):
         """正文流式预览：先把编辑器切到目标章，后续 append 逐段写入。"""
         from ...models.chapter import Chapter
+        if self.preview_btn.isChecked():
+            self.preview_btn.setChecked(False)
         preview = Chapter(number=number, title=title or f"第{number}章")
         self.load_chapter(preview)
         self._stream_preview = True
@@ -540,14 +597,33 @@ class EditorPanel(QWidget):
         logger.info("编辑器加载章节: 第%s章 %s", getattr(chapter, "number", "?"), getattr(chapter, "title", ""))
         self._current_chapter = chapter
         self._stream_preview = False
-        self.chapter_title.setText(f"第{chapter.number}章 {chapter.title}" if hasattr(chapter, 'number') else "")
+        self.chapter_title.setText(
+            chapter_display_title(chapter.number, chapter.title)
+            if hasattr(chapter, "number") else ""
+        )
         self.content_edit.blockSignals(True)
         self.content_edit.setPlainText(chapter.content or "")
         self.content_edit.blockSignals(False)
         self._update_word_count()
+        self.mark_saved()
+        if self.preview_btn.isChecked():
+            self._render_preview()
         # 切换到正文标签
         self.tab_bar.setCurrentIndex(0)
         self.content_edit.update()
+
+    def mark_dirty(self):
+        """正文有未落盘改动（350ms 防抖窗口内）。"""
+        if self._current_chapter is None:
+            return
+        self.autosave_label.setText(t("editor_unsaved"))
+
+    def mark_saved(self):
+        """正文已落盘。"""
+        if self._current_chapter is None:
+            self.autosave_label.setText("")
+            return
+        self.autosave_label.setText(t("editor_saved"))
 
     def get_content(self) -> str:
         return self.content_edit.toPlainText()
@@ -555,7 +631,8 @@ class EditorPanel(QWidget):
     def retranslate(self):
         self.chapter_title.setText(t("editor_select_chapter"))
         self.content_edit.setPlaceholderText(t("editor_ph_content"))
-        self.save_btn.setText(t("editor_save"))
+        self.autosave_label.setText(t("editor_saved") if self._current_chapter else "")
+        self.preview_btn.setText("编辑" if self.preview_btn.isChecked() else "预览")
         self.tab_bar.setTabText(0, t("editor_tab_content"))
         self.tab_bar.setTabText(1, "规划")
         self.planning_save_btn.setText(t("editor_save"))
@@ -569,11 +646,15 @@ class EditorPanel(QWidget):
         会触发 textChanged，_on_content_changed 仍拿到旧项目的 Chapter，把旧章
         写成空文件（数据丢失）。
         """
+        if self.preview_btn.isChecked():
+            self.preview_btn.setChecked(False)
         self._current_chapter = None
         self.content_edit.blockSignals(True)
         self.content_edit.clear()
         self.content_edit.blockSignals(False)
+        self.preview_view.clear()
         self._update_word_count()
+        self.autosave_label.setText("")
 
     def clear(self):
         self.flush_planning_autosave()
@@ -591,6 +672,7 @@ class EditorPanel(QWidget):
 
     def _on_text_changed(self):
         self._update_word_count()
+        self.mark_dirty()
         self.content_changed.emit()
 
     def _update_word_count(self):
