@@ -122,7 +122,7 @@ class DramaAIWorker(QThread):
             self.agent_state.emit(key, "working", "分集规划" if stage == "plan" else "编写剧本")
             try:
                 text, usage, elapsed = await self._ask(planner if stage == "plan" else writer, prompt,
-                                                       thinking="off" if stage == "plan" else "auto",
+                                                       thinking="off",
                                                        max_tokens=4096 if stage == "plan" else 8192)
             except BaseException:
                 self.agent_state.emit(key, "error", "本次未完成，素材保留")
@@ -180,7 +180,7 @@ class DramaAIWorker(QThread):
             "你是短剧编剧。把小说章节按用户企划中的目标时长改写成单集短剧剧本，"
             "只输出剧本 Markdown，不要解释。",
             temperature=0.8,
-            max_tokens=4096,
+            max_tokens=8192,
         )
         success = 0
         failed = 0
@@ -202,7 +202,7 @@ class DramaAIWorker(QThread):
                 self.log.emit(self._context_note)
             try:
                 text, usage, elapsed = await self._ask(
-                    agent, prompt, thinking="auto", max_tokens=4096
+                    agent, prompt, thinking="off", max_tokens=8192
                 )
                 if self._stop:
                     break
