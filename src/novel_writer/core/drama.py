@@ -65,6 +65,7 @@ ASSET_COLUMNS: list[tuple[str, str]] = [
     ("kind", "类型"),
     ("id", "ID"),
     ("name", "名称"),
+    ("source", "来源"),
     ("prompt", "提示词"),
     ("ref", "参考图"),
     ("status", "状态"),
@@ -72,6 +73,10 @@ ASSET_COLUMNS: list[tuple[str, str]] = [
 ]
 
 ASSET_KIND_LABELS = {"character": "人物", "location": "场景", "prop": "道具"}
+
+# 资产来源：正典（小说里有的）/ 分镜（短剧新增，如龙套、临时场景）/ 手工
+ASSET_SOURCES = {"canon": "小说正典", "storyboard": "短剧原创", "manual": "手工"}
+_ASSET_SOURCE_ALIASES = {"从小说导入": "canon", "从分镜自动提取": "storyboard"}
 
 # 人物/场景/道具图统一用的负面词（本地模板，用户可改工作流模板）
 ASSET_NEGATIVE = (
@@ -111,6 +116,14 @@ def _entity_summary(info: Any, cap: int = 200) -> str:
         bits = [str(v).strip() for v in info.values()
                 if isinstance(v, str) and v.strip()]
     return "；".join(bits)[:cap]
+
+
+def _normalize_asset_name(name: str) -> str:
+    """资产名归一：去括号注解、空白与间隔号，用于正典匹配/去重。"""
+    text = str(name or "").strip()
+    text = re.sub(r"[（(][^）)]*[）)]", "", text)
+    text = re.sub(r"[\s·・.。]+", "", text)
+    return text
 
 
 def _unique_asset_id(assets: list[dict[str, Any]], kind: str, name: str) -> str:
@@ -721,14 +734,20 @@ class DramaStore:
         for i, asset in enumerate(assets, start=1):
             if not isinstance(asset, dict):
                 continue
+            notes = str(asset.get("notes") or "")
+            source = str(asset.get("source") or "")
+            if not source:
+                # 老数据没有 source：按 notes 标记回推
+                source = _ASSET_SOURCE_ALIASES.get(notes, "manual")
             cleaned.append({
                 "kind": str(asset.get("kind") or "character"),
                 "id": str(asset.get("id") or f"asset_{i:03d}"),
                 "name": str(asset.get("name") or ""),
+                "source": source,
                 "prompt": str(asset.get("prompt") or ""),
                 "ref": str(asset.get("ref") or ""),
                 "status": str(asset.get("status") or "draft"),
-                "notes": str(asset.get("notes") or ""),
+                "notes": notes,
                 # 与小说正典的对应关系：人物/地点/道具的名称或角色 id
                 "entity": str(asset.get("entity") or ""),
                 # 已生成图片的相对路径（assets/generated/...）
@@ -740,28 +759,38 @@ class DramaStore:
         _write_json(self.assets_dir / ASSETS_FILE, {"assets": assets, "updated_at": _now()})
 
     def extract_assets_from_storyboard(self, episode: int) -> int:
-        """从分镜的角色/地点列提取资产占位，返回新增数量。"""
+        """从分镜的角色/地点列提取资产占位，返回新增数量。
+
+        能对上小说正典的（名字或别名）标 `source=canon` 并回填 entity；
+        对不上的（龙套、临时场景）标 `source=storyboard`，属于短剧原创资产。
+        """
         assets = self.load_assets()
-        existing = {(a["kind"], a["name"].strip()) for a in assets if a["name"].strip()}
+        existing = {
+            (a["kind"], _normalize_asset_name(a["name"]))
+            for a in assets if a["name"].strip()
+        }
         added = 0
 
         def add_asset(kind: str, name: str) -> None:
             nonlocal added
             name = name.strip()
-            if not name or (kind, name) in existing:
+            norm = _normalize_asset_name(name)
+            if not norm or (kind, norm) in existing:
                 return
+            matched = self.match_canon_entity(kind, name)
             assets.append({
                 "kind": kind,
                 "id": _unique_asset_id(assets, kind, name),
                 "name": name,
+                "source": "canon" if matched else "storyboard",
                 "prompt": "",
                 "ref": "",
                 "status": "draft",
-                "notes": "从分镜自动提取",
-                "entity": name,
+                "notes": "从分镜提取·对上正典" if matched else "从分镜自动提取（短剧原创）",
+                "entity": (matched.get("entity_id") or matched["name"]) if matched else "",
                 "image": "",
             })
-            existing.add((kind, name))
+            existing.add((kind, norm))
             added += 1
 
         for shot in self.load_storyboard(episode)["shots"]:
@@ -793,6 +822,8 @@ class DramaStore:
                 out.append({
                     "kind": "character", "name": name,
                     "summary": summary, "entity_id": str(rec.get("id") or ""),
+                    "aliases": [str(a).strip() for a in (rec.get("aliases") or [])
+                                if str(a).strip()],
                 })
         world = _read_json(self.project_dir / "world_state.json", {})
         if "location" in kinds:
@@ -805,19 +836,47 @@ class DramaStore:
                             "summary": _entity_summary(info), "entity_id": ""})
         return out
 
+    def _canon_index(self, kinds=("character", "location", "prop")) -> dict[tuple[str, str], dict]:
+        """(类型, 名称/别名) → 正典实体，用来把分镜里的名字对回小说。"""
+        index: dict[tuple[str, str], dict] = {}
+        for ent in self.canon_entities(kinds):
+            index[(ent["kind"], ent["name"])] = ent
+            for alias in ent.get("aliases") or []:
+                index.setdefault((ent["kind"], alias), ent)
+        return index
+
+    def match_canon_entity(self, kind: str, name: str) -> dict[str, Any] | None:
+        """分镜里的角色/地点名 → 正典实体（支持别名、括号注解、包含匹配）。"""
+        clean = _normalize_asset_name(name)
+        if not clean:
+            return None
+        index = self._canon_index((kind,))
+        if (kind, clean) in index:
+            return index[(kind, clean)]
+        for (k, alias), ent in index.items():
+            if k != kind or not alias:
+                continue
+            if alias in clean or clean in alias:
+                return ent
+        return None
+
     def sync_assets_from_canon(self, kinds=("character", "location"), limit: int = 0) -> int:
         """把小说里的人物/地点补进资产表（按 类型+名称 去重，不覆盖已有行）。"""
         assets = self.load_assets()
-        existing = {(a["kind"], a["name"].strip()) for a in assets if a["name"].strip()}
+        existing = {
+            (a["kind"], _normalize_asset_name(a["name"]))
+            for a in assets if a["name"].strip()
+        }
         added = 0
         for ent in self.canon_entities(kinds):
-            key = (ent["kind"], ent["name"])
+            key = (ent["kind"], _normalize_asset_name(ent["name"]))
             if key in existing:
                 continue
             assets.append({
                 "kind": ent["kind"],
                 "id": _unique_asset_id(assets, ent["kind"], ent["name"]),
                 "name": ent["name"],
+                "source": "canon",
                 "prompt": "",
                 "ref": "",
                 "status": "draft",
@@ -832,6 +891,46 @@ class DramaStore:
         if added:
             self.save_assets(assets)
         return added
+
+    def check_assets(self) -> dict[str, Any]:
+        """资产体检：来源分布、缺提示词/图、正典失联、重名。
+
+        「短剧原创」（source=storyboard，比如龙套、临时场景）不算错误，
+        但会单独计数——它们是小说里没有、短剧自己需要的资产。
+        """
+        assets = self.load_assets()
+        entities = self.canon_entities(("character", "location", "prop"))
+        canon_ids = {str(e.get("entity_id") or ""): e for e in entities if e.get("entity_id")}
+        canon_names: dict[str, set[str]] = {}
+        for ent in entities:
+            canon_names.setdefault(ent["kind"], set()).add(_normalize_asset_name(ent["name"]))
+        report: dict[str, Any] = {
+            "total": len(assets), "canon": 0, "original": 0, "manual": 0,
+            "missing_prompt": 0, "missing_image": 0,
+            "orphan": [], "duplicates": [],
+        }
+        seen: set[tuple[str, str]] = set()
+        for asset in assets:
+            source = asset.get("source") or "manual"
+            bucket = "canon" if source == "canon" else ("original" if source == "storyboard" else "manual")
+            report[bucket] += 1
+            if not asset.get("prompt"):
+                report["missing_prompt"] += 1
+            if not asset.get("image"):
+                report["missing_image"] += 1
+            name_key = (asset["kind"], _normalize_asset_name(asset["name"]))
+            if name_key in seen:
+                report["duplicates"].append(asset["name"])
+            seen.add(name_key)
+            if source != "canon":
+                continue
+            entity = str(asset.get("entity") or "")
+            if entity in canon_ids:
+                continue
+            if _normalize_asset_name(asset["name"]) in canon_names.get(asset["kind"], set()):
+                continue
+            report["orphan"].append(asset["name"])
+        return report
 
     def asset_prompt(self, asset: dict[str, Any]) -> tuple[str, str]:
         """给一个资产生成 (正向提示词, 负向提示词)；已手填的提示词优先。"""

@@ -285,7 +285,7 @@ def test_assets_page_imports_canon_and_builds_prompts(qapp, tmp_path):
     assert page.table.rowCount() >= before + 2  # 顾言 + 藏经阁
 
     page._fill_prompts()
-    prompts = [page.table.item(r, 3).text() for r in range(page.table.rowCount())]
+    prompts = [page.table.item(r, 4).text() for r in range(page.table.rowCount())]  # 提示词列
     assert any("顾言" in text for text in prompts)
     assert any("仙侠" in text or "快节奏" in text for text in prompts)
     workspace.close()

@@ -691,6 +691,9 @@ class _AssetsPage(QWidget):
         self.btn_prompts = QPushButton("生成提示词")
         self.btn_prompts.clicked.connect(self._fill_prompts)
         bar.addWidget(self.btn_prompts)
+        self.btn_check = QPushButton("检查资产")
+        self.btn_check.clicked.connect(self._check_assets)
+        bar.addWidget(self.btn_check)
         self.btn_gen = QPushButton("生成图片")
         self.btn_gen.setObjectName("primary")
         self.btn_gen.clicked.connect(self._generate_images)
@@ -719,9 +722,9 @@ class _AssetsPage(QWidget):
         header.setStretchLastSection(True)
         for idx, (key, _label) in enumerate(ASSET_COLUMNS):
             header.setSectionResizeMode(idx, QHeaderView.ResizeMode.Interactive)
-            self.table.setColumnWidth(idx, {"kind": 80, "id": 120, "name": 120,
-                                             "prompt": 260, "ref": 180,
-                                             "status": 70, "notes": 140}.get(key, 120))
+            self.table.setColumnWidth(idx, {"kind": 70, "id": 110, "name": 110,
+                                             "source": 90, "prompt": 240, "ref": 160,
+                                             "status": 60, "notes": 130}.get(key, 100))
         self.table.itemChanged.connect(lambda _: self.status.setText("编辑中…"))
         root.addWidget(self.table, 1)
 
@@ -741,7 +744,7 @@ class _AssetsPage(QWidget):
     def _add_asset(self) -> None:
         row = self.table.rowCount()
         self.table.insertRow(row)
-        values = ["character", f"asset_{row + 1:03d}", "", "", "", "draft", ""]
+        values = ["character", f"asset_{row + 1:03d}", "", "manual", "", "", "draft", ""]
         for col, value in enumerate(values):
             _set_table_item(self.table, row, col, value)
         self.status.setText("已新增一行，记得保存")
@@ -786,6 +789,25 @@ class _AssetsPage(QWidget):
             if item and item.text().strip() in assets:
                 picked.append(assets[item.text().strip()])
         return picked
+
+    def _check_assets(self) -> None:
+        if self._store is None:
+            return
+        report = self._store.check_assets()
+        lines = [
+            f"共 {report['total']} 个资产：小说正典 {report['canon']} · "
+            f"短剧原创 {report['original']} · 手工 {report['manual']}",
+            f"缺提示词 {report['missing_prompt']} 个 · 缺参考图 {report['missing_image']} 个",
+        ]
+        if report["orphan"]:
+            lines.append("正典失联（角色/地点可能已改名）：" + "、".join(report["orphan"][:8]))
+        if report["duplicates"]:
+            lines.append("重名：" + "、".join(report["duplicates"][:8]))
+        lines.append(
+            "\n短剧原创资产（龙套/临时场景）不算错，但不会出现在小说人物/地点里；"
+            "正典资产改动小说设定后，重新「从小说导入」只补缺、不覆盖已有行。"
+        )
+        QMessageBox.information(self, "资产检查", "\n".join(lines))
 
     def _generate_images(self) -> None:
         if self._store is None:

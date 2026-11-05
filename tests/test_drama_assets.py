@@ -37,6 +37,7 @@ def test_sync_assets_from_canon_links_characters_and_locations(store):
     assets = {a["name"]: a for a in store.load_assets()}
     assert assets["顾言"]["kind"] == "character"
     assert assets["顾言"]["entity"] == "c1"  # 指向角色卡 id
+    assert assets["顾言"]["source"] == "canon"
     assert assets["藏经阁"]["kind"] == "location"
     assert assets["藏经阁"]["status"] == "draft"
 
@@ -96,5 +97,52 @@ def test_extract_assets_from_storyboard_keeps_entity_field(store):
     }]})
     assert store.extract_assets_from_storyboard(1) == 3
     assets = {a["name"]: a for a in store.load_assets()}
-    assert assets["顾言"]["entity"] == "顾言"
+    assert assets["顾言"]["entity"] == "c1"  # 分镜名字对回了角色卡
+    assert assets["顾言"]["source"] == "canon"
     assert assets["藏经阁"]["kind"] == "location"
+    assert assets["藏经阁"]["source"] == "canon"
+
+
+def test_storyboard_extras_marked_as_original(store):
+    """分镜里的小说没有的角色/地点（龙套、临时场景）标成短剧原创。"""
+    store.save_storyboard(2, {"shots": [{
+        "scene_id": "SC01", "shot_size": "全景", "camera": "固定",
+        "duration_sec": 2, "location": "临时茶棚", "time": "日",
+        "characters": "顾言、路人甲", "action": "喝茶", "dialogue": "",
+        "sfx": "", "transition": "硬切", "status": "draft", "notes": "",
+    }]})
+    store.extract_assets_from_storyboard(2)
+
+    assets = {a["name"]: a for a in store.load_assets()}
+    assert assets["顾言"]["source"] == "canon"
+    assert assets["路人甲"]["source"] == "storyboard"
+    assert assets["路人甲"]["entity"] == ""
+    assert assets["临时茶棚"]["source"] == "storyboard"
+
+
+def test_check_assets_counts_sources_and_gaps(store):
+    store.sync_assets_from_canon()
+    gu = next(a for a in store.load_assets() if a["name"] == "顾言")
+    store.save_generated_image(gu["id"], b"img")
+
+    report = store.check_assets()
+    assert report["total"] == 3
+    assert report["canon"] == 3 and report["original"] == 0
+    assert report["missing_prompt"] == 3  # 都没写提示词
+    assert report["missing_image"] == 2   # 只有顾言生成了图
+    assert report["duplicates"] == []
+    assert report["orphan"] == []
+
+
+def test_alias_matches_canon(store):
+    """角色别名/带括号注解的名字也能对回正典。"""
+    store.save_storyboard(3, {"shots": [{
+        "scene_id": "SC01", "shot_size": "近景", "camera": "固定",
+        "duration_sec": 2, "location": "藏经阁", "time": "夜",
+        "characters": "顾言（主角）", "action": "推门", "dialogue": "",
+        "sfx": "", "transition": "硬切", "status": "draft", "notes": "",
+    }]})
+    store.extract_assets_from_storyboard(3)
+    gu = next(a for a in store.load_assets() if a["name"] == "顾言（主角）")
+    assert gu["source"] == "canon"
+    assert gu["entity"] == "c1"

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer
 
 from .agent_animation import AgentIndicator
+from .agent_dock import AgentDock
 from ..common.chat_rendering import COLOR_POOL, AGENT_PANEL_GLOBALS, get_color
 from ..common.chat_widgets import ChatMessage, ChatTextEdit
 from ...core.chat_history import ChatHistory
@@ -38,14 +39,14 @@ def _render_stream_parts(parts: list[tuple[str, str]]) -> str:
     return "\n\n".join(out)
 
 
-class AgentPanel(QWidget):
+class AgentPanel(AgentDock):
 
     agent_run_requested = Signal(str, str)
     # 请求把 AI 输出写进章节：(章节号, 正文)
     chapter_apply_requested = Signal(int, str)
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, workflow_title=t("workflow_title"))
         self.setMinimumWidth(300)
         self.agent_buttons: dict[str, QPushButton] = {}
         self._current_agent = ""
@@ -62,25 +63,9 @@ class AgentPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # ── Agent 状态条（紧凑卡片，不抢聊天区） ──
-        from .office_scene import OfficeScene
-        self.office = OfficeScene()
-        self.office.setMinimumHeight(OfficeScene.HEIGHT)
-        self.office.agent_clicked.connect(self._on_office_agent_clicked)
-        layout.addWidget(self.office)
-        # 智能体卡片默认展示（状态行已删，再收起就什么都看不见了）；
-        # 想省空间可在「设置 → 智能体状态条」里收起。
-        self.office.setVisible(True)
-
-        # ── 工作流迷你进度条（含日志） ──
-        from ..workflow.workflow_bar import WorkflowMiniBar
-        self.workflow_bar = WorkflowMiniBar()
+        # 卡片 + 工作流条由 AgentDock 建好，这里只追加聊天相关部分
+        layout = self._root_layout
         self.workflow_bar.setMaximumHeight(160)
-        layout.addWidget(self.workflow_bar, 0)
 
         # ── Agent 信息行 ──
         header = QWidget()
@@ -340,8 +325,12 @@ class AgentPanel(QWidget):
 
     # ── Agent 切换 ──
 
+    def on_agent_clicked(self, name: str) -> None:
+        """AgentDock 钩子：点卡片 → 切到该智能体的对话。"""
+        self._on_agent_selected(name)
+
     def _on_office_agent_clicked(self, name: str):
-        """办公室场景中点击了某个 Agent。"""
+        """兼容旧引用。"""
         self._on_agent_selected(name)
 
     def _on_agent_selected(self, name: str):
