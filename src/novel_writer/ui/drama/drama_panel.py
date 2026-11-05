@@ -75,14 +75,14 @@ class DramaAgentPanel(QWidget):
         )
         root.addWidget(self.hint_label)
 
-        # 工作流条紧跟智能体卡片：进度/日志是「接着卡片往下发生的事」，
-        # 贴到面板底部会离卡片太远。剩余空间用弹簧吃掉，日志展开时向下占用。
+        # 工作流条紧跟智能体卡片；日志区在短剧侧允许吃满剩余高度（和小说侧
+        # 折叠聊天时同款），否则日志灰框只到 180px、下面留一条白，很割裂。
         self.workflow = WorkflowMiniBar()
         self.workflow.set_summary("短剧工作流")
         self.workflow.start_requested.connect(self.start_requested.emit)
         self.workflow.stop_requested.connect(self.stop_requested.emit)
-        root.addWidget(self.workflow, 0)
-        root.addStretch(1)
+        self.workflow.set_log_expands(True)
+        root.addWidget(self.workflow, 1)
         self.refresh_theme()
 
     def _on_agent_clicked(self, name: str) -> None:

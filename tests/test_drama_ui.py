@@ -236,7 +236,7 @@ def test_drama_mode_dialog_shows_resume_point(qapp):
 
 
 def test_drama_panel_workflow_bar_under_agents(qapp):
-    """工作流条紧跟智能体卡片（不贴底、也不悬在中间），日志向下展开。"""
+    """工作流条紧跟智能体卡片，日志灰框一直填到面板底部。"""
     from src.novel_writer.ui.drama.drama_panel import DramaAgentPanel
 
     panel = DramaAgentPanel()
@@ -246,11 +246,18 @@ def test_drama_panel_workflow_bar_under_agents(qapp):
 
     assert panel.workflow.y() >= panel.office.y() + panel.office.height()
     assert panel.workflow.y() < panel.height() // 2
-    assert panel.workflow.height() <= panel.workflow.sizeHint().height() + 8
+    assert panel.workflow.y() + panel.workflow.height() == panel.height()
 
     top_before = panel.workflow.y()
     panel.append_log("开始 segment：范围=全部待用")
     qapp.processEvents()
     assert panel.workflow.y() == top_before  # 日志展开只向下长，不挤走卡片
-    assert panel.workflow.height() > 40
+    assert panel.workflow._log_area.height() > 300  # 灰框吃满剩余高度
+
+    panel.workflow._toggle_log()  # 📋 仍然能收起
+    qapp.processEvents()
+    assert not panel.workflow._log_area.isVisible()
+    panel.workflow._toggle_log()
+    qapp.processEvents()
+    assert panel.workflow._log_area.isVisible()
     panel.close()

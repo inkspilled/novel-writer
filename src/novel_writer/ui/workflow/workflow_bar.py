@@ -130,6 +130,15 @@ class WorkflowMiniBar(QWidget):
     def set_has_workflow(self, has: bool):
         self._btn_start.setEnabled(has)
 
+    def set_log_expands(self, expands: bool):
+        """日志区是否吃满剩余高度（只改尺寸策略，保留 📋 的展开/收起语义）。"""
+        height = 16777215 if expands else 180
+        policy = (
+            QSizePolicy.Policy.Expanding if expands else QSizePolicy.Policy.Preferred
+        )
+        self._log_area.setMaximumHeight(height)
+        self._log_area.setSizePolicy(policy, policy)
+
     def set_fill_available(self, fill: bool):
         """聊天折叠时让日志区吃掉剩余高度；展开时恢复 160px 上限。"""
         self._fill = fill
