@@ -257,7 +257,7 @@ class WorkflowMixin:
             if following:
                 for ch in self.project.chapters:
                     if ch.number == n:
-                        self.editor.load_chapter(ch)
+                        self.editor.load_chapter(ch, switch_tab=True)
                         break
         # 规划步骤 / 规划反哺（含章节细纲）完成后刷新编辑器
         if step_id in PLANNING_STEP_IDS or step_id.startswith("update_"):

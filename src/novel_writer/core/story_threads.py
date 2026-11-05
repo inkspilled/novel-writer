@@ -475,6 +475,17 @@ _LIST_RE = re.compile(r"^\s{0,3}(?:[-*+•]|\d{1,3}[.、)）]|[（(]\d{1,3}[）)
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
 _BOLD_ONLY_RE = re.compile(r"^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*[:：]?\s*$")
+# 加粗标题 + 同一行的说明：`**转折一（第3章）**：首期榜单发布……`
+_BOLD_INLINE_RE = re.compile(r"^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*[:：]\s*(.+)$")
+# 跟随在条目后面的「埋设：第30章 / 回收：第39章」式字段行
+_DETAIL_LEAD_RE = re.compile(
+    r"^\s*(?:\*\*|__)?\s*(埋设|埋点|设置|铺垫|回收|揭晓|兑现|触发|伏笔|作用|说明|备注)"
+    r"\s*(?:\*\*|__)?\s*[:：]"
+)
+# 卷首总述行不做成条目（「主线推进：……」是概括，不是节点）
+_SKIP_SUMMARY_TITLES = re.compile(
+    r"^(主线推进|本卷|卷末|总述|概述|阶段目标|本卷目标|卷首|核心事件|关键节点|节奏|主题)"
+)
 _SKIP_TITLE_RE = re.compile(r"^(说明|注|备注|提示|注意|总体|原则|附注|总计|合计|以上|如下|详见)")
 # 规划文档里常见的通用标题，不能拿来当「卷/分组」名
 _GENERIC_DOC_TITLES = {"时间线", "主线", "支线", "伏笔", "剧情", "故事结构", "总览", "目录"}
@@ -569,6 +580,8 @@ def parse_planning_doc(content: str, kind: str) -> list[dict]:
     table_roles: dict[str, int] = {}
     in_fence = False
     raw_items: list[tuple[int, str, str, str, str]] = []  # 列表项（缩进/标题/详情/原文/标题分组）
+    last_bold: int | None = None   # 最近一条加粗条目（用于吸收「埋设/回收」续行）
+    last_bold_text = ""
 
     def group_label() -> str:
         for _level, text in reversed(heading_stack):
@@ -595,10 +608,12 @@ def parse_planning_doc(content: str, kind: str) -> list[dict]:
             if level > 1 and text and text not in _GENERIC_DOC_TITLES:
                 heading_stack.append((level, text))
             table_header = None
+            last_bold = None
             continue
 
         # ── 表格 ──
         if stripped.startswith("|"):
+            last_bold = None
             if table_header is None:
                 table_header = _split_row(stripped)
                 table_roles = _column_roles(table_header)
@@ -646,6 +661,7 @@ def parse_planning_doc(content: str, kind: str) -> list[dict]:
         # ── 列表项 ──
         m = _LIST_RE.match(line)
         if m:
+            last_bold = None
             text = m.group(1)
             indent = len(line) - len(line.lstrip())
             if _SKIP_TITLE_RE.match(_clean_md(text)):
@@ -656,16 +672,37 @@ def parse_planning_doc(content: str, kind: str) -> list[dict]:
             raw_items.append((indent, title, detail, text, group_label()))
             continue
 
-        # ── 独立加粗行 ──
-        bold = _BOLD_ONLY_RE.match(stripped)
-        if bold:
-            text = bold.group(1)
-            title, detail = _item_title_and_detail(text)
-            if len(title) >= 2 and not _SKIP_TITLE_RE.match(title):
+        # ── 条目续行：埋设：第30章 / 回收：第39章 ──
+        if last_bold is not None and items and _DETAIL_LEAD_RE.match(stripped):
+            item = items[last_bold]
+            last_bold_text = f"{last_bold_text} {stripped}"
+            detail = f"{item['detail']} {stripped}".strip()
+            items[last_bold] = _make_item(
+                kind=kind, title=item["title"], detail=detail,
+                group=item["group"], text=last_bold_text,
+            )
+            continue
+
+        # ── 加粗条目：`**标题**` 或 `**标题**：说明` ──
+        inline = _BOLD_INLINE_RE.match(stripped)
+        bold = None if inline else _BOLD_ONLY_RE.match(stripped)
+        if inline or bold:
+            title, detail = _item_title_and_detail(inline.group(1) if inline else bold.group(1))
+            extra = inline.group(2).strip() if inline else ""
+            if extra:
+                detail = f"{detail} {extra}".strip()
+            if len(title) >= 2 and not _SKIP_TITLE_RE.match(title) and not _SKIP_SUMMARY_TITLES.match(title):
                 items.append(_make_item(
                     kind=kind, title=title, detail=detail, group=group_label(),
-                    text=text,
+                    text=f"{title} {extra}".strip(),
                 ))
+                last_bold = len(items) - 1
+                last_bold_text = f"{title} {extra}".strip()
+            continue
+
+        # 普通段落：结束「续行」归属，避免下一段说明被错误吸进上一条
+        if last_bold is not None:
+            last_bold = None
     # ── 列表嵌套收尾：父项（下一条更深缩进）升级为分组，子项归入该分组 ──
     for idx, (indent, title, detail, text, heading_group) in enumerate(raw_items):
         # 回到父项同级或更浅 → 该父项分组作用域结束
@@ -1013,7 +1050,15 @@ class StoryLedger:
         for thread in self.all():
             if thread.kind == ThreadKind.MAIN.value:
                 p.main_total += 1
-                if thread.status == ThreadStatus.DONE.value:
+                # 主线节点是里程碑：计划章写完就算达成（不要求人工标 done）。
+                # 但规划里明说「进行中」的、或回收章还没写到的，仍算未完成。
+                resolve = thread.resolve_chapter
+                reached = (
+                    0 < thread.planted_chapter <= current
+                    and (not resolve or resolve <= current)
+                    and thread.planned_status != ThreadStatus.ACTIVE.value
+                )
+                if thread.status == ThreadStatus.DONE.value or reached:
                     p.main_done += 1
             elif thread.kind == ThreadKind.SUBPLOT.value:
                 p.subplot_total += 1

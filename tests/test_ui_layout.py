@@ -208,7 +208,7 @@ def test_storyline_page_shows_progress_and_threads(qapp, tmp_path):
     page.set_project_dir(tmp_path)
     assert "第 2 章 / 50" in page.headline.text()
     assert page.tree.topLevelItemCount() == 2  # 主线 + 伏笔
-    assert page.cards["main"].value.text() == "0 / 2"
+    assert page.cards["main"].value.text() == "1 / 2"  # 拜入宗门（第1章）已写=达成；「进行中」那条不算
     assert page.cards["foreshadow"].value.text() == "0 / 1"
     # 未选中线程时详情区收起，把整行宽度让给树
     assert not page.detail_scroll.isVisibleTo(page)
@@ -498,3 +498,18 @@ def test_assist_page_reads_chapter_artifacts(qapp, tmp_path):
         text = page.browser.toPlainText()
         assert expected in text, f"{key} 未显示 {expected!r}，实际：{text[:200]}"
     page.close()
+
+
+def test_load_chapter_keeps_current_tab(qapp):
+    """侧栏/写作台加载章节不能把用户拽回正文；只有跟随工作流时才显式切页。"""
+    from src.novel_writer.models.chapter import Chapter
+    from src.novel_writer.ui.editor.editor_panel import EditorPanel
+
+    panel = EditorPanel()
+    panel.tab_bar.setCurrentIndex(3)  # 写作台
+    chapter = Chapter(number=1, title="第1章")
+    panel.load_chapter(chapter)
+    assert panel.tab_bar.currentIndex() == 3
+    panel.load_chapter(chapter, switch_tab=True)
+    assert panel.tab_bar.currentIndex() == 0
+    panel.close()

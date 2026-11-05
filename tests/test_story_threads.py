@@ -165,7 +165,7 @@ class TestLedgerBasics:
 
     def test_progress_headline(self, tmp_path):
         project = make_project(tmp_path, chapters=3, target=30)
-        write_planning(project, "主线.md", "# 主线\n- 拜入宗门（第1章）\n- 禁地试炼（第2章）\n")
+        write_planning(project, "主线.md", "# 主线\n- 拜入宗门（第1章）\n- 禁地试炼（第5章）\n")
         write_planning(project, "支线.md", "# 支线\n- 感情线（第1章）\n")
         write_planning(project, "伏笔.md", "# 伏笔\n- 剑灵（第1章埋设，第2章回收）\n")
         ledger = sync_story_threads(project)
@@ -528,3 +528,65 @@ class TestThreadAutoUpdate:
         project = make_project(tmp_path)
         assert apply_thread_updates(project, {}, 1) == 0
         assert apply_thread_updates(project, {"main": []}, 1) == 0
+
+
+class TestBoldPlanningFormat:
+    """LLM 实际产出的规划稿写法：加粗小标题 + 同段说明 / 埋设回收续行。"""
+
+    def test_inline_bold_turning_points(self):
+        doc = (
+            "# 主线\n\n"
+            "## 第一卷：断租激活（第1—30章）\n\n"
+            "**主线推进**：陈小满从走投无路到勉强站稳。\n\n"
+            "**转折一（第3章）**：首期榜单发布，秦始皇排第十，天幕炸锅。\n\n"
+            "**转折二（第7章）**：靠“倒序揭晓”话术稳住始皇，拿到第一笔打赏。\n"
+        )
+        items = parse_planning_doc(doc, "main")
+        assert len(items) == 2  # 「主线推进」是概括，不做节点
+        assert items[0]["title"].startswith("转折一")
+        assert items[0]["chapters"]["plant"] == 3
+        assert items[0]["group"].startswith("第一卷")
+        assert items[1]["chapters"]["plant"] == 7
+
+    def test_bold_item_absorbs_plant_and_resolve_lines(self):
+        doc = (
+            "# 伏笔\n\n## 系统规则类\n\n"
+            "**1. 首期好评的“话术诱导”扣分**\n"
+            "埋设：第30章（系统提示扣除信誉值）\n"
+            "回收：第39章（提现冻结）\n"
+            "作用：证明糊弄有代价\n\n"
+            "**2. 预告功能的双倍扣罚条款**\n"
+            "埋设：第65章\n"
+            "回收：第70章\n"
+        )
+        items = parse_planning_doc(doc, "foreshadow")
+        assert len(items) == 2
+        assert items[0]["chapters"] == {"plant": 30, "resolve": 39}
+        assert items[1]["chapters"] == {"plant": 65, "resolve": 70}
+
+    def test_timeline_numbered_nodes_get_chapters(self):
+        doc = (
+            "# 时间线\n\n## 第一卷（第1—30章）\n\n"
+            "**关键节点**：\n\n"
+            "1. **第1—3章**：陈小满被房东堵门，天幕系统绑定。\n\n"
+            "2. **第4—8章**：秦始皇本尊上线，威胁焚榜。\n"
+        )
+        items = parse_planning_doc(doc, "timeline")
+        assert len(items) == 2
+        assert items[0]["chapters"]["plant"] == 1
+        assert items[1]["chapters"]["plant"] == 4
+
+    def test_main_milestones_done_when_chapter_written(self, tmp_path):
+        """里程碑写到了就算达成：50 章项目的主线进度不能永远 0/35。"""
+        project = make_project(tmp_path, chapters=12)
+        write_planning(
+            project, "主线.md",
+            "# 主线\n## 第一卷（第1—30章）\n"
+            "**转折一（第3章）**：首期榜单。\n"
+            "**转折二（第7章）**：稳住始皇。\n"
+            "**转折三（第20章）**：第二卷危机。\n",
+        )
+        ledger = sync_story_threads(project)
+        progress = ledger.progress()
+        assert progress.main_total == 3
+        assert progress.main_done == 2  # 3、7 已写，20 还没到

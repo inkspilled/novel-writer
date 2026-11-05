@@ -307,14 +307,19 @@ async def _run_chapter_digest(runner: "WorkflowRunner", step: "WorkflowStep", n:
 def _ensure_character_registry(
     runner: "WorkflowRunner", n: int, gs: WorldState | None = None,
 ) -> CharacterRegistry:
-    """保证感知/抽取有角色名单：优先人物设定建卡，其次从世界状态补 extra 卡。"""
+    """保证感知/抽取有角色名单：优先人物设定建卡，其次从世界状态补 extra 卡。
+
+    每次章后抽取都跑一遍（``seed_from_profiles`` 按名字去重，是幂等的）：
+    项目早期只有世界状态里的两三个角色时，不能因为「registry 非空」就永远
+    不再读人物设定——那会让 50 章的项目一直只有 3 个角色。
+    """
     registry = CharacterRegistry(runner.project_dir)
-    if registry.all():
-        return registry
     char_doc = project_io.read_md(runner.project_dir / "planning" / "人物设定.md")
     if char_doc.strip():
         try:
-            registry.seed_from_profiles(parse_characters(char_doc), chapter=n)
+            added = registry.seed_from_profiles(parse_characters(char_doc), chapter=n)
+            if added:
+                logger.info("[CHAR] 人物设定补建 %d 个角色（第%d章）", added, n)
         except Exception as e:
             logger.debug("人物设定建卡失败（忽略）: %s", e)
     if not registry.all():
@@ -1157,7 +1162,8 @@ async def _run_chapter_outline(runner: "WorkflowRunner", step: "WorkflowStep", n
     # 规划模式（还没有正文）仍按目标总章数生成。
     written = len(_scan_nonempty_chapters(runner))
     total = written if written > 0 else _resolve_total_chapters(runner)
-    if step.max_chapters:
+    if step.max_chapters and not written:
+        # max_chapters 只限制「还没写正文时预生成多少」，已写章节要补齐到最新章
         total = min(total, step.max_chapters)
     if total < 1:
         return
@@ -1248,7 +1254,10 @@ async def _run_update_chapter_outline(runner: "WorkflowRunner", step: "WorkflowS
     out_path = runner.project_dir / _OUTLINE_DOC
     existing = project_io.read_md(out_path) if out_path.exists() else ""
     if not existing.strip():
-        logger.info("无既有章节细纲，跳过修订")
+        # 文件缺失（被删/从没写成功）时不能只「跳过修订」——那会让项目永远没有细纲。
+        # 直接走整体生成：按已写章节补齐。
+        logger.info("章节细纲缺失，改为按已写章节整体生成")
+        await _run_chapter_outline(runner, step, n)
         return
     total = _resolve_total_chapters(runner)
     revise_from = n + 1

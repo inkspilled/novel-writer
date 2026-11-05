@@ -569,7 +569,7 @@ class EditorPanel(QWidget):
         if self.preview_btn.isChecked():
             self.preview_btn.setChecked(False)
         preview = Chapter(number=number, title=title or f"第{number}章")
-        self.load_chapter(preview)
+        self.load_chapter(preview, switch_tab=True)
         self._stream_preview = True
         self.content_edit.setReadOnly(True)
         self.content_edit.setPlaceholderText("模型思考中…")
@@ -611,7 +611,13 @@ class EditorPanel(QWidget):
         self.content_edit.setReadOnly(False)
         self.content_edit.setPlaceholderText("")
 
-    def load_chapter(self, chapter):
+    def load_chapter(self, chapter, switch_tab: bool = False):
+        """装载章节到正文编辑区。
+
+        ``switch_tab=False``（默认）只换内容、不抢页签——侧栏点章节 / 写作台
+        刷新资料时不该把用户从「规划/世界/写作台」拽回正文；
+        只有「跟着工作流看正文」这类场景才显式传 True。
+        """
         logger.info("编辑器加载章节: 第%s章 %s", getattr(chapter, "number", "?"), getattr(chapter, "title", ""))
         self._current_chapter = chapter
         self._stream_preview = False
@@ -627,8 +633,8 @@ class EditorPanel(QWidget):
         self.mark_saved()
         if self.preview_btn.isChecked():
             self._render_preview()
-        # 切换到正文标签
-        self.tab_bar.setCurrentIndex(0)
+        if switch_tab:
+            self.tab_bar.setCurrentIndex(0)
         self.content_edit.update()
 
     def mark_dirty(self):
