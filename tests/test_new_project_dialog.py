@@ -189,3 +189,18 @@ class TestAIWorker:
         worker.run()
 
         assert errors and "超时" in errors[0]
+
+
+class TestFormLayout:
+    def test_voice_and_meme_rows_not_duplicated(self, dialog):
+        """合并回归：两边都加过叙述语言/梗密度，曾各渲染成两行下拉。"""
+        from PySide6.QtWidgets import QLabel
+
+        from src.novel_writer.core.meme_style import DEFAULT_MEME_LEVEL
+        from src.novel_writer.core.narrative_voice import DEFAULT_VOICE
+
+        labels = [w.text() for w in dialog.findChildren(QLabel)]
+        assert labels.count("叙述语言") == 1
+        assert labels.count("梗密度") == 1
+        assert dialog.voice_combo.currentText() == DEFAULT_VOICE
+        assert dialog.meme_combo.currentText() == DEFAULT_MEME_LEVEL

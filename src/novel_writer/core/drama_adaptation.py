@@ -6,6 +6,10 @@ from typing import Callable
 
 from . import project_io
 from .drama import DramaStore, clean_script_output
+from .drama_context import (
+    PLAN_CHAPTER_BUDGET, PLAN_WINDOW_BUDGET, PREV_TAIL_BUDGET, SCRIPT_BUDGET,
+    parse_character_names, plan_digest, slice_bible, slice_chapter, truncate,
+)
 from .json_extract import extract_json_object
 
 WINDOW_CHAPTERS = 5
@@ -82,9 +86,31 @@ class AdaptiveDramaRunner:
             size += len(chapter["text"])
         return window
 
+    def _known_names(self) -> list[str]:
+        path = self.store.project_dir / "planning" / "人物设定.md"
+        try:
+            return parse_character_names(path.read_text(encoding="utf-8")) if path.exists() else []
+        except OSError:
+            return []
+
+    def _window_digests(self, window: list[dict], budget: int = PLAN_WINDOW_BUDGET) -> str:
+        """窗口内每章按冲突密度给摘录，总量不超预算（不是把 5 章原文全塞进去）。"""
+        names = self._known_names()
+        per_chapter = max(600, min(PLAN_CHAPTER_BUDGET, budget // max(1, len(window))))
+        parts = []
+        for chapter in window:
+            body = plan_digest(chapter.get("text") or "", per_chapter, names)
+            parts.append(f"### 小说第{chapter['number']}章 {chapter.get('title', '')}\n{body}")
+        return "\n\n".join(parts)
+
     def _plan_prompt(self, window: list[dict], previous: str, final: bool) -> str:
         series = self.store.load_series()
-        material = "\n\n".join(f"### 小说第{c['number']}章 {c.get('title', '')}\n{c['text']}" for c in window)
+        material = self._window_digests(window)
+        bible = slice_bible(
+            self.store.bible_text(),
+            ("分集", "节奏", "钩子", "红线", "规则"),
+        )
+        prev = truncate(previous, PREV_TAIL_BUDGET)
         return (
             "你是短剧分集策划。一次阅读最多5章，按冲突、反转、兑现与集尾钩子决定下一集的边界。\n"
             "不要机械地一章一集，也不要强凑5章。可以把前4章合为一集，第5章留给下一集。\n"
@@ -95,9 +121,10 @@ class AdaptiveDramaRunner:
             "\"carry_reason\":\"剩余素材为何顺延\",\"wait_for_more\":false}\n"
             f"平台：{series['platform']}；画幅：{series['aspect']}；单集时长：{series['episode_seconds']} 秒。\n"
             f"当前窗口是否已到现有正文末尾：{'是' if final else '否'}。\n"
-            f"【改编规则】\n{self.store.bible_text()[:6000]}\n"
-            f"【上一集结尾】\n{previous or '这是第一集'}\n"
-            f"【阅读窗口，完整原文】\n{material}"
+            f"【改编规则】\n{bible}\n"
+            f"【上一集结尾】\n{prev or '这是第一集'}\n"
+            "【阅读窗口：每章按冲突密度摘录，标「（略）」处不要自行补写】\n"
+            f"{material}"
         )
 
     async def run(self, chapters: list[dict], *, one_episode=False) -> str:
@@ -135,7 +162,17 @@ class AdaptiveDramaRunner:
                 return f"已生成 {completed} 集；待用 {len(pending)} 章：{plan['carry_reason']}"
             selected = window[:len(plan["source_chapters"])]
             series = self.store.load_series()
-            material = "\n\n".join(f"### 小说第{c['number']}章\n{c['text']}" for c in selected)
+            per_chapter = max(4000, SCRIPT_BUDGET // max(1, len(selected)))
+            names = self._known_names()
+            material = "\n\n".join(
+                f"### 小说第{c['number']}章\n{slice_chapter(c.get('text') or '', per_chapter, names)}"
+                for c in selected
+            )
+            bible = slice_bible(
+                self.store.bible_text(),
+                ("节奏", "钩子", "红线", "视觉", "分集"),
+            )
+            prev = truncate(previous, PREV_TAIL_BUDGET)
             script_prompt = (
                 f"把以下选定素材编排为短剧第{number}集，严格按已确认的分集规划写作。只输出 Markdown 剧本。\n"
                 f"平台：{series['platform']}；画幅：{series['aspect']}；目标：{series['episode_seconds']} 秒。\n"
@@ -143,8 +180,9 @@ class AdaptiveDramaRunner:
                 f"节拍：{'；'.join(plan['beats'])}\n"
                 "用 # 第N集 标题与 ## 第N场 地点 · 日/夜 格式。动作必须可拍摄，台词口语化。\n"
                 "保留核心因果，可压缩合并场景；不能引入未选章节的剧情，不能重复已完成的反转。\n"
-                f"【改编规则】\n{self.store.bible_text()[:6000]}\n【上一集结尾】\n{previous}\n"
-                f"【本集选定素材，完整原文】\n{material}"
+                "素材按冲突密度切片，标了「（略）」的地方不要补写剧情。\n"
+                f"【改编规则】\n{bible}\n【上一集结尾】\n{prev}\n"
+                f"【本集选定素材（按场景切片）】\n{material}"
             )
             self.progress(f"编写第{number}集（来源第{selected[0]['number']}–{selected[-1]['number']}章）", int((total-len(pending))/total*100))
             text = await self.ask("script", script_prompt)

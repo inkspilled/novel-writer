@@ -247,16 +247,7 @@ class NewProjectDialog(QDialog):
         genre_form.addRow("风格 *", self.style_combo)
         self.voice_combo = QComboBox()
         self.voice_combo.addItems(VOICE_OPTIONS)
-        self.voice_combo.setToolTip("大白话：短句、口语、少成语少比喻；平实：克制修辞；文学：允许修辞和节奏经营。")
-        genre_form.addRow("叙述语言", self.voice_combo)
-        self.meme_combo = QComboBox()
-        self.meme_combo.addItems(MEME_LEVELS)
-        self.meme_combo.setCurrentText(DEFAULT_MEME_LEVEL)
-        self.meme_combo.setToolTip("无：不用；少：1–2个/章；中：3–5个/章；高：6–10个/章。只在符合人物和时代的场合使用。")
-        genre_form.addRow("梗密度", self.meme_combo)
-
-        self.voice_combo = QComboBox()
-        self.voice_combo.addItems(VOICE_OPTIONS)
+        self.voice_combo.setCurrentText(DEFAULT_VOICE)
         self.voice_combo.setMinimumHeight(34)
         self.voice_combo.setToolTip(
             "大白话：短句、口语、少成语少比喻，长篇连载首选；\n"
@@ -267,6 +258,7 @@ class NewProjectDialog(QDialog):
 
         self.meme_combo = QComboBox()
         self.meme_combo.addItems(MEME_LEVELS)
+        self.meme_combo.setCurrentText(DEFAULT_MEME_LEVEL)
         self.meme_combo.setMinimumHeight(34)
         self.meme_combo.setToolTip(
             "现代梗/职场梗的用量：\n"

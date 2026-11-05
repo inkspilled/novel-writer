@@ -162,3 +162,33 @@ def test_adaptive_worker_uses_planner_then_writer(qapp, tmp_path):
     assert len(worker.llm.calls) == 2
     assert store.load_episodes()[0]["source_chapters"] == [1, 2, 3, 4]
     assert store.adaptation_state()["pending_chapters"] == [5]
+
+
+def test_script_prompt_slices_long_chapter(qapp, tmp_path):
+    """长章不能整章塞进提示词：按冲突密度切片并标注省略。"""
+    body = ("他站在山门前，风把衣角吹得猎猎作响。" * 60 + "\n\n") * 20
+    body += "他拔刀，血溅三尺，枪口顶住眉心。"
+    worker, store, llm, _, _ = _worker(
+        tmp_path, "script", chapters=[{"number": 1, "title": "一", "text": body}]
+    )
+    prompt = worker._script_prompt({"number": 1, "title": "一", "text": body}, 1, "上集结尾" * 300)
+    assert len(body) > 20000
+    assert len(prompt) < len(body) / 2  # 明显压缩，不是整章直塞
+    assert "（略）" in prompt and "按场景切片" in prompt
+    assert "枪口顶住眉心" in prompt  # 冲突段保留
+    assert "原文" in worker._context_note and "送入" in worker._context_note
+
+
+def test_adapt_prompt_slices_planning_docs(qapp, tmp_path):
+    """改编圣经任务不能把四份规划文档全文塞进去。"""
+    planning = tmp_path / "planning"
+    planning.mkdir()
+    for name in ("立意.md", "大纲.md", "人物设定.md", "世界观.md"):
+        (planning / name).write_text(
+            f"# {name}\n\n## 节奏规则\n" + "铺陈设定。" * 800, encoding="utf-8"
+        )
+    worker, store, _, _, _ = _worker(tmp_path, "adapt")
+    prompt = worker._adapt_prompt()
+    assert "按预算切片" in prompt
+    assert len(prompt) < 12000  # 四份各 3200+ 字，必须裁
+    assert "切片" in worker._context_note

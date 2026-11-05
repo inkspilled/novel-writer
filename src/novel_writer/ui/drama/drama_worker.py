@@ -12,6 +12,11 @@ from ...core.agents.base import AgentConfig, BaseAgent
 from ...core.drama import (
     DramaStore, clean_script_output, parse_storyboard_output,
 )
+from ...core.drama_context import (
+    ADAPT_DOC_BUDGET, BIBLE_BUDGET, PREV_TAIL_BUDGET, RECAP_EPISODES,
+    SCRIPT_BUDGET, STORYBOARD_BUDGET, compress_script, parse_character_names,
+    recap_lines, slice_bible, slice_chapter, truncate,
+)
 from ...core.llm.base import BaseLLM
 from ...core.drama_adaptation import AdaptiveDramaRunner
 from ...core.logger import get_logger
@@ -58,6 +63,7 @@ class DramaAIWorker(QThread):
         self._stop = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
+        self._context_note = ""
 
     def request_stop(self):
         self._stop = True
@@ -143,6 +149,8 @@ class DramaAIWorker(QThread):
         self.agent_state.emit("showrunner", "working", "汇总小说规划")
         self.progress.emit("正在生成改编圣经…", 10)
         prompt = self._adapt_prompt()
+        if self._context_note:
+            self.log.emit(self._context_note)
         text, usage, elapsed = await self._ask(agent, prompt, thinking="auto", max_tokens=4096)
         if self._stop:
             self.finished_ok.emit("已停止")
@@ -190,6 +198,8 @@ class DramaAIWorker(QThread):
             )
             prev_tail = self.store.previous_episode_tail(target_number)
             prompt = self._script_prompt(chapter, target_number, prev_tail)
+            if self._context_note:
+                self.log.emit(self._context_note)
             try:
                 text, usage, elapsed = await self._ask(
                     agent, prompt, thinking="auto", max_tokens=4096
@@ -255,6 +265,8 @@ class DramaAIWorker(QThread):
             self.agent_state.emit("storyboard", "working", f"第{number}集")
             script = self.store.load_script(number)
             prompt = self._storyboard_prompt(ep, script, duration)
+            if self._context_note:
+                self.log.emit(self._context_note)
             try:
                 text, usage, elapsed = await self._ask(
                     agent, prompt, thinking="off", max_tokens=8192
@@ -343,14 +355,27 @@ class DramaAIWorker(QThread):
 
     def _adapt_prompt(self) -> str:
         planning = self.store.project_dir / "planning"
+        known = parse_character_names(self._read_planning("人物设定.md"))
+        before = after = 0
         docs = []
-        for label, filename in (
-            ("立意", "立意.md"), ("大纲", "大纲.md"),
-            ("人物设定", "人物设定.md"), ("世界观", "世界观.md"),
+        for label, filename, keys in (
+            ("立意", "立意.md", ("卖点", "核心", "立意", "读者")),
+            ("大纲", "大纲.md", ("主线", "卷", "转折", "高潮", "结局")),
+            ("人物设定", "人物设定.md", ("主角", "关系", "动机", "成长")),
+            ("世界观", "世界观.md", ("规则", "势力", "禁忌", "设定")),
         ):
-            path = planning / filename
-            body = path.read_text(encoding="utf-8").strip() if path.exists() else ""
-            docs.append(f"### {label}\n{body or '（空）'}")
+            body = self._read_planning(filename).strip()
+            before += len(body)
+            if not body:
+                docs.append(f"### {label}\n（空）")
+                continue
+            sliced = slice_bible(body, keys, ADAPT_DOC_BUDGET)
+            after += len(sliced)
+            docs.append(f"### {label}\n{sliced}")
+        self._context_note = (
+            f"改编材料切片：规划文档 {before} 字 → 送入 {after} 字"
+            f"（单份上限 {ADAPT_DOC_BUDGET}，出场人物 {len(known)} 个）"
+        )
         info = self.project_info
         series = self.store.load_series()
         return (
@@ -361,7 +386,7 @@ class DramaAIWorker(QThread):
             f"一句话简介：{info.get('synopsis', '')}\n\n"
             f"【已定企划，必须遵守】{series.get('platform')} / {series.get('aspect')}，"
             f"{series.get('episode_count')} 集，每集 {series.get('episode_seconds')} 秒\n"
-            "【小说规划文档】\n" + "\n\n".join(docs) + "\n\n"
+            "【小说规划文档（已按预算切片，省略部分不要自行补写）】\n" + "\n\n".join(docs) + "\n\n"
             "【输出要求】\n"
             "1. 一句话卖点（谁想要什么、谁挡着、局面怎么失控）\n"
             "2. 目标观众、平台、画幅、集数、单集时长\n"
@@ -372,12 +397,34 @@ class DramaAIWorker(QThread):
             "7. 短剧化红线：不能直接照搬小说章节，必须重新分集\n"
         )
 
+    def _read_planning(self, filename: str) -> str:
+        path = self.store.project_dir / "planning" / filename
+        try:
+            return path.read_text(encoding="utf-8") if path.exists() else ""
+        except OSError:
+            return ""
+
+    def _known_names(self) -> list[str]:
+        return parse_character_names(self._read_planning("人物设定.md"))
+
     def _script_prompt(self, chapter: dict, episode_number: int, prev_tail: str) -> str:
         series = self.store.load_series()
         episode = next((e for e in self.store.load_episodes() if e["number"] == episode_number), {})
-        bible = self.store.bible_text().strip()[:1800]
-        body = (chapter.get("text") or "")[:14000]
-        prev = f"\n【上一集结尾】\n{prev_tail}\n" if prev_tail else ""
+        raw = chapter.get("text") or ""
+        body = slice_chapter(raw, SCRIPT_BUDGET, self._known_names())
+        bible = slice_bible(
+            self.store.bible_text(),
+            ("节奏", "钩子", "红线", "视觉", "人物", "分集"),
+            BIBLE_BUDGET,
+        )
+        prev = truncate(prev_tail, PREV_TAIL_BUDGET)
+        recap = recap_lines(self.store.load_episodes(), episode_number, RECAP_EPISODES)
+        self._context_note = (
+            f"第{chapter.get('number')}章上下文切片：原文 {len(raw)} 字 → 送入 {len(body)} 字；"
+            f"圣经 {len(bible)} 字；前情 {len(recap)} 字；上集结尾 {len(prev)} 字"
+        )
+        prev_block = f"\n【上一集结尾】\n{prev}\n" if prev else ""
+        recap_block = f"【前情提要】\n{recap}\n\n" if recap else ""
         return (
             f"把小说第{chapter['number']}章改写成短剧第{episode_number}集。"
             "只输出剧本 Markdown，不要解释、不要分析。\n\n"
@@ -386,8 +433,9 @@ class DramaAIWorker(QThread):
             f"【目标时长】{series.get('episode_seconds')} 秒\n"
             f"【本集目标】{episode.get('goal') or '推进核心冲突并产生局面变化'}\n"
             f"【集尾钩子】{episode.get('hook') or '留下必须追看的悬念'}\n"
+            f"{recap_block}"
             f"【短剧改编圣经（节选）】\n{bible or '（空）'}\n"
-            f"{prev}\n"
+            f"{prev_block}\n"
             "【硬性格式】\n"
             f"# 第{episode_number}集 {chapter.get('title', '')}\n"
             "## 第1场 地点 · 日/夜\n"
@@ -399,13 +447,16 @@ class DramaAIWorker(QThread):
             "- 严格按目标时长设计场次与台词，前 3 秒有冲突/异常，结尾 5 秒留钩子。\n"
             "- 衔接上一集结尾的人物位置、持有道具、已知信息和未决冲突，不重复已发生的反转。\n"
             "- 只保留本章 1-2 个核心冲突；删环境铺陈和支线。\n"
+            "- 素材按冲突密度给到关键场次，标了「（略）」的地方不要补写剧情。\n"
             "- 心理描写全部翻译成动作、表情、道具、空间。\n"
             "- 台词短、口语化；不要大段旁白。\n"
             "- 不要出现「本章」「原文」「小说」等元叙述。\n\n"
-            f"【本章原文】\n{body}\n"
+            f"【本章原文（按场景切片）】\n{body}\n"
         )
 
     def _storyboard_prompt(self, episode: dict, script: str, duration: int) -> str:
+        compact = compress_script(script, STORYBOARD_BUDGET)
+        self._context_note = f"第{episode['number']}集分镜：剧本 {len(script)} 字 → 送入 {len(compact)} 字"
         return (
             f"把下面第{episode['number']}集剧本拆成 20-40 个镜头。"
             "只输出 JSON 对象，不要 Markdown 代码块、不要解释。\n\n"
@@ -421,7 +472,7 @@ class DramaAIWorker(QThread):
             "- 关键台词保留在 dialogue，用「角色：台词」；\n"
             "- 不新增剧本没有的剧情，不改变人物。\n\n"
             f"【单集目标时长】{duration} 秒\n\n"
-            f"【剧本】\n{script[:14000]}\n"
+            f"【剧本】\n{compact}\n"
         )
 
     @staticmethod
