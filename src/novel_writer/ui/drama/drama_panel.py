@@ -1,12 +1,13 @@
-"""短剧右侧面板 — 和小说一样：上面智能体，下面「执行模式」工作流迷你条。
+"""短剧右侧面板 — 与小说侧同一套工作流条 / 智能体卡片组件，只是没有聊天区。
 
-工作流条直接复用小说侧的 WorkflowMiniBar，两侧视觉与交互保持一致；
-点击「执行模式」弹出 DramaModeDialog 选模式与范围（见 project_mixin）。
+布局、留白、日志行为全部复用小说侧的 `WorkflowMiniBar` + `OfficeScene`，
+避免两边各写一份布局、一边修好另一边又跑偏。短剧没有自由对话，
+所以工作流条始终按「聊天折叠」模式吃满剩余高度。
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ...core.app_config import load_config
 from ...designsystem import get_theme_colors
@@ -21,6 +22,11 @@ DRAMA_AGENTS = {
     "storyboard": {"title": "分镜师", "emoji": "🎥"},
     "prompt": {"title": "视觉提示词", "emoji": "🎨"},
 }
+
+_FLOW_HINT = (
+    "流程：改编圣经 → 智能分集（写剧本）→ 分镜 → 资产。\n"
+    "点「执行模式」选跑哪一步；进度和日志就显示在这里。"
+)
 
 
 class DramaAgentPanel(QWidget):
@@ -42,46 +48,19 @@ class DramaAgentPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        header = QWidget()
-        header.setObjectName("agentHeader")
-        header.setMaximumHeight(36)
-        hl = QHBoxLayout(header)
-        hl.setContentsMargins(12, 4, 12, 4)
-        title = QLabel("短剧智能体")
-        title.setStyleSheet("font-size: 12px; font-weight: 700;")
-        hl.addWidget(title)
-        self.project_label = QLabel("依附当前小说")
-        self.project_label.setStyleSheet("font-size: 10px; color: palette(placeholderText);")
-        hl.addWidget(self.project_label)
-        self.count_label = QLabel("4 个智能体")
-        self.count_label.setStyleSheet("font-size: 10px; color: palette(placeholderText);")
-        hl.addWidget(self.count_label)
-        hl.addStretch()
-        root.addWidget(header)
-
         self.office = OfficeScene()
         self.office.setup_agents(DRAMA_AGENTS, self._colors)
         self.office.agent_clicked.connect(self._on_agent_clicked)
         root.addWidget(self.office)
 
-        self.hint_label = QLabel(
-            "流程：改编圣经 → 智能分集（写剧本）→ 分镜 → 资产。\n"
-            "点下方「执行模式」选跑哪一步；进度和日志就显示在这里。"
-        )
-        self.hint_label.setWordWrap(True)
-        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self.hint_label.setStyleSheet(
-            "font-size: 11px; color: palette(placeholderText); padding: 8px 14px;"
-        )
-        root.addWidget(self.hint_label)
-
-        # 工作流条紧跟智能体卡片；日志区在短剧侧允许吃满剩余高度（和小说侧
-        # 折叠聊天时同款），否则日志灰框只到 180px、下面留一条白，很割裂。
         self.workflow = WorkflowMiniBar()
         self.workflow.set_summary("短剧工作流")
+        self.workflow.set_empty_hint(_FLOW_HINT)
         self.workflow.start_requested.connect(self.start_requested.emit)
         self.workflow.stop_requested.connect(self.stop_requested.emit)
-        self.workflow.set_log_expands(True)
+        # 与小说侧「聊天折叠」时完全同款：日志/空提示吃满剩余高度，
+        # 条子本身贴顶，不会因为拉伸而把内容挤到面板中间。
+        self.workflow.set_fill_available(True)
         root.addWidget(self.workflow, 1)
         self.refresh_theme()
 
@@ -93,12 +72,12 @@ class DramaAgentPanel(QWidget):
 
     def set_project(self, project: Project | None) -> None:
         self.project = project
-        if project and project.title:
-            self.project_label.setText(f"依附：{project.title}")
-        else:
-            self.project_label.setText("依附当前小说")
+        title = project.title if project and project.title else ""
+        self.workflow.set_empty_hint(
+            (f"依附：{title}\n" if title else "") + _FLOW_HINT
+        )
         self.reset_agents()
-        self.workflow.set_has_workflow(bool(project and project.title))
+        self.workflow.set_has_workflow(bool(title))
         self.workflow.clear_log()
         self.workflow.set_progress(0, "")
         self.workflow.set_summary("短剧工作流")

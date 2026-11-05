@@ -141,3 +141,29 @@ class TestCharacterImport:
         assert page.list.count() == 2
         assert not page.btn_import.isVisibleTo(page)
         page.close()
+
+
+def test_workflow_bar_row_stays_on_top_when_stretched(qapp):
+    """被拉伸到整栏高度时，进度行必须贴顶（曾垂直居中，像「跑到中间」）。"""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from src.novel_writer.ui.workflow.workflow_bar import WorkflowMiniBar
+
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(0, 0, 0, 0)
+    bar = WorkflowMiniBar()
+    bar.set_log_expands(True)
+    layout.addWidget(bar, 1)
+    host.resize(340, 600)
+    host.show()
+    qapp.processEvents()
+
+    assert bar.height() > 500
+    assert bar._title_label.y() < 20  # 行贴顶，不居中
+
+    bar.append_log("开始 full")
+    qapp.processEvents()
+    assert bar._log_area.height() > 400  # 日志吃满剩余高度
+    assert bar._title_label.y() < 20
+    host.close()

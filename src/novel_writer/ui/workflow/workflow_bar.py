@@ -27,6 +27,9 @@ class WorkflowMiniBar(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 4, 12, 4)
         layout.setSpacing(2)
+        # 没有日志时不要把所有内容垂直居中（曾被拉伸后「跑中间去」）；
+        # 有日志时日志区是 Expanding，仍会吃掉剩余高度。
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # 单行：标题 + 进度条 + 状态 + 按钮
         row = QHBoxLayout()
@@ -101,6 +104,10 @@ class WorkflowMiniBar(QWidget):
         )
         self._log_hint.setVisible(False)
         layout.addWidget(self._log_hint, 1)
+
+    def set_empty_hint(self, text: str):
+        """空日志时的占位文案（短剧侧用来写流程说明，小说侧保持默认）。"""
+        self._log_hint.setText(text or t("workflow_log_hint"))
 
     def _refresh_log_visibility(self):
         """日志区只在「有内容」或「用户主动展开」时出现；空的时候显示提示。"""

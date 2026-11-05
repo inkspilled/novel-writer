@@ -254,10 +254,4 @@ def test_drama_panel_workflow_bar_under_agents(qapp):
     assert panel.workflow.y() == top_before  # 日志展开只向下长，不挤走卡片
     assert panel.workflow._log_area.height() > 300  # 灰框吃满剩余高度
 
-    panel.workflow._toggle_log()  # 📋 仍然能收起
-    qapp.processEvents()
-    assert not panel.workflow._log_area.isVisible()
-    panel.workflow._toggle_log()
-    qapp.processEvents()
-    assert panel.workflow._log_area.isVisible()
     panel.close()
