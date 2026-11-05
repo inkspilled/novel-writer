@@ -17,15 +17,19 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from .rag_chunking import chunk_chapter
 
 # ── 预算（字符数，粗略按中文 1 字 ≈ 1 token 的 2/3 估） ──
 BIBLE_BUDGET = 6000          # 改编圣经一次送入上限
 ADAPT_DOC_BUDGET = 2600      # 改编圣经任务里，单份规划文档上限
-PLAN_CHAPTER_BUDGET = 2000   # 分集策划：单章摘录上限
+PLAN_CHAPTER_BUDGET = 2000   # 分集策划：单章摘录上限（无结构化数据时的兜底）
 PLAN_WINDOW_BUDGET = 9000    # 分集策划：整个阅读窗口上限
-SCRIPT_BUDGET = 12000        # 单集剧本：原文上限
+SCRIPT_BUDGET = 12000        # 单集剧本：原文上限（无结构化数据时的兜底）
+DIALOGUE_BUDGET = 4000       # 单集剧本：原文只取对白/动作切片
+CONTEXT_BUDGET = 6000        # 单集剧本：简报 + 对白切片总量
+BRIEF_BUDGET = 900           # 单章结构化简报
 STORYBOARD_BUDGET = 12000    # 分镜：剧本上限
 PREV_TAIL_BUDGET = 900       # 上一集结尾上限
 RECAP_EPISODES = 3           # 前情提要回看的集数
@@ -54,31 +58,25 @@ def _score(text: str, known_names: list[str]) -> float:
     return hits * 6.0 + turns * 4.0 + min(dialogue, 12) * 1.0 + cast * 1.5
 
 
+def _dialogue_score(text: str) -> float:
+    """剧本阶段看的是「能不能直接改成戏」：对白密度 > 冲突 > 转折。"""
+    dialogue = len(_DIALOGUE_RE.findall(text))
+    hits = sum(text.count(word) for word in CONFLICT_WORDS)
+    turns = sum(text.count(word) for word in TURN_WORDS)
+    return min(dialogue, 20) * 6.0 + hits * 2.0 + turns * 2.0
+
+
 def _join_blocks(blocks: list[str]) -> str:
     return _OMIT.join(blocks)
 
 
-def slice_chapter(text: str, budget: int = SCRIPT_BUDGET,
-                  known_names: list[str] | None = None) -> str:
-    """按预算取一章里最有效的场景块；预算内原样返回。"""
-    body = (text or "").strip()
-    if not body:
-        return ""
-    if len(body) <= budget:
-        return body
-
-    chunks = chunk_chapter(body, known_names=known_names or [])
-    if len(chunks) <= 1:
-        return _head_tail(body, budget)
-
-    scored = [(_score(chunk.text, known_names or []), index, chunk.text)
-              for index, chunk in enumerate(chunks)]
+def _pick_blocks(chunks, scores: list[float], budget: int) -> tuple[str, int, int]:
+    """首尾必留 + 按分数填满预算；返回 (拼接文本, 选中块数, 实际字数)。"""
     keep: dict[int, str] = {}
     used = 0
     overhead = len(_OMIT)
 
-    # 首尾先占位：开场入戏、结尾钩子，不能因为「冲突词少」被丢。
-    # 首/尾块本身超预算时给截断版，保证「有头有尾」。
+    # 开场入戏、结尾钩子，不能因为「冲突词少」被丢；块本身超预算就给截断版
     head_room = max(120, min(300, budget // 3))
     first = chunks[0].text
     if len(first) <= budget:
@@ -99,20 +97,59 @@ def slice_chapter(text: str, budget: int = SCRIPT_BUDGET,
             keep[last_index] = last[-tail_room:]
             used += tail_room + overhead
 
-    # 其余按得分从高到低填，直到预算用尽
-    for score, index, piece in sorted(scored, key=lambda item: (-item[0], item[1])):
-        if index in keep or score <= 0:
+    order = sorted(range(len(chunks)), key=lambda i: (-scores[i], i))
+    for index in order:
+        if index in keep:
             continue
+        piece = chunks[index].text
         if used + len(piece) > budget:
             continue
         keep[index] = piece
         used += len(piece) + overhead
+        if used >= budget:
+            break
 
-    picked = [_join_blocks([keep[i] for i in sorted(keep)])]
-    note = (f"（本章原文 {len(body)} 字，按冲突密度选取 {len(keep)}/{len(chunks)} 段，"
+    return _join_blocks([keep[i] for i in sorted(keep)]), len(keep), used
+
+
+def slice_chapter(text: str, budget: int = SCRIPT_BUDGET,
+                  known_names: list[str] | None = None) -> str:
+    """按预算取一章里最有效的场景块；预算内原样返回。"""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    if len(body) <= budget:
+        return body
+
+    chunks = chunk_chapter(body, known_names=known_names or [])
+    if len(chunks) <= 1:
+        return _head_tail(body, budget)
+
+    scores = [_score(chunk.text, known_names or []) for chunk in chunks]
+    joined, kept, used = _pick_blocks(chunks, scores, budget)
+    note = (f"（本章原文 {len(body)} 字，按冲突密度选取 {kept}/{len(chunks)} 段，"
             f"约 {used} 字；被略过的段落未提供，不要据此虚构剧情）")
-    picked.insert(0, note)
-    return "\n\n".join(picked)
+    return note + "\n\n" + joined
+
+
+def dialogue_slice(text: str, budget: int = DIALOGUE_BUDGET,
+                   known_names: list[str] | None = None) -> str:
+    """只取「能直接改台词/动作」的场景：对白密度优先，冲突次之。"""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    if len(body) <= budget:
+        return body
+
+    chunks = chunk_chapter(body, known_names=known_names or [])
+    if len(chunks) <= 1:
+        return _head_tail(body, budget)
+
+    scores = [_dialogue_score(chunk.text) for chunk in chunks]
+    joined, kept, used = _pick_blocks(chunks, scores, budget)
+    note = (f"（原文对白/动作切片：{len(body)} 字中取 {kept}/{len(chunks)} 段，"
+            f"约 {used} 字；只用于核对台词与动作，没给到的情节看简报）")
+    return note + "\n\n" + joined
 
 
 def _head_tail(text: str, budget: int) -> str:
@@ -266,3 +303,157 @@ def truncate(text: str, budget: int) -> str:
     if len(body) <= budget:
         return body
     return body[:budget].rstrip() + "…"
+
+
+# ── 结构化简报：先吃工作流已经产出的中间物，原文只用来核对台词/动作 ──
+#
+# 写小说时每一步都在产出可复用的结构化数据：章节细纲、章概要、章后抽取
+# （summary/world/percept/memory/threads）、角色推演、故事线台账……
+# 做短剧改编没有理由再从零读一遍正文——那既贵，又把模型已经想清楚的东西
+# 重新解释一遍。这里按「信息密度 / 成本」排序取用：
+#
+#   细纲（事件与转折） > 章概要 > digest 五段 > 角色推演 > 故事线台账 > 原文对白切片
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+    except OSError:
+        return ""
+
+
+def _outline_section(project_dir: Path | str, chapter: int) -> str:
+    """本章细纲：工作流为每章单独生成，事件/转折/钩子都在里面。"""
+    path = Path(project_dir) / "planning" / "章节细纲.md"
+    if not path.exists():
+        return ""
+    try:
+        from .workflow.context import extract_chapter_section
+        return extract_chapter_section(_read(path), int(chapter)).strip()
+    except Exception:
+        return ""
+
+
+def _chapter_summary_text(project_dir: Path | str, chapter: int) -> str:
+    """章概要（chapter_summary 步骤落盘）。"""
+    folder = Path(project_dir) / "chapters"
+    if not folder.exists():
+        return ""
+    files = sorted(folder.glob(f"{int(chapter)}_*.summary.md"))
+    return _read(files[-1]) if files else ""
+
+
+def _digest(project_dir: Path | str, chapter: int) -> dict:
+    try:
+        from .workflow.digest import load_digest
+        data = load_digest(project_dir, int(chapter))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _percept_events(digest: dict) -> list[str]:
+    percept = digest.get("percept")
+    events = percept.get("events") if isinstance(percept, dict) else None
+    out: list[str] = []
+    for event in events or []:
+        if isinstance(event, str) and event.strip():
+            out.append(event.strip())
+        elif isinstance(event, dict):
+            text = event.get("summary") or event.get("event") or event.get("what")
+            if text:
+                out.append(str(text).strip())
+    return out
+
+
+def _thread_lines(digest: dict) -> list[str]:
+    threads = digest.get("threads")
+    if not isinstance(threads, dict):
+        return []
+    out: list[str] = []
+    for key, label in (("main", "主线"), ("subplot", "支线")):
+        for item in threads.get(key) or []:
+            if isinstance(item, dict):
+                title = item.get("title") or item.get("name")
+                status = item.get("status")
+                if title:
+                    out.append(f"{label}·{title}" + (f"（{status}）" if status else ""))
+            elif isinstance(item, str) and item.strip():
+                out.append(f"{label}·{item.strip()}")
+    return out
+
+
+def _sim_note(project_dir: Path | str, chapter: int) -> str:
+    """角色推演（sim 步骤）：谁想要什么、打算怎么做。"""
+    path = Path(project_dir) / "sim_cache" / f"sim_{int(chapter)}.md"
+    return _read(path)
+
+
+def _ledger_block(project_dir: Path | str, chapter: int) -> str:
+    try:
+        from .story_threads import load_story_threads
+        return load_story_threads(Path(project_dir)).build_context_block(int(chapter)).strip()
+    except Exception:
+        return ""
+
+
+def chapter_brief(project_dir: Path | str, chapter: int, title: str = "",
+                  budget: int = BRIEF_BUDGET) -> str:
+    """一章的结构化简报；项目还没跑过工作流时返回空串（调用方回退原文切片）。"""
+    n = int(chapter)
+    blocks: list[str] = []
+
+    outline = _outline_section(project_dir, n)
+    if outline:
+        blocks.append("【细纲】" + truncate(outline, 520))
+
+    digest = _digest(project_dir, n)
+    summary = _chapter_summary_text(project_dir, n)
+    if not summary and isinstance(digest.get("summary"), str):
+        summary = digest["summary"].strip()
+    if summary:
+        blocks.append("【概要】" + truncate(summary, 260))
+
+    events = _percept_events(digest)
+    if events:
+        blocks.append("【本章事件】" + "；".join(events[:6]))
+
+    threads = _thread_lines(digest)
+    if threads:
+        blocks.append("【主线/支线】" + "；".join(threads[:4]))
+
+    sim = _sim_note(project_dir, n)
+    if sim:
+        blocks.append("【角色推演】" + truncate(sim, 300))
+
+    ledger = _ledger_block(project_dir, n)
+    if ledger:
+        blocks.append("【故事线】" + truncate(ledger, 260))
+
+    text = "\n\n".join(blocks).strip()
+    return truncate(text, budget) if text else ""
+
+
+def episode_material(project_dir: Path | str, chapter: dict, title: str = "",
+                     budget: int = CONTEXT_BUDGET,
+                     known_names: list[str] | None = None) -> tuple[str, str]:
+    """一集里单章的上下文：(材料文本, 来源标签)。
+
+    ``structured`` = 简报 + 对白切片（正常项目）；
+    ``raw`` = 没有细纲/概要/digest，只能从原文切片（老项目兜底）。
+    """
+    number = int(chapter.get("number") or 0)
+    raw = (chapter.get("text") or "").strip()
+    brief = chapter_brief(project_dir, number, title or str(chapter.get("title") or ""),
+                          budget=max(400, budget // 4))
+    dialogue_budget = max(0, budget - len(brief))
+    dialogue = dialogue_slice(raw, dialogue_budget, known_names) if raw and dialogue_budget else ""
+
+    parts: list[str] = []
+    if brief:
+        parts.append("【结构化简报（细纲/概要/事件/推演/台账）】\n" + brief)
+    if dialogue:
+        parts.append("【原文对白/动作切片】\n" + dialogue)
+    if not parts:
+        return "", "empty"
+    return "\n\n".join(parts), ("structured" if brief else "raw")

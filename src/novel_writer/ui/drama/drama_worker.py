@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
@@ -13,9 +12,9 @@ from ...core.drama import (
     DramaStore, clean_script_output, parse_storyboard_output,
 )
 from ...core.drama_context import (
-    ADAPT_DOC_BUDGET, BIBLE_BUDGET, PREV_TAIL_BUDGET, RECAP_EPISODES,
-    SCRIPT_BUDGET, STORYBOARD_BUDGET, compress_script, parse_character_names,
-    recap_lines, slice_bible, slice_chapter, truncate,
+    ADAPT_DOC_BUDGET, BIBLE_BUDGET, CONTEXT_BUDGET, PREV_TAIL_BUDGET,
+    RECAP_EPISODES, STORYBOARD_BUDGET, compress_script, episode_material,
+    parse_character_names, recap_lines, slice_bible, truncate,
 )
 from ...core.llm.base import BaseLLM
 from ...core.drama_adaptation import AdaptiveDramaRunner
@@ -354,7 +353,6 @@ class DramaAIWorker(QThread):
         return resp.content or "", resp.usage or {}, time.monotonic() - t0
 
     def _adapt_prompt(self) -> str:
-        planning = self.store.project_dir / "planning"
         known = parse_character_names(self._read_planning("人物设定.md"))
         before = after = 0
         docs = []
@@ -372,8 +370,22 @@ class DramaAIWorker(QThread):
             sliced = slice_bible(body, keys, ADAPT_DOC_BUDGET)
             after += len(sliced)
             docs.append(f"### {label}\n{sliced}")
+
+        # 已完成章节的滚动摘要：比规划更贴近「实际写了什么」，做全书圣经要用
+        rolling = ""
+        try:
+            from ...core import project_io
+            rolling = (project_io.latest_summary(self.store.project_dir) or "").strip()
+        except Exception:
+            rolling = ""
+        if rolling:
+            before += len(rolling)
+            picked = truncate(rolling, 1800)
+            after += len(picked)
+            docs.append(f"### 已完成章节滚动摘要\n{picked}")
+
         self._context_note = (
-            f"改编材料切片：规划文档 {before} 字 → 送入 {after} 字"
+            f"改编材料切片：规划文档/滚动摘要 {before} 字 → 送入 {after} 字"
             f"（单份上限 {ADAPT_DOC_BUDGET}，出场人物 {len(known)} 个）"
         )
         info = self.project_info
@@ -411,7 +423,10 @@ class DramaAIWorker(QThread):
         series = self.store.load_series()
         episode = next((e for e in self.store.load_episodes() if e["number"] == episode_number), {})
         raw = chapter.get("text") or ""
-        body = slice_chapter(raw, SCRIPT_BUDGET, self._known_names())
+        body, kind = episode_material(
+            self.store.project_dir, chapter, str(chapter.get("title") or ""),
+            budget=CONTEXT_BUDGET, known_names=self._known_names(),
+        )
         bible = slice_bible(
             self.store.bible_text(),
             ("节奏", "钩子", "红线", "视觉", "人物", "分集"),
@@ -420,7 +435,8 @@ class DramaAIWorker(QThread):
         prev = truncate(prev_tail, PREV_TAIL_BUDGET)
         recap = recap_lines(self.store.load_episodes(), episode_number, RECAP_EPISODES)
         self._context_note = (
-            f"第{chapter.get('number')}章上下文切片：原文 {len(raw)} 字 → 送入 {len(body)} 字；"
+            f"第{chapter.get('number')}章上下文：原文 {len(raw)} 字 → 送入 {len(body)} 字"
+            f"（{'细纲/概要/推演/台账 + 对白切片' if kind == 'structured' else '无结构化数据，原文切片兜底'}）；"
             f"圣经 {len(bible)} 字；前情 {len(recap)} 字；上集结尾 {len(prev)} 字"
         )
         prev_block = f"\n【上一集结尾】\n{prev}\n" if prev else ""
@@ -447,11 +463,11 @@ class DramaAIWorker(QThread):
             "- 严格按目标时长设计场次与台词，前 3 秒有冲突/异常，结尾 5 秒留钩子。\n"
             "- 衔接上一集结尾的人物位置、持有道具、已知信息和未决冲突，不重复已发生的反转。\n"
             "- 只保留本章 1-2 个核心冲突；删环境铺陈和支线。\n"
-            "- 素材按冲突密度给到关键场次，标了「（略）」的地方不要补写剧情。\n"
+            "- 情节与人物动机以「结构化简报」为准，台词/动作参考原文切片；标了「（略）」的地方不要补写。\n"
             "- 心理描写全部翻译成动作、表情、道具、空间。\n"
             "- 台词短、口语化；不要大段旁白。\n"
             "- 不要出现「本章」「原文」「小说」等元叙述。\n\n"
-            f"【本章原文（按场景切片）】\n{body}\n"
+            f"【本章材料（结构化简报 + 原文对白/动作切片）】\n{body}\n"
         )
 
     def _storyboard_prompt(self, episode: dict, script: str, duration: int) -> str:

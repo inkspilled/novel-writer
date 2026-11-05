@@ -165,7 +165,7 @@ def test_adaptive_worker_uses_planner_then_writer(qapp, tmp_path):
 
 
 def test_script_prompt_slices_long_chapter(qapp, tmp_path):
-    """长章不能整章塞进提示词：按冲突密度切片并标注省略。"""
+    """没有细纲/概要时也不能整章塞：原文只取对白/动作切片并标注省略。"""
     body = ("他站在山门前，风把衣角吹得猎猎作响。" * 60 + "\n\n") * 20
     body += "他拔刀，血溅三尺，枪口顶住眉心。"
     worker, store, llm, _, _ = _worker(
@@ -174,9 +174,41 @@ def test_script_prompt_slices_long_chapter(qapp, tmp_path):
     prompt = worker._script_prompt({"number": 1, "title": "一", "text": body}, 1, "上集结尾" * 300)
     assert len(body) > 20000
     assert len(prompt) < len(body) / 2  # 明显压缩，不是整章直塞
-    assert "（略）" in prompt and "按场景切片" in prompt
+    assert "（略）" in prompt and "对白/动作切片" in prompt
     assert "枪口顶住眉心" in prompt  # 冲突段保留
     assert "原文" in worker._context_note and "送入" in worker._context_note
+
+
+def test_script_prompt_prefers_structured_brief(qapp, tmp_path):
+    """有细纲/概要/digest 时先吃中间物，原文只用来核对台词与动作。"""
+    planning = tmp_path / "planning"
+    planning.mkdir()
+    (planning / "章节细纲.md").write_text(
+        "# 章节细纲\n\n## 第1章 退婚\n- 顾言被当众退婚\n- 他亮出族老令牌\n- 结尾：门外来人\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "chapters").mkdir()
+    (tmp_path / "chapters" / "1_退婚.summary.md").write_text(
+        "顾言被退婚，亮令牌反制，结尾神秘人登门。", encoding="utf-8"
+    )
+    (tmp_path / "digest").mkdir()
+    import json as _json
+    (tmp_path / "digest" / "1.json").write_text(
+        _json.dumps({"summary": "顾言反制退婚", "percept": {"events": ["顾言亮出令牌"]},
+                     "threads": {"main": [{"title": "夺回家产", "status": "active"}]}},
+                    ensure_ascii=False),
+        encoding="utf-8",
+    )
+    body = "他站在山门前。\n\n" + "“你配吗？”顾言冷笑。\n\n" * 400
+    worker, store, llm, _, _ = _worker(
+        tmp_path, "script", chapters=[{"number": 1, "title": "退婚", "text": body}]
+    )
+    prompt = worker._script_prompt({"number": 1, "title": "退婚", "text": body}, 1, "")
+    assert "结构化简报" in prompt
+    assert "亮出族老令牌" in prompt  # 细纲进了提示词
+    assert "顾言亮出令牌" in prompt  # digest 事件也进了
+    assert "夺回家产" in prompt  # 故事线推进
+    assert "细纲/概要/推演/台账" in worker._context_note
 
 
 def test_adapt_prompt_slices_planning_docs(qapp, tmp_path):
@@ -192,3 +224,15 @@ def test_adapt_prompt_slices_planning_docs(qapp, tmp_path):
     assert "按预算切片" in prompt
     assert len(prompt) < 12000  # 四份各 3200+ 字，必须裁
     assert "切片" in worker._context_note
+
+
+def test_adapt_prompt_includes_rolling_summary(qapp, tmp_path):
+    """改编圣经要用「已写了什么」的滚动摘要，而不是只看规划稿。"""
+    (tmp_path / "summary").mkdir()
+    (tmp_path / "summary" / "第1-10章摘要.md").write_text(
+        "# 剧情摘要\n顾言被退婚，三个月后夺回家产。", encoding="utf-8"
+    )
+    worker, store, _, _, _ = _worker(tmp_path, "adapt")
+    prompt = worker._adapt_prompt()
+    assert "已完成章节滚动摘要" in prompt
+    assert "夺回家产" in prompt
