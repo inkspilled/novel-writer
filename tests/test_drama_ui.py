@@ -224,8 +224,8 @@ def test_drama_mode_dialog_defaults_and_scope(qapp):
     dialog.close()
 
 
-def test_drama_panel_workflow_bar_sticks_to_bottom(qapp):
-    """工作流条必须贴底（曾因拿到全部 stretch 悬在面板中间）。"""
+def test_drama_panel_workflow_bar_under_agents(qapp):
+    """工作流条紧跟智能体卡片（不贴底、也不悬在中间），日志向下展开。"""
     from src.novel_writer.ui.drama.drama_panel import DramaAgentPanel
 
     panel = DramaAgentPanel()
@@ -233,7 +233,13 @@ def test_drama_panel_workflow_bar_sticks_to_bottom(qapp):
     panel.show()
     qapp.processEvents()
 
-    assert panel.workflow.y() + panel.workflow.height() == panel.height()
+    assert panel.workflow.y() >= panel.office.y() + panel.office.height()
+    assert panel.workflow.y() < panel.height() // 2
     assert panel.workflow.height() <= panel.workflow.sizeHint().height() + 8
-    assert panel.hint_label.isVisible()
+
+    top_before = panel.workflow.y()
+    panel.append_log("开始 segment：范围=全部待用")
+    qapp.processEvents()
+    assert panel.workflow.y() == top_before  # 日志展开只向下长，不挤走卡片
+    assert panel.workflow.height() > 40
     panel.close()
