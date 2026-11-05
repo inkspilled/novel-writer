@@ -67,7 +67,7 @@
 |---|---|---|
 | `{{positive}}` | CLIPTextEncode 的 text | 正向提示词 |
 | `{{negative}}` | 负面 CLIPTextEncode 的 text | 负向提示词 |
-| `{{seed}}` | KSampler 的 seed | 每张随机（`int` 字段也可直接填 `"{{seed}}"` 字符串，ComfyUI 会转） |
+| `{{seed}}` | KSampler 的 seed | 每张随机；整个值就是占位符时会替换成整数（ComfyUI 只认 int） |
 | `{{prefix}}` | SaveImage 的 filename_prefix | 用资产 id，方便回查 |
 | `{{width}}` / `{{height}}` | EmptyLatentImage | 默认 768×1344（竖屏） |
 

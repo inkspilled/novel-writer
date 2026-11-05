@@ -56,6 +56,12 @@ def fill_workflow(template: dict, values: dict[str, Any]) -> dict:
         if isinstance(node, list):
             return [walk(v) for v in node]
         if isinstance(node, str):
+            # 整个值就是一个需要数字的占位符时，直接给数字类型：
+            # ComfyUI 的 KSampler.seed / EmptyLatentImage 只认 int，字符串会被判非法。
+            for key in ("seed", "width", "height"):
+                token = "{{" + key + "}}"
+                if node.strip() == token and key in values:
+                    return values[key]
             text = node
             for key in PLACEHOLDERS:
                 token = "{{" + key + "}}"

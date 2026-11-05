@@ -67,7 +67,7 @@ def test_fill_workflow_replaces_nested_placeholders():
                                       "seed": 42, "prefix": "char_1"})
     assert filled["6"]["inputs"]["text"] == "古装少年"
     assert filled["7"]["inputs"]["text"] == "模糊"
-    assert filled["3"]["inputs"]["seed"] == "42"
+    assert filled["3"]["inputs"]["seed"] == 42  # 数字占位符保留 int，ComfyUI 只认 int
     assert filled["9"]["inputs"]["filename_prefix"] == "char_1"
     assert filled["3"]["inputs"]["steps"] == 20  # 非字符串不动
 
