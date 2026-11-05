@@ -1,61 +1,56 @@
 """应用级配置 — 路径常量与用户配置读写。
 
-开发环境数据写在项目根 `data/`；PyInstaller 打包后写到系统用户数据目录
-（Windows %APPDATA%/NovelWriter、macOS ~/Library/Application Support/NovelWriter、
-Linux ~/.local/share/novel-writer），避免安装到 Program Files 时无权限写入。
+开发环境与打包后布局完全镜像：根目录下 `config/ data/ logs/` 三件套
+（打包后根 = exe 所在安装目录；详见 runtime_paths.py）。安装目录不可写时
+整体回退系统用户数据目录（Windows %APPDATA%/NovelWriter 等）。
 """
 from __future__ import annotations
 
 import json
 import os
 import re
-import sys
 import tempfile
 from pathlib import Path
 
 from .logger import get_logger
+from .runtime_paths import (
+    RuntimeDirs,
+    bundle_dir,
+    is_frozen,
+    project_root,
+    resolve_runtime_dirs,
+)
 
 logger = get_logger(__name__)
 
+PROJECT_ROOT = project_root()
 
-def _is_frozen() -> bool:
-    return bool(getattr(sys, "frozen", False))
-
-
-def _project_root() -> Path:
-    """源码树根目录（仅开发环境有效）。"""
-    return Path(__file__).resolve().parents[3]
-
-
-def _bundle_dir() -> Path:
-    """打包后资源目录（onedir: exe 旁；onefile: _MEIPASS）。"""
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        return Path(meipass)
-    return Path(sys.executable).resolve().parent
-
-
-def _user_data_dir() -> Path:
-    if not _is_frozen():
-        return _project_root() / "data"
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / "NovelWriter"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "NovelWriter"
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "novel-writer"
-
-
-PROJECT_ROOT = _project_root()
-DATA_DIR = _user_data_dir()
+# 运行期目录三件套：开发=项目根，打包=安装目录（不可写时回退用户数据目录）
+_DIRS: RuntimeDirs = resolve_runtime_dirs(frozen=is_frozen())
+DATA_DIR = _DIRS.data
+USER_CONFIG_DIR = _DIRS.user_config
 CONFIG_PATH = DATA_DIR / "config.json"
 PROJECTS_DIR = DATA_DIR / "projects"
 
+# 随包只读配置：开发=项目根 config/，打包=_internal/config/
+BUNDLED_CONFIG_DIR = bundle_dir() / "config" if is_frozen() else PROJECT_ROOT / "config"
+
+
+def resolve_config_path(filename: str) -> Path:
+    """随包配置的读/写落点：用户层存在则优先，否则回退内置。
+
+    返回值同时是写目标——首次写入会落在用户层（安装目录 config/），
+    内置 _internal/config/ 永不被改写，升级整体刷新不丢用户修改。
+    开发环境两层同目录，行为退化为单文件。
+    """
+    user = USER_CONFIG_DIR / filename
+    return user if user.exists() else BUNDLED_CONFIG_DIR / filename
+
+
 # 包内资源：开发环境在 src/novel_writer/assets；打包后在 bundle 根
-if _is_frozen():
-    ASSETS_DIR = _bundle_dir()
-    LOGO_PATH = _bundle_dir() / "logo.png"
+if is_frozen():
+    ASSETS_DIR = bundle_dir()
+    LOGO_PATH = bundle_dir() / "logo.png"
 else:
     ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
     LOGO_PATH = PROJECT_ROOT / "logo.png"

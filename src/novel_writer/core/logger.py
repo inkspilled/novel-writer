@@ -12,31 +12,18 @@
 """
 import logging
 import logging.handlers
-import os
 import sys
 import threading
 from pathlib import Path
 
+from .runtime_paths import resolve_runtime_dirs
 
 # ─── 日志目录 ───
 
 def _get_log_dir() -> Path:
-    """获取日志输出目录，兼容 PyInstaller 打包。
-
-    打包后写到用户数据目录，避免安装在 Program Files 时无权限在 exe 旁建 logs/。
-    """
-    if getattr(sys, 'frozen', False):
-        if sys.platform == "win32":
-            base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-            log_dir = Path(base) / "NovelWriter" / "logs"
-        elif sys.platform == "darwin":
-            log_dir = Path.home() / "Library" / "Application Support" / "NovelWriter" / "logs"
-        else:
-            base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-            log_dir = Path(base) / "novel-writer" / "logs"
-    else:
-        base = Path(__file__).resolve().parent.parent.parent.parent
-        log_dir = base / "logs"
+    """日志目录：开发=项目根 logs/，打包=安装目录 logs/
+    （安装目录不可写时回退用户数据目录，见 runtime_paths.py）。"""
+    log_dir = resolve_runtime_dirs().logs
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 

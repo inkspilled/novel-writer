@@ -1,7 +1,10 @@
 ; Inno Setup 安装脚本 - Novel Writer
 ; onedir 模式（DLL 形式）：启动快，杀毒误报少
-; 策略：免管理员装到用户目录；用户数据在 %APPDATA%\NovelWriter，
-; 不随包、卸载不碰（小说稿安全）。
+; 策略：免管理员装到用户目录；用户数据与开发布局镜像，长在安装目录下
+; （<安装目录>\data 项目稿、config 用户配置、logs 日志）。
+; 安装目录不可写（如被手动装进 Program Files）时程序自动回退 %APPDATA%\NovelWriter。
+; 卸载只删安装器登记的文件，data/config/logs 属运行期生成、不在登记之列，
+; 会留在原地（小说稿安全）；升级覆盖安装同样不碰这三件套。
 ; （注意：smt 项目实际是 admin 装到 Program Files，两边是各自的既定策略，勿互相照搬）
 
 #define MyAppName      "Novel Writer"
@@ -49,8 +52,8 @@ Name: "startmenu";   Description: "{cm:startmenu}"; GroupDescription: "{cm:Addit
 ; onedir 模式：exe + _internal（DLL/pyd/资源）
 Source: "dist\NovelWriter\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\NovelWriter\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
-; 不打包任何 data/config 运行时文件：打包后用户数据一律写 %APPDATA%\NovelWriter，
-; 覆盖安装与卸载都不触碰小说稿（见 app_config.py/_user_data_dir）。
+; 不打包任何运行期 data/config/logs 文件：这三件套由程序在安装目录按需生成
+; （见 core/runtime_paths.py）；覆盖安装与卸载都不在安装器登记之列，不触碰小说稿。
 
 [Icons]
 ; 开始菜单（受 startmenu 勾选项控制）+ 卸载入口
@@ -63,4 +66,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 ; 完成页勾选启动（文案随所选语言）
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
-; 卸载仅删除安装器登记的程序文件；%APPDATA%\NovelWriter 下的项目/配置/日志保留。
+; 卸载仅删除安装器登记的程序文件（exe + _internal）；
+; 运行期生成的 data/config/logs 不在登记之列，原样保留——
+; 手动删安装目录会连小说稿一起删，提醒用户先备份 data/projects。

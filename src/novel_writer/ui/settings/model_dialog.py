@@ -13,18 +13,19 @@ from PySide6.QtCore import Qt, QTimer
 
 from ..common.workers import TestConnectionWorker, FetchModelsWorker
 from ...locales import t
-from ...core.app_config import PROJECT_ROOT
+from ...core.app_config import resolve_config_path
 from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 配置目录在项目根（与 core.agents 一致）；原先 parents[3] 误指到 src/
-_CONFIG_DIR = PROJECT_ROOT / "config"
-
 
 def load_default_providers() -> list[dict]:
-    """从 default_providers.json 加载默认 API 端点列表。"""
-    path = _CONFIG_DIR / "default_providers.json"
+    """从 default_providers.json 加载默认 API 端点列表。
+
+    用户层(config/)存在则优先，否则随包内置（_internal/config/）——
+    打包后原先 parents[3] 误指安装根下不存在的 config/，导致列表为空。
+    """
+    path = resolve_config_path("default_providers.json")
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
     return []
