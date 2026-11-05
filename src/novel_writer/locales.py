@@ -47,6 +47,15 @@ STRINGS = {
     "editor_tab_content": {"zh": "正文", "en": "Content"},
     "editor_ph_content": {"zh": "在这里开始写作", "en": "Start writing here"},
     "editor_save": {"zh": "保存", "en": "Save"},
+    "editor_saved": {"zh": "已自动保存", "en": "Autosaved"},
+    "editor_unsaved": {"zh": "编辑中…", "en": "Editing…"},
+    "character_import_from_world": {
+        "zh": "从世界状态导入 {} 个角色", "en": "Import {} from world state",
+    },
+    "workflow_log_hint": {
+        "zh": "运行工作流后，这里显示每一步的耗时与 token",
+        "en": "Step timing and tokens appear here after a run starts",
+    },
 
     # ── Agent 面板 ──
     "agent_select": {"zh": "选择一个智能体", "en": "Select an Agent"},
@@ -66,7 +75,6 @@ STRINGS = {
     "agent_send_hint": {"zh": "Ctrl+Enter 发送", "en": "Ctrl+Enter to send"},
     "agent_free_chat": {"zh": "💬 自由对话", "en": "💬 Free chat"},
     "agent_free_chat_collapse": {"zh": "收起对话", "en": "Collapse chat"},
-    "agent_model_default": {"zh": "默认模型", "en": "Default model"},
 
     # ── 设置对话框 ──
     "settings_save_all": {"zh": "保存全部", "en": "Save All"},
@@ -103,7 +111,6 @@ STRINGS = {
     "model_saved_models": {"zh": "已保存模型", "en": "Saved Models"},
     "model_save_as": {"zh": "保存方案", "en": "Save Config"},
     "model_delete_config": {"zh": "删除配置", "en": "Delete Config"},
-    "model_use_global": {"zh": "使用全局默认", "en": "Use Global Default"},
     "model_name_prompt": {"zh": "为此模型配置命名:", "en": "Name this model config:"},
     "model_name_exists": {"zh": "'{}' 已存在，是否覆盖？", "en": "'{}' already exists, overwrite?"},
     "model_default_group": {"zh": "默认模型", "en": "Default Model"},
@@ -122,7 +129,6 @@ STRINGS = {
     "settings_ph_agent_title": {"zh": "中文名称", "en": "Display name"},
     "settings_agent_emoji": {"zh": "图标:", "en": "Icon:"},
     "settings_ph_emoji": {"zh": "如 📋", "en": "e.g. 📋"},
-    "settings_agent_model": {"zh": "专属模型:", "en": "Dedicated Model:"},
     "settings_agent_skills": {"zh": "技能:", "en": "Skills:"},
     "settings_ph_skills": {"zh": "技能1, 技能2", "en": "skill1, skill2"},
     "settings_agent_prompt": {"zh": "提示词:", "en": "Prompt:"},
@@ -171,6 +177,7 @@ STRINGS = {
     "msg_reset_agents": {"zh": "确定重置所有智能体为默认配置？\n自定义智能体将被覆盖。", "en": "Reset all agents to default?\nCustom agents will be overwritten."},
     "msg_delete_agent": {"zh": "删除 '{}'？", "en": "Delete '{}'?"},
     "msg_agent_exists": {"zh": "'{}' 已存在", "en": "'{}' already exists"},
+    "msg_agent_builtin_locked": {"zh": "内置智能体 '{}' 不允许修改或删除", "en": "Built-in agent '{}' cannot be modified or deleted"},
     "msg_input_model": {"zh": "请输入模型名称", "en": "Please enter model name"},
     "msg_open_fail": {"zh": "打开项目失败: {}", "en": "Failed to open project: {}"},
 

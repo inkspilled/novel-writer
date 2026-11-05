@@ -28,6 +28,7 @@ class WorkflowThread(QThread):
     chapter_chunk = Signal(str, int, str, str)  # step_id, n, kind, text
     progress_updated = Signal(dict)             # progress dict
     log_message = Signal(str)                   # 日志消息
+    story_track = Signal(dict)                  # 故事线台账已刷新
     workflow_done = Signal()                    # 全部完成
     workflow_stopped = Signal()                 # 被停止
 
@@ -43,6 +44,9 @@ class WorkflowThread(QThread):
         self._last_activity = time.monotonic()
         self._watchdog_stop = threading.Event()
         self._watchdog_thread: threading.Thread | None = None
+        # 章后步骤会并发（digest / proofread / toc），起止时间必须按 (step, n) 分开记，
+        # 否则并发时后开始的步骤会把前一个的耗时算成自己的。
+        self._step_marks: dict[tuple[str, int], tuple[float, dict]] = {}
         _register_worker(self)  # 防止 run() 未结束就被 GC
 
     def _weak_callback(self, name: str):
@@ -166,6 +170,9 @@ class WorkflowThread(QThread):
                 self.log_message.emit(
                     f"  🧭 故事线台账已刷新：{payload.get('headline', '')}"
                 )
+                self.story_track.emit(payload)
+            elif kind == "retry":
+                self.log_message.emit(f"  ↻ {payload.get('step', '')} {payload.get('reason', '重新生成最终内容')}")
             elif kind == "step_retry":
                 self.log_message.emit(
                     f"  ↻ {payload.get('step')} 第{payload.get('attempt')}次重试"
@@ -181,15 +188,19 @@ class WorkflowThread(QThread):
             self._step_usage = dict(self.runner.total_usage)
         except Exception:
             self._step_usage = {}
+        self._step_marks[(step_id, n)] = (self._step_t0, dict(self._step_usage))
         self.step_started.emit(step_id, n, agent_title)
         suffix = f" (第{n}章)" if n > 1 else ""
         self.log_message.emit(f"▸ <b>{agent_title}</b> 开始 {step_id}{suffix}")
 
     def _on_step_end(self, step_id, n, agent_title, output):
         self._touch()
-        elapsed = max(0.0, time.monotonic() - self._step_t0) if self._step_t0 else 0.0
+        start, usage_before = self._step_marks.pop(
+            (step_id, n), (self._step_t0, self._step_usage),
+        )
+        elapsed = max(0.0, time.monotonic() - start) if start else 0.0
         total = dict(getattr(self.runner, "total_usage", {}) or {})
-        delta = {k: int(total.get(k, 0)) - int(self._step_usage.get(k, 0)) for k in total}
+        delta = {k: int(total.get(k, 0)) - int(usage_before.get(k, 0)) for k in total}
         tok = delta.get("total_tokens") or (delta.get("prompt_tokens", 0) + delta.get("completion_tokens", 0))
         preview = " ".join((output or "").strip().split())[:80]
         self.step_finished.emit(step_id, n, agent_title, output)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -25,6 +26,9 @@ class _WorldBase(QWidget):
         self.setObjectName("editorPanel")
         self.gs: WorldState | None = None
         self.title = title
+        self._refreshing = False
+        self._form_snapshot = None
+        self._base_state = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -35,7 +39,7 @@ class _WorldBase(QWidget):
         bl = QHBoxLayout(bar); bl.setContentsMargins(20, 10, 20, 10)
         label = QLabel(self.title); label.setStyleSheet("font-size: 18px; font-weight: 700;")
         bl.addWidget(label); bl.addStretch()
-        self.btn_refresh = QPushButton("刷新"); self.btn_refresh.clicked.connect(self.reload)
+        self.btn_refresh = QPushButton("刷新"); self.btn_refresh.clicked.connect(lambda: self.reload(force=True))
         self.btn_add = QPushButton("＋ 新增"); self.btn_add.clicked.connect(self._add)
         self.btn_del = QPushButton("删除"); self.btn_del.setObjectName("danger"); self.btn_del.clicked.connect(self._delete)
         self.btn_save = QPushButton("保存"); self.btn_save.setObjectName("primary"); self.btn_save.clicked.connect(self.save)
@@ -59,30 +63,48 @@ class _WorldBase(QWidget):
             w.setEnabled(on)
 
     def set_project_dir(self, project_dir: Path | None):
+        self._form_snapshot = None
         if project_dir:
             self.gs = WorldState(Path(project_dir)); self.gs.load(); self._set_enabled(True)
         else:
             self.gs = None; self._set_enabled(False)
         self.reload()
 
-    def reload(self):
+    def _form_values(self):
+        return tuple((id(w), w.text() if isinstance(w, QLineEdit) else w.toPlainText())
+                     for w in self.findChildren(QWidget)
+                     if isinstance(w, (QLineEdit, QPlainTextEdit)) and not w.isReadOnly())
+
+    def reload(self, force=False):
         if not self.gs:
             self.list.clear(); self.name_label.setText("打开项目后管理"); return
+        if not force and self._form_snapshot is not None and self._form_values() != self._form_snapshot:
+            self.status_label.setText("有未保存编辑，已保留；保存后刷新后台状态")
+            return
+        selected = self.list.currentItem().data(Qt.ItemDataRole.UserRole) if self.list.currentItem() else ""
         self.gs.load()
+        self._base_state = copy.deepcopy(self.gs._data)
+        self._refreshing = True
         self.list.blockSignals(True); self.list.clear()
         for name in self._names():
             item = QListWidgetItem(self._label(name)); item.setData(Qt.ItemDataRole.UserRole, name); self.list.addItem(item)
         self.list.blockSignals(False)
-        if self.list.count(): self.list.setCurrentRow(0)
+        if self.list.count():
+            row = next((i for i in range(self.list.count()) if self.list.item(i).data(Qt.ItemDataRole.UserRole) == selected), 0)
+            self.list.setCurrentRow(row)
         else:
             self.name_label.setText("还没有记录")
             self._load(None)
+        self._refreshing = False
+        self._form_snapshot = self._form_values()
 
     def _selected(self, current, _prev):
         if current is None: self._load(None); return
         name = current.data(Qt.ItemDataRole.UserRole)
-        self._sync()
+        if not self._refreshing:
+            self._sync()
         self._load(name)
+        self._form_snapshot = self._form_values()
 
     def _add(self):
         if not self.gs: return
@@ -106,7 +128,22 @@ class _WorldBase(QWidget):
 
     def save(self):
         if not self.gs: return
-        self._sync(); self.gs.save(); self.status_label.setText("已保存"); self.reload()
+        self._sync()
+        edited = copy.deepcopy(self.gs._data)
+        self.gs.load()
+        def apply_changes(before, after, latest):
+            for key in before.keys() - after.keys():
+                latest.pop(key, None)
+            for key, value in after.items():
+                if key not in before:
+                    latest[key] = copy.deepcopy(value)
+                elif before[key] != value:
+                    if isinstance(before[key], dict) and isinstance(value, dict) and isinstance(latest.get(key), dict):
+                        apply_changes(before[key], value, latest[key])
+                    else:
+                        latest[key] = copy.deepcopy(value)
+        apply_changes(self._base_state, edited, self.gs._data)
+        self.gs.save(); self.status_label.setText("已保存"); self.reload(force=True)
 
 
 class ItemPage(_WorldBase):
@@ -163,6 +200,18 @@ class LocationPage(_WorldBase):
         super()._setup_ui()
         self.type = QLineEdit(); self.form.addRow("类型", self.type)
         self.desc = QPlainTextEdit(); self.desc.setMaximumHeight(110); self.form.addRow("描述", self.desc)
+        self.aliases = QLineEdit(); self.aliases.setPlaceholderText("同一地点的其他称呼，用顿号分隔")
+        self.form.addRow("别名", self.aliases)
+        self.parent_location = QLineEdit(); self.form.addRow("所属区域", self.parent_location)
+        self.coordinate_frame = QLineEdit(); self.coordinate_frame.setPlaceholderText("如：青云宗平面图；同一坐标系统一原点和方向")
+        self.form.addRow("坐标系", self.coordinate_frame)
+        self.coordinate_unit = QLineEdit(); self.coordinate_unit.setPlaceholderText("米 / 千米 / 格")
+        self.form.addRow("坐标单位", self.coordinate_unit)
+        self.coordinates = QLineEdit(); self.coordinates.setPlaceholderText("x,y 或 x,y,z；未规划时留空")
+        self.form.addRow("坐标", self.coordinates)
+        self.btn_merge = QPushButton("检查重复并合并到已有地点")
+        self.btn_merge.clicked.connect(self._merge_location)
+        self.form.addRow(self.btn_merge)
         self.occupants = QLabel(""); self.occupants.setWordWrap(True); self.form.addRow("在场角色", self.occupants)
         self.items = QLabel(""); self.items.setWordWrap(True); self.form.addRow("地面物品", self.items)
         self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(160)
@@ -185,6 +234,11 @@ class LocationPage(_WorldBase):
         self.gs.locations.setdefault(name, {})
         loc = self.gs.locations.get(name) or {}
         self.name_label.setText(name); self.type.setText(str(loc.get("type") or "")); self.desc.setPlainText(str(loc.get("description") or ""))
+        self.aliases.setText("、".join(loc.get("aliases") or []))
+        self.parent_location.setText(str(loc.get("parent") or ""))
+        self.coordinate_frame.setText(str(loc.get("coordinate_frame") or ""))
+        self.coordinate_unit.setText(str(loc.get("coordinate_unit") or ""))
+        self.coordinates.setText(", ".join(map(str, loc.get("coordinates") or [])))
         people = self.gs.characters_at(name); items = self.gs.items_at(name)
         self.occupants.setText("、".join(people) or "（无人）")
         self.items.setText("、".join(items) or "（无）")
@@ -207,6 +261,55 @@ class LocationPage(_WorldBase):
         loc = self.gs.locations.get(name)
         if not isinstance(loc, dict): return
         loc.update({"type": self.type.text().strip(), "description": self.desc.toPlainText().strip()})
+        from ...core.location_identity import validate_spatial_record, ensure_identity
+        text = self.coordinates.text().strip()
+        try:
+            coords = [float(v.strip()) for v in text.replace("，", ",").split(",")] if text else None
+            geo = validate_spatial_record(self.gs.locations, name, {"coordinates": coords, "coordinate_frame": self.coordinate_frame.text().strip(),
+                                     "coordinate_unit": self.coordinate_unit.text().strip()})
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            return
+        loc.update(geo)
+        loc["aliases"] = [a.strip() for a in self.aliases.text().replace("，", "、").split("、") if a.strip()]
+        loc["parent"] = self.parent_location.text().strip()
+        self.gs.locations[name] = ensure_identity(name, loc)
+
+    def save(self):
+        from ...core.location_identity import validate_spatial_record
+        if not self.gs:
+            return
+        try:
+            text = self.coordinates.text().strip()
+            validate_spatial_record(self.gs.locations, self.name_label.text(), {"coordinates": [float(v.strip()) for v in text.replace("，", ",").split(",")] if text else None,
+                               "coordinate_frame": self.coordinate_frame.text().strip(), "coordinate_unit": self.coordinate_unit.text().strip()})
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            return
+        super().save()
+
+    def _merge_location(self):
+        if not self.gs or self.list.currentItem() is None:
+            return
+        source = self.list.currentItem().data(Qt.ItemDataRole.UserRole)
+        candidates = self.gs.location_candidates(source)
+        choices = [n for n, score in candidates] + [n for n in self.gs.locations if n != source and n not in {c[0] for c in candidates}]
+        if not choices:
+            self.status_label.setText("没有其他地点可合并")
+            return
+        target, ok = QInputDialog.getItem(self, "合并重复地点", "选择保留的地点（相似候选排在前面，坐标接近不代表同一地点）：", choices, 0, False)
+        if not ok:
+            return
+        from ...core.project_io import write_json
+        self.gs.load()
+        if source not in self.gs.locations or target not in self.gs.locations:
+            self.status_label.setText("地点已在后台变化，请刷新后重试")
+            return
+        write_json(self.gs.project_dir / "world_state.before_location_merge.json", self.gs._data)
+        self.gs.merge_locations(source, target)
+        self.gs.save()
+        self.reload()
+        self.status_label.setText(f"已合并到「{target}」，人物/物品/流水引用已统一，原名称保留为别名")
 
     def _create(self, name): self.gs.add_location(name, {"type": "", "description": ""})
     def _remove(self, name):

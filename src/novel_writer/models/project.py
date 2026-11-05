@@ -14,7 +14,7 @@ from ..core.narrative_voice import DEFAULT_VOICE
 
 @dataclass
 class Project:
-    """小说项目 — 基于目录的存储结构。"""
+    """小说项目 — 基于目录的存储结构。短剧数据依附在 drama/ 子目录。"""
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     title: str = ""
     genre: str = ""  # 题材：玄幻、都市、科幻...
@@ -25,6 +25,7 @@ class Project:
     direction: str = ""  # 规划方向
     target_words: int = 200000  # 目标字数
     target_chapters: int = 100  # 目标章节数
+    speed_profile: str = "standard"  # 工作流速度档位：standard / fast
     synopsis: str = ""  # 简介/立意
     cover: str = ""  # 封面图片路径
     world_setting: str = ""  # 世界观设定
@@ -74,10 +75,7 @@ class Project:
             return
         self.updated_at = datetime.now().isoformat()
 
-        # 初始化目录结构
-        project_io.init_project_dir(self._project_dir)
-
-        # 保存 meta.json
+        # 保存 meta.json（先组装，短剧初始化需要读取标题/题材等）
         meta = {
             "id": self.id,
             "title": self.title,
@@ -89,6 +87,7 @@ class Project:
             "direction": self.direction,
             "target_words": self.target_words,
             "target_chapters": self.target_chapters,
+            "speed_profile": self.speed_profile,
             "synopsis": self.synopsis,
             "cover": self.cover,
             "world_setting": self.world_setting,
@@ -111,6 +110,10 @@ class Project:
                 for ch in self.chapters
             ],
         }
+
+        # 初始化小说目录结构；短剧目录在用户第一次打开「短剧」页签时惰性创建
+        project_io.init_project_dir(self._project_dir)
+
         project_io.save_meta(self._project_dir, meta)
 
     @classmethod
@@ -131,6 +134,7 @@ class Project:
             direction=meta.get("direction", ""),
             target_words=meta.get("target_words", 200000),
             target_chapters=meta.get("target_chapters", 100),
+            speed_profile=meta.get("speed_profile", "standard"),
             synopsis=meta.get("synopsis", ""),
             cover=meta.get("cover", ""),
             world_setting=meta.get("world_setting", ""),

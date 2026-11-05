@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..llm.base import LLMMessage, LLMResponse
 from ..logger import get_logger
+from ..text_clean import clean_model_text
 
 if TYPE_CHECKING:
     from .base import BaseAgent
@@ -54,12 +55,14 @@ class AgentLoop:
         max_rounds: int = 3,
         max_calls_per_round: int = 4,
         on_event: EventCallback | None = None,
+        model: str | None = None,
     ):
         self.agent = agent
         self.toolkit = toolkit
         self.max_rounds = max(0, max_rounds)
         self.max_calls_per_round = max(1, max_calls_per_round)
         self.on_event = on_event
+        self.model = (model or "").strip() or None
         self.stats = ToolLoopStats()
 
     def _emit(self, kind: str, payload: dict[str, Any]) -> None:
@@ -98,12 +101,16 @@ class AgentLoop:
             self.stats.rounds = round_idx + 1
             # 最后一轮或预算耗尽：不再给工具，强制收束
             allow_tools = round_idx < self.max_rounds
+            if not allow_tools and self.stats.calls:
+                messages = [replace(m, content=m.content.replace(guard, "")) if m.role == "system" else m for m in messages]
+                messages.append(LLMMessage(role="user", content="工具检索已经结束。请根据已获得的工具结果直接给出最终答案，不再调用工具，不要只输出思考过程。"))
             response = await agent.llm.chat(
                 messages,
                 agent.config.temperature,
                 agent.config.max_tokens,
                 thinking=mode,
                 tools=self.toolkit.schemas() if allow_tools else None,
+                model=self.model,
             )
             for k, v in (response.usage or {}).items():
                 if isinstance(v, (int, float)):
@@ -126,7 +133,7 @@ class AgentLoop:
                     fallback_messages = agent._build_messages(fallback_input, context)
                     response = await agent.llm.chat(
                         fallback_messages, agent.config.temperature, agent.config.max_tokens,
-                        thinking=mode, tools=None,
+                        thinking=mode, tools=None, model=self.model,
                     )
                     for k, v in (response.usage or {}).items():
                         if isinstance(v, (int, float)):
@@ -182,6 +189,19 @@ class AgentLoop:
         else:  # pragma: no cover - 循环内已 break
             final = LLMResponse(content="")
 
+        if not clean_model_text(final.content or "").strip() and not _TOOL_MARKUP_RE.search(final.content or ""):
+            self._emit("retry", {"reason": "工具结束后未返回最终答案，关闭思考并直接输出", "attempt": 1})
+            repair_messages = [replace(m, content=m.content.replace(guard, "")) if m.role == "system" else m for m in messages]
+            repair_messages.append(LLMMessage(role="user", content="上次没有返回可用答案。现在禁止调用工具，请基于以上资料直接输出任务要求的最终内容，不要思考标签、分析或解释。"))
+            final = await agent.llm.chat(
+                repair_messages, agent.config.temperature, max(agent.config.max_tokens, 8192),
+                thinking="off", tools=None, model=self.model,
+            )
+            for key, value in (final.usage or {}).items():
+                if isinstance(value, (int, float)):
+                    usage[key] = int(usage.get(key, 0) + value)
+            if hasattr(agent, "_record_usage"):
+                agent._record_usage(final.usage)
         final.usage = usage
         if keep_history and final.content:
             agent.history.append(LLMMessage(role="user", content=user_input))

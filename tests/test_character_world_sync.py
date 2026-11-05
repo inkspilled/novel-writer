@@ -71,6 +71,35 @@ def test_context_text_includes_goals(tmp_path):
     assert "目标" in text and "查清灵脉" in text
 
 
+def test_ensure_missing_characters_from_world_state(tmp_path):
+    """世界状态里的新角色要补 extra 卡，否则 POV/感知抽取名单里没有他。"""
+    reg = CharacterRegistry(tmp_path)
+    reg.create("沈玄微", chapter=1, tier="core")
+    gs = WorldState(tmp_path)
+    gs.load()
+    gs.add_character("赵无极", {"location": "书房", "goals": ["查清旧骨来源"]})
+    gs.add_character("沈玄微", {"location": "药圃"})
+
+    added = reg.ensure_from_world_state(gs, chapter=3)
+    assert added == 1
+    got = CharacterRegistry(tmp_path).get("赵无极")
+    assert got is not None and got.location == "书房"
+    assert got.goals == ["查清旧骨来源"]
+    assert got.auto_sim is False
+    # 幂等：第二次不再重复建卡
+    assert reg.ensure_from_world_state(gs, chapter=3) == 0
+
+
+def test_context_text_includes_item_position(tmp_path):
+    """世界状态更新 prompt 依赖 build_context_text 知道物品在哪/谁持有。"""
+    gs = WorldState(tmp_path)
+    gs.load()
+    gs.add_item("骨牌", {"type": "法宝", "effect": "吞噬灵力"})
+    gs.set_item_position("骨牌", holder="林乐天")
+    text = gs.build_context_text()
+    assert "骨牌" in text and "林乐天" in text
+
+
 def test_world_state_prompt_requests_goals():
     from src.novel_writer.core.workflow.prompts import build_world_state_prompt
     text = build_world_state_prompt(3, "", "正文")

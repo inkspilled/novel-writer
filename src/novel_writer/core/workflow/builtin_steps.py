@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 from .. import project_io
 from ..agents.base import AgentConfig, BaseAgent
 from ..canon.events import CanonEvent, CanonLog
-from ..canon.extract import extract_percepts
+from ..canon.extract import apply_death_events, apply_percept_payload, extract_percepts
 from ..canon.seal import ChapterSealedError, seal_chapter
 from ..characters.offscreen import run_offscreen_tick
 from ..characters.panel import run_character_panel
@@ -26,12 +26,22 @@ from ..characters.view import (
     validate_knowledge_used,
 )
 from ..json_extract import extract_json_object
+from ..memory import MemoryScratchpad
 from ..text_clean import clean_model_text
 from ..logger import get_logger
 from ..quality_checker import QualityChecker
 from ..world_state import WorldState
 from .constants import SKILL_PROOFREAD, SKILL_REVIEW, SKILL_TYPO_CHECK
 from .context import estimate_tokens, extract_chapter_section
+from .digest import (
+    DIGEST_KEYS,
+    THREADS_KEY,
+    digest_section,
+    digest_summary,
+    load_digest,
+    needs_digest,
+    run_chapter_digest,
+)
 from .prompts import (
     CHAPTER_OUTLINE_BATCH,
     OUTLINE_REVISE_WINDOW,
@@ -237,6 +247,158 @@ async def _run_fix_titles(runner: "WorkflowRunner", step: "WorkflowStep", n: int
             runner.on_error(step.id, str(e))
 
 
+@handler("chapter_digest")
+async def _run_chapter_digest(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
+    """章后抽取：一次调用产出概要/世界状态/感知事件/记忆四段。
+
+    只是「提前把四份数据取回来」，落盘与校验仍由原来的四个步骤负责。
+    没有智能体、调用失败、返回不合法时直接返回，四个步骤会各自回退。
+    """
+    chapter_file = project_io.find_chapter_file(runner.project_dir, n)
+    if not chapter_file:
+        return
+    chapter_path = runner.project_dir / "chapters" / chapter_file
+    if not chapter_path.exists() or chapter_path.stat().st_size == 0:
+        return
+    content = project_io.read_md(chapter_path)
+    if not needs_digest(runner.project_dir, n, content=content):
+        logger.debug("[DIGEST] 第%d章章后抽取已齐备，跳过", n)
+        return
+
+    agent = runner.find_agent(step.needs) if step.needs else None
+    agent = agent or _fallback_agent(runner, (SKILL_REVIEW,))
+    if not agent:
+        logger.debug("[DIGEST] 第%d章章后抽取跳过：没有可用智能体", n)
+        return
+    if runner.on_step_start:
+        runner.on_step_start(step.id, n, agent.title)
+
+    gs = WorldState(runner.project_dir)
+    gs.load()
+    registry = _ensure_character_registry(runner, n, gs=gs)
+    roster = [rec.name for rec in registry.all()] if registry else []
+    mem = MemoryScratchpad(runner.project_dir)
+    active_loops = mem.get_open_loops(limit=15, current_chapter=n)
+    try:
+        from ..story_threads import load_story_threads
+        threads_context = load_story_threads(runner.project_dir).build_update_context(chapter=n)
+    except Exception as e:
+        logger.debug("章后抽取读取台账失败（忽略）: %s", e)
+        threads_context = ""
+
+    data = await run_chapter_digest(
+        runner.project_dir, n, agent,
+        content=content,
+        world_text=gs.build_context_text(),
+        roster=roster,
+        active_loops=active_loops,
+        threads_context=threads_context,
+    )
+    keys = [key for key in (*DIGEST_KEYS, THREADS_KEY) if key in data]
+    if not keys:
+        logger.warning("[DIGEST] 第%d章章后抽取未产出可用数据，四个步骤将各自调用", n)
+        return
+    msg = f"第{n}章章后抽取完成: {' / '.join(keys)}"
+    logger.info("[DIGEST] %s", msg)
+    if runner.on_step_end:
+        runner.on_step_end(step.id, n, agent.title, msg)
+
+
+def _ensure_character_registry(
+    runner: "WorkflowRunner", n: int, gs: WorldState | None = None,
+) -> CharacterRegistry:
+    """保证感知/抽取有角色名单：优先人物设定建卡，其次从世界状态补 extra 卡。"""
+    registry = CharacterRegistry(runner.project_dir)
+    if registry.all():
+        return registry
+    char_doc = project_io.read_md(runner.project_dir / "planning" / "人物设定.md")
+    if char_doc.strip():
+        try:
+            registry.seed_from_profiles(parse_characters(char_doc), chapter=n)
+        except Exception as e:
+            logger.debug("人物设定建卡失败（忽略）: %s", e)
+    if not registry.all():
+        try:
+            if gs is None:
+                gs = WorldState(runner.project_dir)
+                gs.load()
+            registry.ensure_from_world_state(gs, chapter=n)
+        except Exception as e:
+            logger.debug("世界状态补卡失败（忽略）: %s", e)
+    return registry
+
+
+def _apply_world_update(
+    runner: "WorkflowRunner", step: "WorkflowStep", n: int,
+    gs: WorldState, update: dict, agent_title: str,
+) -> bool:
+    """把世界状态增量写正典 + 快照 + 角色档案；返回是否有实际变化。
+
+    LLM 路径和 digest 路径共用这一段，避免两处落盘逻辑漂移。
+    """
+    timeline = update.get("timeline") or []
+    if isinstance(timeline, list):
+        for ev in timeline:
+            if isinstance(ev, dict):
+                ev["chapter"] = n
+    compact = gs.compact_update(update, chapter=n)
+    if not compact:
+        logger.info("第%d章世界状态无实际变化，跳过正典写入", n)
+        if runner.on_step_end:
+            runner.on_step_end(step.id, n, agent_title, "世界状态无变化")
+        return False
+    update = compact
+    # 先入正典（可重放），再更新快照
+    try:
+        CanonLog(runner.project_dir).append(CanonEvent(
+            chapter=n, type="world_state_update", actor="system",
+            visibility="world", payload={"update": update, "source": "world_state_update"},
+        ))
+    except Exception as e:
+        logger.warning("世界状态事件入正典失败（快照仍更新）: %s", e)
+    logs = gs.apply_llm_update(update, chapter=n)
+    gs.save()
+    # 世界状态 → 角色档案（位置/目标/状态），让「世界→人物」页实时反映正文；
+    # 新角色补 extra 卡，否则 POV/感知抽取名单里没有他。
+    try:
+        registry = CharacterRegistry(runner.project_dir)
+        registry.ensure_from_world_state(gs, chapter=n)
+        registry.sync_from_world_state(gs)
+    except Exception as e:
+        logger.warning("角色档案同步失败（不影响世界状态）: %s", e)
+    msg = f"大世界状态已更新: {', '.join(logs)}"
+    logger.info(msg)
+    if runner.on_step_end:
+        runner.on_step_end(step.id, n, agent_title, msg)
+    return True
+
+
+def _apply_percepts(
+    runner: "WorkflowRunner", step: "WorkflowStep", n: int,
+    payload: dict, registry: CharacterRegistry, agent_title: str,
+) -> int:
+    """把感知 JSON 校验后写正典 + 更新角色触摸/死亡状态；返回写入条数。"""
+    events = apply_percept_payload(runner.project_dir, n, payload, registry=registry)
+    if events:
+        touched = False
+        for event in events:
+            for name in {event.actor, *event.known_by}:
+                if name and registry.get(name):
+                    registry.touch(name, n)
+                    touched = True
+        if touched:
+            registry.save()
+        # death 事件落状态机：冻结知识截止章、关闭自动 POV 推演
+        deaths = apply_death_events(events, registry, n)
+        if deaths:
+            logger.info("第%d章角色死亡状态已冻结: %s", n, "、".join(deaths))
+    msg = f"第{n}章感知事件 {len(events)} 条"
+    logger.info(msg)
+    if runner.on_step_end:
+        runner.on_step_end(step.id, n, agent_title, msg)
+    return len(events)
+
+
 @handler("world_state_update")
 async def _run_world_state_update(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
     existing = project_io.find_chapter_file(runner.project_dir, n)
@@ -252,47 +414,23 @@ async def _run_world_state_update(runner: "WorkflowRunner", step: "WorkflowStep"
         runner.on_step_start(step.id, n, agent.title)
     gs = WorldState(runner.project_dir)
     gs.load()
-    content = project_io.read_md(existing_path)
-    gs_summary = gs.build_context_text()
-    prompt = build_world_state_prompt(n, gs_summary, content)
     try:
-        resp = await agent.run(prompt, thinking="off", keep_history=False)
-        text = resp.content.strip()
-        update = extract_json_object(text)
-        if update:
-            # 注入章节号到 timeline
-            for ev in update.get("timeline", []):
-                ev["chapter"] = n
-            compact = gs.compact_update(update, chapter=n)
-            if not compact:
-                logger.info("第%d章世界状态无实际变化，跳过正典写入", n)
+        # 优先消费章后抽取结果；缺失时回退到本步骤自己的 LLM 调用。
+        digest = load_digest(runner.project_dir, n)
+        if "world" in digest:
+            update = digest.get("world")
+            if not isinstance(update, dict) or not update:
+                logger.info("第%d章世界状态无变化（章后抽取）", n)
                 if runner.on_step_end:
-                    runner.on_step_end(step.id, n, agent.title, "世界状态无变化")
+                    runner.on_step_end(step.id, n, agent.title, "世界状态无变化（章后抽取）")
                 return
-            update = compact
-            # 先入正典（可重放），再更新快照
-            try:
-                CanonLog(runner.project_dir).append(CanonEvent(
-                    chapter=n, type="world_state_update", actor="system",
-                    visibility="world", payload={"update": update, "source": "world_state_update"},
-                ))
-            except Exception as e:
-                logger.warning("世界状态事件入正典失败（快照仍更新）: %s", e)
-            logs = gs.apply_llm_update(update, chapter=n)
-            gs.save()
-            # 世界状态 → 角色档案（位置/目标/状态），让「世界→人物」页实时反映正文
-            try:
-                from ..characters.registry import CharacterRegistry
-                CharacterRegistry(runner.project_dir).sync_from_world_state(gs)
-            except Exception as e:
-                logger.warning("角色档案同步失败（不影响世界状态）: %s", e)
-            # 世界状态（含 timeline 实际发生事件）→ 故事线台账
-            if hasattr(runner, "_sync_story_ledger"):
-                runner._sync_story_ledger(n)
-            msg = f"大世界状态已更新: {', '.join(logs)}"
-            logger.info(msg)
-            if runner.on_step_end:
-                runner.on_step_end(step.id, n, agent.title, msg)
+        else:
+            content = project_io.read_md(existing_path)
+            prompt = build_world_state_prompt(n, gs.build_context_text(), content)
+            resp = await agent.run(prompt, thinking="off", keep_history=False)
+            update = extract_json_object(resp.content.strip())
+        if update:
+            _apply_world_update(runner, step, n, gs, update, agent.title)
         else:
             logger.warning("大世界状态更新：LLM 返回格式异常")
     except Exception as e:
@@ -316,8 +454,22 @@ async def _run_chapter_summary(runner: "WorkflowRunner", step: "WorkflowStep", n
         return
     ch_title = m.group(2)
     summary_path = project_io.chapter_summary_path(runner.project_dir, n, ch_title)
-    if summary_path.exists() and summary_path.stat().st_size > 0:
+    digest_text = digest_summary(runner.project_dir, n)
+    if summary_path.exists() and summary_path.stat().st_size > 0 and not digest_text:
         logger.debug("第%d章概要已存在，跳过", n)
+        return
+    # 优先用章后抽取的概要（零额外调用）；没有才自己调 LLM。
+    digest_text = digest_summary(runner.project_dir, n)
+    if digest_text:
+        if runner.on_step_start:
+            runner.on_step_start(step.id, n, "系统")
+        try:
+            project_io.write_md(summary_path, digest_text)
+            logger.info("第%d章概要已由章后抽取生成", n)
+            if runner.on_step_end:
+                runner.on_step_end(step.id, n, "系统", f"第{n}章概要已生成（章后抽取）")
+        except Exception as e:
+            logger.error("第%d章概要写入失败: %s", n, e)
         return
     agent = _fallback_agent(runner, (SKILL_REVIEW, SKILL_PROOFREAD))
     if not agent:
@@ -487,14 +639,21 @@ async def _run_review(runner: "WorkflowRunner", step: "WorkflowStep", n: int):
     if runner.on_step_start:
         runner.on_step_start(step.id, n, agent.title)
 
-    # 规划参考：各规划文档取开头摘要
+    # 规划参考：只读 5 份常驻规划 + 台账；四份归档稿不再参与审校
     planning_dir = runner.project_dir / "planning"
     planning_parts: list[str] = []
-    if planning_dir.exists():
-        for p in sorted(planning_dir.glob("*.md")):
-            text = project_io.read_md(p)
-            if text:
-                planning_parts.append(f"【{p.stem}】{text[:400]}")
+    for name in ("立意.md", "大纲.md", "章节细纲.md", "人物设定.md", "世界观.md"):
+        p = planning_dir / name
+        text = project_io.read_md(p) if p.exists() else ""
+        if text:
+            planning_parts.append(f"【{p.stem}】{text[:400]}")
+    try:
+        from ..story_threads import load_story_threads
+        ledger_block = load_story_threads(runner.project_dir).build_context_block()
+        if ledger_block:
+            planning_parts.append(ledger_block)
+    except Exception as e:
+        logger.debug("审校读取故事线台账失败（忽略）: %s", e)
     planning_summary = "\n".join(planning_parts)[:4000]
 
     items = [(c["number"], project_io.read_md(c["content_path"])[:_REVIEW_CHAPTER_CAP])
@@ -639,17 +798,20 @@ async def _run_percept_extract(runner: "WorkflowRunner", step: "WorkflowStep", n
         logger.debug("第%d章已有感知事件，跳过", n)
         return
 
-    registry = CharacterRegistry(runner.project_dir)
-    if not registry.all():
-        # 老项目没有角色注册表：先按人物设定建 extra 卡（不会自动 POV 推演）
-        char_doc = project_io.read_md(runner.project_dir / "planning" / "人物设定.md")
-        if char_doc.strip():
-            try:
-                registry.seed_from_profiles(parse_characters(char_doc), chapter=n)
-            except Exception as e:
-                logger.debug("人物设定建卡失败（忽略）: %s", e)
+    registry = _ensure_character_registry(runner, n)
     if not registry.all():
         logger.debug("感知抽取跳过：角色注册表为空")
+        return
+
+    # 优先消费章后抽取的感知段（零额外调用）；缺失时回退到独立抽取。
+    digest_payload = digest_section(runner.project_dir, n, "percept")
+    if isinstance(digest_payload, dict) and isinstance(digest_payload.get("events"), list):
+        if runner.on_step_start:
+            runner.on_step_start(step.id, n, "系统")
+        try:
+            _apply_percepts(runner, step, n, digest_payload, registry, "系统")
+        except Exception as e:
+            logger.error("第%d章感知写入失败（不影响正文）: %s", n, e)
         return
 
     agent = runner.find_agent(step.needs) if step.needs else None
@@ -672,6 +834,10 @@ async def _run_percept_extract(runner: "WorkflowRunner", step: "WorkflowStep", n
                         touched = True
             if touched:
                 registry.save()
+            # death 事件落状态机：冻结知识截止章、关闭自动 POV 推演
+            deaths = apply_death_events(events, registry, n)
+            if deaths:
+                logger.info("第%d章角色死亡状态已冻结: %s", n, "、".join(deaths))
         msg = f"第{n}章感知事件 {len(events)} 条"
         logger.info(msg)
         if runner.on_step_end:
@@ -854,12 +1020,23 @@ def _resolve_total_chapters(runner: "WorkflowRunner") -> int:
 
 
 def _planning_brief(runner: "WorkflowRunner", cap: int = 3500) -> str:
-    """取规划文档摘要，供细纲生成对齐主线/伏笔。"""
+    """取规划摘要，供细纲生成对齐主线/伏笔。
+
+    主线/支线/伏笔/时间线只从**故事线台账**取（唯一可编辑来源）；
+    planning/ 下那四份是生成时的归档，不再回读，避免与台账冲突。
+    """
     parts = []
-    for name in ("立意.md", "大纲.md", "主线.md", "支线.md", "伏笔.md"):
+    for name in ("立意.md", "大纲.md"):
         text = project_io.read_md(runner.project_dir / "planning" / name)
         if text:
             parts.append(f"【{name[:-3]}】\n{text[:800]}")
+    try:
+        from ..story_threads import load_story_threads
+        block = load_story_threads(runner.project_dir).build_context_block(chapter=0)
+        if block:
+            parts.append(block)
+    except Exception as e:
+        logger.debug("故事线台账读取失败（细纲不影响）: %s", e)
     return "\n\n".join(parts)[:cap]
 
 
@@ -991,6 +1168,12 @@ async def _run_chapter_outline(runner: "WorkflowRunner", step: "WorkflowStep", n
     if runner.on_step_start:
         runner.on_step_start(step.id, n, agent.title)
 
+    # 细纲要对齐主线/伏笔：先 seed 台账（首次从归档规划稿导入，之后 no-op）
+    try:
+        from ..story_threads import sync_story_threads
+        sync_story_threads(runner.project_dir)
+    except Exception as e:
+        logger.debug("细纲前台账 seed 失败（不影响生成）: %s", e)
     brief = _planning_brief(runner)
     chunks: list[str] = []
     start = 1

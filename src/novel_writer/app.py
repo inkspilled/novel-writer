@@ -61,10 +61,6 @@ from novel_writer.ui.main_window import MainWindow
 
 logger = get_logger(__name__)
 
-PKG_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = PKG_DIR.parent.parent
-
-
 def main():
     logger.info("Novel Writer 启动中...")
 
@@ -85,8 +81,10 @@ def main():
     from novel_writer.ui.common.filters import install_no_wheel_combo_filter
     install_no_wheel_combo_filter(app)
 
-    # 应用图标（dock + 窗口标题栏 + Windows 任务栏）
-    icon_path = PROJECT_ROOT / "logo.png"
+    # 应用图标（dock + 窗口标题栏 + Windows 任务栏）：
+    # 统一走 app_config.LOGO_PATH（开发 = 项目根，打包 = _internal/）
+    from novel_writer.core.app_config import LOGO_PATH
+    icon_path = LOGO_PATH
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
         logger.debug("应用图标已加载: %s", icon_path)

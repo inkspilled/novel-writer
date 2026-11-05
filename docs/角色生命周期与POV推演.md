@@ -115,13 +115,15 @@ alive → dead → resurrected / ghost / missing
 ```
 
 - `mark_dead(chapter)`：`status=dead`、`knowledge_cutoff=chapter`、`auto_sim=false`；
+  `percept_extract` 遇到 `type=death` 事件时自动对 `actor` 调用；
 - 死亡角色 `can_act=False`，不会进入 `simulatable()`；
 - `resurrect(chapter)`：恢复行动，但 `knowledge_cutoff` 保留——死后发生的事他不知道，除非之后有告知事件；
 - 需要让复活角色知道死后的事时，显式追加 `knowledge` 事件并调整 cutoff（后续实现）。
 
 ### 3.3 新角色入场
 
-1. `ensure(name, chapter)`：先建 `extra` 临时卡，不生成完整人设；
+1. `ensure(name, chapter)`：先建 `extra` 临时卡，不生成完整人设；`world_state_update` 后
+   `CharacterRegistry.ensure_from_world_state()` 会为世界状态里新出现、档案缺失的角色自动补卡；
 2. 满足条件（≥2 场 / 与核心对话 / 有目标 / 用户标记，由作者或 UI 判断）后显式 `promote`；代码不做自动门槛；
 3. 补 backstory 事件（`type="backstory"`，`known_by=本人`）；
 4. 视图按 `first_seen` 过滤：入场前的目击事件不会因为 `known_by` 误填而泄漏；
@@ -203,8 +205,8 @@ print(view.text)
 ## 5.1 离场 tick
 
 - 每 5 章 1 次批量调用，最多 8 个离场角色；
-- 只写 `sim_cache/offscreen/tick_{n}.json`，不产生正文；
-- 下一章上下文注入「离场角色近况（作者参考）」；
+- 写 `sim_cache/offscreen/tick_{n}.json`，不产生正文；`goal_update` 同时写回角色档案（`goals`），后续 POV/会审持续可见；
+- 上下文注入**最近一次章号 ≤ n-1 的 tick**（不是只认 `tick_{n-1}`），所以 5 章间隔内每章都能看到上次离场进展；
 - `enable_offscreen_tick=false` 可关。
 
 ## 6. 角色多了怎么办
@@ -249,7 +251,8 @@ print(view.text)
 - 离场 tick、角色 panel、裁判/导演评分、UI 花名册均已实现：`offscreen_tick`（每 5 章）、
   `character_panel`（每章，≤4 人 + 导演）、`CharacterPage`（世界→人物，可视化分档/状态/auto_sim）；
 - `pov_sim` 仍是可选内置步骤：自定义工作流可显式挂载，默认模板不挂；
-- `mark_dead_many()` 已实现，但“批量死亡正典事件”的自动写入（如灭门事件）还要等感知抽取层；
+- `mark_dead_many()` 已实现；`percept_extract` 已把单条 `type=death` 事件的 `actor` 自动落
+  `mark_dead`，但“灭门/屠城”这类批量死亡正典事件的显式自动化仍是后续；
 - `CharacterView` 的 `scene_brief` 需要调用方保证是公开信息；
 - 角色自己的 `private_profile.background` 可能包含别人的秘密（人物设定写法导致），建卡时需要人工/LLM 拆分。
 

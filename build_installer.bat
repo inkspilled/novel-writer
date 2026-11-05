@@ -66,7 +66,8 @@ if not defined ISCC (
 echo [+] Cleaning old builds...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
-if exist output rmdir /s /q output
+:: 只清旧安装包，不动 output\ 里的其他文件
+if exist "output\NovelWriter-Setup.exe" del /f /q "output\NovelWriter-Setup.exe"
 
 :: Generate logo.ico from logo.png
 echo [+] Generating logo.ico from logo.png...

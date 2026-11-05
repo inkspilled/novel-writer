@@ -13,7 +13,8 @@ import pytest
 from src.novel_writer.core.memory import MemoryItem, MemoryScratchpad
 from src.novel_writer.core.story_threads import (
     LOOP_OVERDUE_CHAPTERS, StoryLedger, ThreadKind, ThreadStatus,
-    cn_to_int, detect_status, extract_chapters, infer_owner, parse_planning_doc,
+    apply_thread_updates, cn_to_int, detect_status, extract_chapters,
+    infer_owner, load_story_threads, parse_chapter_span, parse_planning_doc,
     parse_volume_ranges, sync_story_threads, volume_ordinal,
 )
 from src.novel_writer.core.world_state import WorldState
@@ -50,7 +51,16 @@ class TestChapterParsing:
         assert extract_chapters("第十二章") == [12]
         assert extract_chapters("第120-125章") == [120, 125]
         assert extract_chapters("第120至125章") == [120, 125]
+        assert extract_chapters("第30/68/84章") == [30, 68, 84]
+        assert extract_chapters("第30、68、84章") == [30, 68, 84]
         assert extract_chapters("没有章号") == []
+
+    def test_parse_chapter_span(self):
+        assert parse_chapter_span("8-96") == (8, 96)
+        assert parse_chapter_span("第1-100章") == (1, 100)
+        assert parse_chapter_span("39-100+") == (39, 100)
+        assert parse_chapter_span("第120至125章") == (120, 125)
+        assert parse_chapter_span("赵无极/玄真") == (0, 0)
 
     def test_detect_status(self):
         assert detect_status("第5章已回收") == ThreadStatus.DONE
@@ -98,6 +108,25 @@ class TestParsePlanningDoc:
         assert items[0]["chapters"] == {"plant": 2, "resolve": 20}
         assert items[0]["status"] == ThreadStatus.ACTIVE.value
         assert items[1]["status"] == ThreadStatus.DONE.value
+
+    def test_table_chapter_span_and_no_duplicate_detail(self):
+        """支线总览表的「8-96」是起止章，不能只取到「第84章」。"""
+        doc = """# 支线
+
+| 编号 | 支线名称 | 核心角色 | 起止章节 | 与主线交汇点 | 100章内状态 |
+|---|---|---|---|---|---|
+| F | 规则下的暗棋 | 赵无极/玄真 | 8-96 | 第30/68/84章 | 主线内完结 |
+"""
+        items = parse_planning_doc(doc, "subplot")
+        item = items[0]
+        assert item["title"] == "规则下的暗棋"
+        assert item["owner"] == "赵无极/玄真"
+        assert item["chapters"] == {"plant": 8, "resolve": 96}
+        assert item["status"] == ThreadStatus.DONE.value
+        # 已映射到结构化字段的列不再重复进详情，未映射的交汇点保留
+        assert "8-96" not in item["detail"]
+        assert "赵无极/玄真" not in item["detail"]
+        assert "第30/68/84章" in item["detail"]
 
     def test_prose_paragraph_is_not_split_into_items(self):
         doc = "# 伏笔\n\n这是一段说明文字，不应该被当成伏笔条目。\n\n- 老人临别赠言\n"
@@ -176,6 +205,20 @@ class TestPlanningImport:
         assert got.status == "done"
         assert got.notes == "作者手工完成"
 
+    def test_planning_docs_are_seed_only(self, tmp_path):
+        """四份规划稿只做首轮种子；之后台账是唯一来源，默认不回灌。"""
+        project = make_project(tmp_path)
+        write_planning(project, "主线.md", "# 主线\n- 拜入宗门（第1章）\n")
+        sync_story_threads(project)
+
+        write_planning(project, "主线.md",
+                       "# 主线\n- 拜入宗门（第1章）\n- 新计划（第5章）\n")
+        again = sync_story_threads(project)
+        assert len(again.all("main")) == 1
+
+        forced = sync_story_threads(project, force_planning=True)
+        assert len(forced.all("main")) == 2
+
     def test_removed_from_planning_is_soft_deleted(self, tmp_path):
         project = make_project(tmp_path)
         write_planning(project, "支线.md", "# 支线\n- 感情线（第1章）\n- 复仇线（第2章）\n")
@@ -183,7 +226,8 @@ class TestPlanningImport:
         assert len(ledger.all("subplot")) == 2
 
         write_planning(project, "支线.md", "# 支线\n- 感情线（第1章）\n")
-        again = sync_story_threads(project)
+        # 软删除只在显式「重导入规划」时发生
+        again = sync_story_threads(project, force_planning=True)
         assert len(again.all("subplot")) == 1
         # 软删除仍可恢复
         assert len(again.all("subplot", include_inactive=True)) == 2
@@ -289,6 +333,23 @@ class TestContextBackfeed:
         builder = ContextBuilder(project, {"title": "测试书", "target_chapters": 100}, 48_000)
         text = builder.build([], 2, "chapter")
         assert "故事线台账" in text
+
+    def test_chapter_context_uses_ledger_not_archived_docs(self, tmp_path):
+        """正文只吃 5 份常驻规划 + 台账；四份归档稿即使存在也不注入。"""
+        from src.novel_writer.core.workflow.context import ContextBuilder
+
+        project = make_project(tmp_path)
+        write_planning(project, "大纲.md", "# 大纲\n第一卷 入门\n")
+        write_planning(project, "主线.md", "# 主线\n- 拜入宗门（第1章，进行中）\n")
+        write_planning(project, "伏笔.md", "# 伏笔\n- 骨牌来历（第1章埋设）\n")
+        sync_story_threads(project)
+
+        builder = ContextBuilder(project, {"title": "测试书", "target_chapters": 100}, 48_000)
+        text = builder.build(["planning/大纲.md", "prev_chapters"], 2, "chapter")
+        assert "故事线台账" in text
+        assert "拜入宗门" in text          # 来自台账
+        assert "【主线】" not in text     # 归档稿没有注入
+        assert "【伏笔】" not in text
 
     def test_context_builder_skips_ledger_for_global_steps(self, tmp_path):
         from src.novel_writer.core.workflow.context import ContextBuilder
@@ -397,3 +458,73 @@ class TestVolumeAndOwner:
         assert thread.owner == "顾言、赵九衡"
         assert ledger.volume_for_chapter(3).startswith("卷一")
         assert "〔顾言、赵九衡〕" in ledger.build_context_block(3)
+class TestThreadAutoUpdate:
+    """章后抽取的 threads 段自动推进主线/支线（无需人工改台账）。"""
+
+    def test_advances_main_and_closes_subplot(self, tmp_path):
+        project = make_project(tmp_path, chapters=5)
+        # 主线计划在第 10 章，当前才第 5 章 → 仍是 planned，便于验证被推进
+        write_planning(project, "主线.md", "# 主线\n- 拜入宗门（第10章）\n")
+        write_planning(project, "支线.md", "# 支线\n- 感情线（第3章）\n")
+        sync_story_threads(project)
+
+        changed = apply_thread_updates(project, {
+            "main": [{"title": "拜入宗门", "status": "active"}],
+            "subplot": [{"title": "感情线", "status": "done"}],
+        }, 5)
+        assert changed == 2
+
+        ledger = load_story_threads(project)
+        main = ledger.find_by_title("拜入宗门", "main")
+        sub = ledger.find_by_title("感情线", "subplot")
+        assert main.status == ThreadStatus.ACTIVE.value
+        assert main.planted_chapter == 10  # 已有计划章，不被覆盖
+        assert sub.status == ThreadStatus.DONE.value
+        assert sub.resolve_chapter == 5
+
+    def test_new_subplot_and_unknown_main(self, tmp_path):
+        project = make_project(tmp_path, chapters=7)
+        write_planning(project, "主线.md", "# 主线\n- 拜入宗门（第1章）\n")
+        sync_story_threads(project)
+
+        changed = apply_thread_updates(project, {
+            "main": [{"title": "模型编造的主线", "status": "done"}],
+            "subplot": [{"title": "新支线：夺宝", "status": "active", "new": True}],
+        }, 7)
+        assert changed == 1
+        ledger = load_story_threads(project)
+        assert ledger.find_by_title("模型编造的主线", "main") is None
+        created = ledger.find_by_title("新支线：夺宝", "subplot")
+        assert created is not None and created.planted_chapter == 7
+
+    def test_manual_status_wins(self, tmp_path):
+        project = make_project(tmp_path, chapters=3)
+        write_planning(project, "主线.md", "# 主线\n- 拜入宗门（第1章）\n")
+        ledger = sync_story_threads(project)
+        main = ledger.all("main")[0]
+        ledger.update(main.id, {"status": "done"})
+        ledger.save()
+
+        apply_thread_updates(project, {
+            "main": [{"title": "拜入宗门", "status": "active"}],
+        }, 6)
+        assert load_story_threads(project).get(main.id).status == "done"
+
+    def test_done_not_downgraded_to_active(self, tmp_path):
+        """自动推进不会把已完成的主线打回推进中（要重开由作者手工改）。"""
+        project = make_project(tmp_path, chapters=3)
+        write_planning(project, "主线.md", "# 主线\n- 拜入宗门（第10章）\n")
+        ledger = sync_story_threads(project)
+        main = ledger.all("main")[0]
+        main.status = ThreadStatus.DONE.value
+        ledger.save()
+
+        apply_thread_updates(project, {
+            "main": [{"title": "拜入宗门", "status": "active"}],
+        }, 6)
+        assert load_story_threads(project).get(main.id).status == ThreadStatus.DONE.value
+
+    def test_empty_payload_is_noop(self, tmp_path):
+        project = make_project(tmp_path)
+        assert apply_thread_updates(project, {}, 1) == 0
+        assert apply_thread_updates(project, {"main": []}, 1) == 0

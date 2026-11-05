@@ -81,11 +81,11 @@ class FakeLLM(BaseLLM):
         self.responses = list(responses)
         self.calls: list[dict] = []
 
-    async def chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None):
-        self.calls.append({"messages": list(messages), "tools": tools})
+    async def chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None, model=None):
+        self.calls.append({"messages": list(messages), "tools": tools, "model": model})
         return self.responses.pop(0)
 
-    async def stream_chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None):
+    async def stream_chat(self, messages, temperature=0.7, max_tokens=4096, thinking="auto", tools=None, model=None):
         if False:  # pragma: no cover
             yield "", ""
 

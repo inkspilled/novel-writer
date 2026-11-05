@@ -71,6 +71,19 @@ async def run_offscreen_tick(
         })
     if not ticks:
         return None
+    # 目标变化写回角色档案：离场 tick 的价值不止「下一章提示」，
+    # 还要让角色在后续章节的 POV/会审里保持最新目标。
+    goals_changed = False
+    for tick in ticks:
+        goal = tick.get("goal_update") or ""
+        if not goal:
+            continue
+        rec = reg.get(tick["character"])
+        if rec and goal not in rec.goals:
+            rec.goals = [goal]
+            goals_changed = True
+    if goals_changed:
+        reg.save()
     out = {"chapter": chapter, "ticks": ticks}
     project_io.write_json(project_dir / "sim_cache" / "offscreen" / f"tick_{chapter}.json", out)
     logger.info("离场 tick 第%d章：%d 人", chapter, len(ticks))

@@ -1,10 +1,12 @@
-"""RAG 检索回归测试：BM25 检索 + rag_index.json 索引持久化 + 语义（embedding）检索。"""
+"""RAG 检索回归测试：场景分块 + BM25/语义检索 + 元数据过滤 + 重排序 + 索引持久化。"""
 import base64
 import json
 import struct
 from pathlib import Path
 
-from src.novel_writer.core.rag import RAGRetriever, configure_embedding
+from src.novel_writer.core.rag import RAGRetriever, configure_embedding, parse_query_filters
+from src.novel_writer.core.rag_chunking import chunk_chapter, detect_scene_type
+from src.novel_writer.core.rerank import configure_rerank
 
 
 def _write_chapter(project_dir: Path, n: int, title: str, body: str):
@@ -97,14 +99,223 @@ class TestIndexPersistence:
         assert "玄铁令" in text
 
 
-# ── 语义（embedding）检索 ──
+# ── 叙事单元分块 + 元数据 ──
+
+class TestSceneChunking:
+    def test_short_paragraphs_merge_into_one_scene(self):
+        text = "凌尘握紧剑柄，灵力缓缓涌入剑身。\n\n「你终于来了。」苏晴的声音很冷。\n\n远处传来一声钟响。"
+        drafts = chunk_chapter(text, chapter=1, known_names=["凌尘", "苏晴"])
+        assert len(drafts) == 1
+        assert drafts[0].scene == 0
+        assert drafts[0].timeline == "第1章·场景1"
+        assert "凌尘" in drafts[0].characters
+        assert "苏晴" in drafts[0].characters
+
+    def test_separator_and_time_jump_split_scenes(self):
+        text = ("第一场戏，两人在殿前对峙，谁也不肯先开口。\n\n***\n\n"
+                "次日清晨，山门前落满了雪，远处传来钟声。")
+        drafts = chunk_chapter(text, chapter=2)
+        assert len(drafts) == 2
+        assert [d.scene for d in drafts] == [0, 1]
+        assert drafts[0].timeline == "第2章·场景1"
+        assert drafts[1].timeline == "第2章·场景2"
+
+    def test_overlong_scene_splits_with_tail_overlap(self):
+        paragraphs = [
+            f"甲乙丙丁戊{i}。己庚辛壬癸{i}。子丑寅卯辰{i}。" for i in range(5)
+        ]
+        drafts = chunk_chapter(
+            "\n\n".join(paragraphs), chapter=1, max_tokens=100, overlap_ratio=0.15)
+        assert len(drafts) >= 2
+        # 上一窗口的最后一句应作为下一窗口的开头重叠，防止情节断在边界
+        tail_sentence = paragraphs[2].split("。")[-2] + "。"
+        assert tail_sentence in drafts[0].text
+        assert tail_sentence in drafts[1].text
+
+    def test_short_stage_direction_belongs_to_next_scene(self):
+        text = ("赵无极在书房里翻开一整摞档案，眉头越皱越紧。\n\n内门后山。\n\n"
+                "陆清玄站在石阶下，抬头看着那扇没有灯光的窗。")
+        drafts = chunk_chapter(text, chapter=5)
+        assert len(drafts) == 2
+        assert "内门后山" in drafts[1].text
+        assert "赵无极" not in drafts[1].text
+
+    def test_scene_type_detection(self):
+        assert detect_scene_type("他拔剑斩出，剑气轰然炸开，鲜血飞溅。") == "战斗"
+        assert detect_scene_type("“你来了。”他低声说。“嗯。”她答。") == "对话"
+        assert detect_scene_type("“你的剑呢？”他问。“丢了。”她答。") == "对话"
+        assert detect_scene_type("他想起当年在故乡的往事，记忆里的童年。") == "回忆"
+        assert detect_scene_type("他坐在窗边喝茶，看着院子里的花。") == "日常"
+
+    def test_metadata_survives_index_restore(self, tmp_path: Path):
+        _write_chapter(
+            tmp_path, 1, "甲",
+            "凌尘拔剑斩出，剑气轰然炸开，鲜血飞溅，敌人应声倒地。\n\n***\n\n"
+            "「你终于来了。」苏晴冷冷地说，凌尘沉默不语，殿内只剩下呼吸声。")
+        r1 = RAGRetriever(tmp_path)
+        r1.set_known_characters(["凌尘", "苏晴"])
+        r1.load_chapters(up_to_chapter=2)
+        before = [
+            (c.scene, c.scene_type, c.characters, c.timeline)
+            for c in r1.index.chunks
+        ]
+        r2 = RAGRetriever(tmp_path)
+        after = [
+            (c.scene, c.scene_type, c.characters, c.timeline)
+            for c in r2.index.chunks
+        ]
+        assert before == after
+        assert {item[1] for item in after} == {"战斗", "对话"}
+
+
+# ── 元数据过滤 + 重排序 ──
+
+class FakeRerankClient:
+    """假重排客户端：把含「包子」的文档排第一，可注入故障。"""
+
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.calls = 0
+
+    def rerank(self, query, documents, top_n=None):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("模拟 rerank 服务故障")
+        order = sorted(
+            range(len(documents)),
+            key=lambda i: (0 if "包子" in documents[i] else 1, i),
+        )
+        return [(i, float(len(documents) - rank)) for rank, i in enumerate(order)]
+
+
+def _multi_scene_project(tmp_path: Path):
+    _write_chapter(
+        tmp_path, 1, "甲",
+        "凌尘拔剑斩出，剑气轰然炸开，鲜血飞溅。敌人应声倒地。\n\n***\n\n"
+        "「你终于来了。」苏晴冷冷地说。「我等你很久了。」凌尘答道。")
+    _write_chapter(tmp_path, 2, "乙", "凌尘在集市上买了三个包子，慢慢走回客栈。")
+    _write_chapter(tmp_path, 3, "丙", "凌尘在藏经阁发现玄铁令，心中一惊，决定先回房歇息。")
+
+
+class TestMetadataRetrieval:
+    def setup_method(self):
+        configure_embedding(None)
+        configure_rerank(None)
+
+    def teardown_method(self):
+        configure_embedding(None)
+        configure_rerank(None)
+
+    def test_hard_scene_type_filter(self, tmp_path):
+        _multi_scene_project(tmp_path)
+        r = RAGRetriever(tmp_path)
+        r.load_chapters(up_to_chapter=10)
+        out = r.retrieve("凌尘", top_k=5, scene_type="战斗")
+        assert "鲜血" in out
+        assert "包子" not in out
+        assert "｜战斗｜" in out
+
+    def test_hard_chapter_filter(self, tmp_path):
+        _multi_scene_project(tmp_path)
+        r = RAGRetriever(tmp_path)
+        r.load_chapters(up_to_chapter=10)
+        out = r.retrieve("凌尘", top_k=5, chapter=2)
+        assert "包子" in out
+        assert "鲜血" not in out
+        assert "第2章" in out
+
+    def test_hard_filter_falls_back_when_no_match(self, tmp_path):
+        _multi_scene_project(tmp_path)
+        r = RAGRetriever(tmp_path)
+        r.load_chapters(up_to_chapter=10)
+        out = r.retrieve("凌尘", chapter=99)
+        assert "凌尘" in out  # 过滤后无结果 → 自动回退全量召回
+
+    def test_query_chapter_and_scene_are_soft_filters(self, tmp_path):
+        _multi_scene_project(tmp_path)
+        r = RAGRetriever(tmp_path)
+        r.load_chapters(up_to_chapter=10)
+        out = r.retrieve("凌尘 第2章", top_k=5)
+        assert out.index("第2章") < out.index("第1章")
+
+    def test_chapter_limit_excludes_future_chapters(self, tmp_path):
+        _multi_scene_project(tmp_path)
+        r = RAGRetriever(tmp_path)
+        r.load_chapters(up_to_chapter=10)          # 索引全部
+        assert "包子" in r.retrieve("包子")
+        r.load_chapters(up_to_chapter=2)           # 写作第2章时只应看到第1章
+        assert r.retrieve("包子") == ""
+        r.load_chapters(up_to_chapter=10 ** 9)     # 工具检索不受限
+        assert "包子" in r.retrieve("包子")
+
+    def test_parse_query_filters(self):
+        assert parse_query_filters("第三章里主角和反派的对话") == (3, "对话")
+        assert parse_query_filters("第12章 战斗场面") == (12, "战斗")
+        assert parse_query_filters("随便找找") == (None, None)
+
+
+class TestRerank:
+    def setup_method(self):
+        configure_embedding(None)
+        configure_rerank(None)
+
+    def teardown_method(self):
+        configure_embedding(None)
+        configure_rerank(None)
+
+    def test_rerank_reorders_candidates(self, tmp_path):
+        _multi_scene_project(tmp_path)
+        configure_rerank({"model": "fake-rerank"})
+        r = RAGRetriever(tmp_path)
+        fake = FakeRerankClient()
+        r._rerank_client = fake
+        r._rerank_cfg_used = ("fake-rerank", "", "")
+        r.load_chapters(up_to_chapter=10)
+
+        out = r.retrieve("凌尘", top_k=4)
+        assert fake.calls == 1
+        assert out.index("包子") < out.index("鲜血")
+        assert out.index("包子") < out.index("玄铁令")
+
+    def test_rerank_failure_falls_back_to_recall_order(self, tmp_path):
+        _multi_scene_project(tmp_path)
+        configure_rerank({"model": "fake-rerank"})
+        r = RAGRetriever(tmp_path)
+        r._rerank_client = FakeRerankClient(fail=True)
+        r._rerank_cfg_used = ("fake-rerank", "", "")
+        r.load_chapters(up_to_chapter=10)
+        out = r.retrieve("凌尘", top_k=3)
+        assert "凌尘" in out
+
+    def test_query_chapter_intent_survives_rerank(self, tmp_path):
+        _multi_scene_project(tmp_path)
+        configure_rerank({"model": "fake-rerank"})
+
+        class PreferOtherChapter:
+            def rerank(self, query, documents, top_n=None):
+                order = sorted(
+                    range(len(documents)),
+                    key=lambda i: (0 if "玄铁令" in documents[i] else 1, i),
+                )
+                return [(i, float(len(documents) - rank)) for rank, i in enumerate(order)]
+
+        r = RAGRetriever(tmp_path)
+        r._rerank_client = PreferOtherChapter()
+        r._rerank_cfg_used = ("fake-rerank", "", "")
+        r.load_chapters(up_to_chapter=10)
+        # reranker 偏向第3章，但查询里的「第2章」元数据意图应稳定排在前面
+        out = r.retrieve("凌尘 第2章", top_k=4)
+        assert out.index("包子") < out.index("玄铁令")
+
 
 class TestVectorSearch:
     def setup_method(self):
         configure_embedding(None)  # 隔离全局配置
+        configure_rerank(None)
 
     def teardown_method(self):
         configure_embedding(None)
+        configure_rerank(None)
 
     def test_semantic_search_ranks_by_vector(self, tmp_path):
         _write_chapter(tmp_path, 1, "甲", "# 甲\n他在坊市买了一块灵石，灵石温润有光。")
@@ -178,9 +389,9 @@ class TestVectorSearch:
         assert r2._vectors == {}  # 旧模型向量作废，将重新嵌入
 
     def test_stale_vectors_pruned_on_save(self, tmp_path):
-        # 两段正文 → ch1_p0 / ch1_p1 两个 chunk；润色后只剩一段 → ch1_p1 成陈旧向量
+        # 两场景 → ch1_p0 / ch1_p1 两个 chunk；润色后只剩一场 → ch1_p1 成陈旧向量
         _write_chapter(tmp_path, 1, "甲",
-                       "# 甲\n玄铁令在藏经阁的暗格里，无人知晓。\n\n它的下落成为贯穿全书最大的谜团之一，无人能解。")
+                       "# 甲\n玄铁令在藏经阁的暗格里，无人知晓。\n\n***\n\n它的下落成为贯穿全书最大的谜团之一，无人能解。")
         configure_embedding({"model": "fake-embed"})
         r = RAGRetriever(tmp_path)
         r._embed_client = FakeEmbedClient()

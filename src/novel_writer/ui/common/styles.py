@@ -240,6 +240,18 @@ QTabBar::tab:selected {{
     background-color: {t['accent_bg']};
 }}
 
+/* 顶层大页签：小说 / 短剧 */
+QTabWidget#modeTabs QTabBar::tab {{
+    padding: 10px 28px;
+    font-size: 14px;
+    font-weight: 700;
+    min-width: 88px;
+}}
+QTabWidget#modeTabs QTabBar::tab:selected {{
+    background-color: {t['accent_bg']};
+    border-bottom: 2px solid {t['accent']};
+}}
+
 /* ──── 状态栏 ──── */
 QStatusBar {{
     background-color: {t['surface']};

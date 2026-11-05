@@ -51,8 +51,12 @@ class BaseLLM(ABC):
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
         tools: list[ToolSchema] | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
-        """单次对话，返回完整响应。tools=None 表示纯文本调用。"""
+        """单次对话，返回完整响应。tools=None 表示纯文本调用。
+
+        ``model`` 非空时临时覆盖客户端默认模型（同 provider/base_url 下的另一个模型）。
+        """
         ...
 
     @abstractmethod
@@ -63,6 +67,7 @@ class BaseLLM(ABC):
         max_tokens: int = 4096,
         thinking: ThinkingMode = "auto",
         tools: list[ToolSchema] | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         """流式对话，逐块返回 (kind, text)。
 

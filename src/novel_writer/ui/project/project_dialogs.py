@@ -80,9 +80,10 @@ class OpenProjectDialog(QDialog):
 
 
 class WorkflowModeDialog(QDialog):
-    """工作流模式选择对话框，返回 (mode, start_ch, end_ch) 或 None。"""
+    """工作流模式选择对话框，返回 (mode, start_ch, end_ch, speed_profile)。"""
 
-    def __init__(self, project_dir: Path | None, default_end_chapter: int, parent=None):
+    def __init__(self, project_dir: Path | None, default_end_chapter: int, parent=None,
+                 default_speed: str = "standard"):
         super().__init__(parent)
         self.setWindowTitle(t("workflow_title"))
         self.setMinimumWidth(380)
@@ -102,6 +103,22 @@ class WorkflowModeDialog(QDialog):
         self._mode_combo.addItem("✅ 校验 — 审核+校对已有章节", WorkflowMode.VALIDATE)
         mode_layout.addWidget(self._mode_combo)
         layout.addWidget(mode_group)
+
+        # 运行速度：只影响辅助步骤频率，正文/润色/章后抽取不变
+        speed_group = QGroupBox("运行速度")
+        speed_layout = QVBoxLayout(speed_group)
+        self._speed_combo = QComboBox()
+        self._speed_combo.addItem("标准 — 每章校对 + 推演，质量优先", "standard")
+        self._speed_combo.addItem("快速 — 校对/推演降频，省时省 token", "fast")
+        idx = self._speed_combo.findData(default_speed)
+        self._speed_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        speed_layout.addWidget(self._speed_combo)
+        speed_hint = QLabel("只影响辅助步骤频率；正文、润色与章后抽取不变")
+        speed_hint.setWordWrap(True)
+        speed_hint.setStyleSheet("font-size: 11px; color: gray;")
+        speed_layout.addWidget(speed_hint)
+        self._speed_group = speed_group
+        layout.addWidget(speed_group)
 
         # 章节范围
         self._chapter_group = QGroupBox("章节范围")
@@ -146,6 +163,8 @@ class WorkflowModeDialog(QDialog):
 
     def _on_mode_changed(self, idx):
         mode = self._mode_combo.currentData()
+        # 只有逐章写作的模式才需要速度档位；规划/校验/补缺用不到
+        self._speed_group.setVisible(mode in (WorkflowMode.NEW_BOOK, WorkflowMode.CONTINUE))
         start_spin, end_spin = self._start_spin, self._end_spin
         if mode == WorkflowMode.CONTINUE:
             # 扫描已有章节数，自动设置起始章节（锁死不可改）
@@ -181,6 +200,11 @@ class WorkflowModeDialog(QDialog):
         for w in (self._start_label, self._start_spin, self._start_suffix):
             w.setVisible(visible)
 
-    def get_result(self) -> tuple[WorkflowMode, int, int]:
-        """返回 (mode, start_ch, end_ch)。"""
-        return (self._mode_combo.currentData(), self._start_spin.value(), self._end_spin.value())
+    def get_result(self) -> tuple[WorkflowMode, int, int, str]:
+        """返回 (mode, start_ch, end_ch, speed_profile)。"""
+        return (
+            self._mode_combo.currentData(),
+            self._start_spin.value(),
+            self._end_spin.value(),
+            self._speed_combo.currentData(),
+        )

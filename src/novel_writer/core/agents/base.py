@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -8,6 +9,25 @@ from ..llm.base import BaseLLM, LLMMessage, LLMResponse, ThinkingMode
 from ..logger import get_logger
 
 logger = get_logger(__name__)
+
+# 步骤级模型覆盖：runner 在进入一个步骤时 set，步骤内所有 agent.run（含内置步骤、
+# 工具循环）都自动改用快模型；gather 出来的并发步骤各自持有独立上下文。
+_MODEL_OVERRIDE: ContextVar[str | None] = ContextVar(
+    "novel_writer_model_override", default=None,
+)
+
+
+def set_model_override(model: str | None):
+    """设置当前步骤的模型覆盖；返回 token 供 reset。"""
+    return _MODEL_OVERRIDE.set((model or "").strip() or None)
+
+
+def reset_model_override(token) -> None:
+    _MODEL_OVERRIDE.reset(token)
+
+
+def current_model_override() -> str | None:
+    return _MODEL_OVERRIDE.get()
 
 # 历史消息 token 预算：超限从最旧轮次开始丢弃（防御长对话场景，
 # 与 workflow/context.estimate_tokens 同一启发式口径；本地实现避免循环导入）
@@ -34,7 +54,6 @@ class AgentConfig:
     title: str  # 中文标题
     system_prompt: str
     skills: list[str] = field(default_factory=list)  # 技能标签
-    model: str = ""  # 空则用默认模型
     temperature: float = 0.7
     max_tokens: int = 4096
     thinking: ThinkingMode = "auto"  # 工具类 Agent 可默认 off
@@ -105,6 +124,7 @@ class BaseAgent(ABC):
         thinking: ThinkingMode | None = None,
         keep_history: bool = True,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> LLMResponse:
         """执行一次对话，返回完整响应。
 
@@ -112,17 +132,22 @@ class BaseAgent(ABC):
         （概要/世界状态/沉淀/校对）共享同一 Agent 时，历史跨步骤累积
         会在一章内重复计费 2～3 份上下文。
         max_tokens 可临时压低输出配额（如 200 字润色不必给 4096）。
+        model 可临时覆盖模型（步骤级快模型）；未显式传时读 contextvar。
         """
         import time as _time
         messages = self._build_messages(user_input, context)
         mode: ThinkingMode = thinking if thinking is not None else self.config.thinking
         limit = self.config.max_tokens if max_tokens is None else max_tokens
+        effective_model = model or current_model_override()
         t0 = _time.monotonic()
         logger.info(
-            "Agent.run 开始: agent=%s thinking=%s max_tokens=%s keep_history=%s input_len=%d history_msgs=%d",
-            self.name, mode, limit, keep_history, len(user_input), len(self.history),
+            "Agent.run 开始: agent=%s thinking=%s max_tokens=%s keep_history=%s model=%s input_len=%d history_msgs=%d",
+            self.name, mode, limit, keep_history, effective_model or "(default)",
+            len(user_input), len(self.history),
         )
-        response = await self.llm.chat(messages, self.config.temperature, limit, thinking=mode)
+        response = await self.llm.chat(
+            messages, self.config.temperature, limit, thinking=mode, model=effective_model,
+        )
         # 长文档步骤（大纲/人物/世界观）给到 8192 仍可能被截断：
         # finish_reason=length 时自动续写，避免把半句话写进规划文档。
         if (limit >= 8192 and response.finish_reason == "length"
@@ -135,6 +160,7 @@ class BaseAgent(ABC):
                 ]
                 more = await self.llm.chat(
                     messages, self.config.temperature, limit, thinking=mode,
+                    model=effective_model,
                 )
                 extra = more.content or ""
                 if not extra:
@@ -166,23 +192,26 @@ class BaseAgent(ABC):
         keep_history: bool = False,
         max_rounds: int = 3,
         on_event=None,
+        model: str | None = None,
     ) -> LLMResponse:
         """带只读工具的运行：模型可按需拉取规划/前文/记忆/技能。
 
         toolkit 是 ToolRegistry；max_rounds=0 时等价于一次普通 run（但会带
         工具说明，不发工具 schema）。
         """
+        effective_model = model or current_model_override()
         # 该模型曾把工具调用写成 XML：后续步骤直接降级纯文本，避免反复污染正文
         if getattr(self.llm, "tools_markup_unsupported", False):
             return await self.run(
                 user_input, context=context, thinking=thinking,
-                keep_history=keep_history,
+                keep_history=keep_history, model=effective_model,
             )
         from .loop import AgentLoop
         loop = AgentLoop(
             self, toolkit,
             max_rounds=max_rounds,
             on_event=on_event,
+            model=effective_model,
         )
         return await loop.run(
             user_input, context=context, thinking=thinking, keep_history=keep_history
@@ -195,14 +224,16 @@ class BaseAgent(ABC):
         thinking: ThinkingMode | None = None,
         keep_history: bool = True,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
         """流式执行，逐块返回 (kind, text)。kind: thinking | text。"""
         messages = self._build_messages(user_input, context)
         mode: ThinkingMode = thinking if thinking is not None else self.config.thinking
         answer_parts: list[str] = []
         limit = self.config.max_tokens if max_tokens is None else max_tokens
+        effective_model = model or current_model_override()
         async for kind, chunk in self.llm.stream_chat(
-            messages, self.config.temperature, limit, thinking=mode
+            messages, self.config.temperature, limit, thinking=mode, model=effective_model,
         ):
             if kind == "text":
                 answer_parts.append(chunk)

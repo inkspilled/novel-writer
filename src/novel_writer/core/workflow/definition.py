@@ -39,12 +39,16 @@ class WorkflowStep:
     output: str = ""  # 输出文件名，支持 {n} 占位
     repeat: int = 0  # 循环次数（0 = 不循环）
     every: int = 0  # 每隔 N 步执行一次
+    offset: int = 0  # 周期相位：满足 (n - offset) % every == 0 时触发（用于对齐起始章）
     optional: bool = False  # 找不到匹配 Agent 时跳过
     update_planning: bool = False  # 强制覆盖 planning/ 文件（用于反哺步骤）
     parallel_ok: bool = False  # 可与相邻 parallel_ok 步骤并发执行
     depends_on: list[str] = field(default_factory=list)  # DAG 依赖（声明后启用拓扑执行）
     # off=关闭思考（工具类步骤省 token/提速）；on=强制开启；auto=模型默认
     thinking: str = "auto"
+    # 本步骤模型覆盖："fast"=读 config.fast_model（未配置则用默认模型），
+    # 空=用 Agent 自己的模型。只给抽取/校对/报告类辅助步骤标。
+    model: str = ""
     retry: int = 0  # 失败重试次数（不含首次）
     retry_delay: float = 2.0  # 重试基础退避秒数（指数）
     timeout: float = 0.0  # 单步超时秒数，0=不限
@@ -77,11 +81,13 @@ class WorkflowDef:
                 output=s.get("output", ""),
                 repeat=s.get("repeat", 0),
                 every=s.get("every", 0),
+                offset=s.get("offset", 0),
                 optional=s.get("optional", False),
                 update_planning=s.get("update_planning", False),
                 parallel_ok=s.get("parallel_ok", False),
                 depends_on=s.get("depends_on", []) or [],
                 thinking=s.get("thinking", "auto"),
+                model=s.get("model", ""),
                 retry=s.get("retry", 0),
                 retry_delay=s.get("retry_delay", 2.0),
                 timeout=s.get("timeout", 0.0),
@@ -113,11 +119,13 @@ class WorkflowDef:
                     "output": s.output,
                     "repeat": s.repeat,
                     "every": s.every,
+                    "offset": s.offset,
                     "optional": s.optional,
                     "update_planning": s.update_planning,
                     "parallel_ok": s.parallel_ok,
                     "depends_on": s.depends_on,
                     "thinking": s.thinking,
+                    "model": s.model,
                     "retry": s.retry,
                     "retry_delay": s.retry_delay,
                     "timeout": s.timeout,
@@ -157,26 +165,29 @@ _FIX_TITLES_STEP = {"id": "fix_titles", "needs": "", "prompt": "", "output": "",
 # 逐章循环步骤（章前定时 + 正文写作 + 章后定时沉淀 + 全书审校）
 # thinking: 工具/抽取类步骤 off（省 token、免长考）；创作/审稿类 auto/on
 _CYCLE_STEPS = [
-    {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True, "thinking": "off", "tools": ["search_chapters", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 1, "phase": "灵感"},
-    {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定和大纲，推演第{n}章中各角色在当前冲突下的自然反应。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/人物设定.md", "prev_chapters"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True, "thinking": "on", "tools": ["read_chapter", "get_world_state", "get_memory", "get_open_loops"], "tool_rounds": 1, "phase": "推演"},
+    {"id": "inspiration", "needs": "灵感激发", "prompt": "基于当前剧情进展，提供3个意想不到的转折方向，为下一章提供创作灵感。", "input": ["prev_chapters"], "output": "inspiration/{n}_灵感.md", "every": 3, "optional": True, "thinking": "off", "tools": ["search_chapters", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 1, "model": "fast", "phase": "灵感"},
+    {"id": "sim", "needs": "角色推演", "prompt": "根据人物设定、本章细纲和当前世界状态，推演第{n}章中各角色在当前冲突下的自然反应。前文细节可用 read_chapter 工具按需核对。输出JSON格式的推演结果。", "input": ["planning/大纲.md", "planning/章节细纲.md", "planning/人物设定.md"], "output": "sim_cache/sim_{n}.md", "every": 1, "optional": True, "thinking": "on", "tools": ["read_chapter", "get_world_state", "get_memory", "get_open_loops"], "tool_rounds": 1, "model": "fast", "phase": "推演"},
     {"id": "character_panel", "needs": "剧情审查", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "角色会审"},
-    {"id": "chapter", "needs": "正文写作", "prompt": "严格按【本章细纲】写第{n}章正文；细纲只是骨架，可丰富场景与对话，但不得改写事件走向。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【本章大纲】【灵感】和【角色推演】来推进剧情。保持与前文连贯。语言严格按【语言质感】的硬约束执行：长篇以「读得顺」为先，不以「写得美」为先，不要为了文采堆形容词、成语和比喻。现代梗严格按【梗密度】执行，不超量、不硬塞。", "input": ["planning/章节细纲.md", "planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "planning/时间线.md", "planning/主线.md", "planning/支线.md", "planning/伏笔.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt", "max_tokens": 8192, "thinking": "off", "skills": ["chapter-craft"], "tools": ["read_planning", "read_chapter", "search_chapters", "get_world_state", "get_memory", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 2, "retry": 1, "phase": "写作"},
-    {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
-    {"id": "world_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
-    {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off"},
+    {"id": "chapter", "needs": "正文写作", "prompt": "严格按【本章细纲】写第{n}章正文；细纲只是骨架，可丰富场景与对话，但不得改写事件走向。严格遵守【写作约束·角色锚定】中的规则：主角不得更换，角色名不得擅改，新人物不得无铺垫登场。参考【本章大纲】【灵感】和【角色推演】来推进剧情。保持与前文连贯。语言严格按【语言质感】的硬约束执行：长篇以「读得顺」为先，不以「写得美」为先，不要为了文采堆形容词、成语和比喻。现代梗严格按【梗密度】执行，不超量、不硬塞。", "input": ["planning/章节细纲.md", "planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "prev_chapters"], "output": "chapters/{n}_chapter.txt", "max_tokens": 8192, "thinking": "off", "skills": ["chapter-craft"], "tools": ["read_planning", "read_chapter", "search_chapters", "get_world_state", "get_memory", "get_open_loops", "list_skills", "use_skill"], "tool_rounds": 2, "retry": 1, "phase": "写作"},
     {"id": "polish", "needs": "润色", "prompt": "语言按【语言质感 · {narrative_voice}】执行。大白话/平实档做「减法润色」：删掉多余的形容词、成语、比喻和「淡淡的/微微/缓缓」这类凑字副词，把书面腔改成平时说话的说法，把长句拆短；文学档只删冗余和套话，保留有信息量的修辞与节奏。只改语言，不改剧情、人物、信息和对白的意思；不新增修辞、不重写；原文里符合【梗密度】的梗要保留，不新增也不删改。改完应比原文更顺、更好读，篇幅不得少于原文的 70%。", "input": ["chapters/{n}_chapter.txt"], "output": "chapters/{n}_chapter.txt", "every": 2, "optional": True, "max_tokens": 8192, "thinking": "off", "skills": ["continuity"], "tools": ["read_chapter", "read_planning", "search_chapters", "get_world_state"], "tool_rounds": 1, "retry": 1, "phase": "润色"},
-    {"id": "percept_extract", "needs": "剧情审查", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "感知抽取"},
+    # 章后抽取：一次调用产出「概要/世界状态/感知事件/记忆沉淀」四段，
+    # 原来四个步骤各调一次 LLM 且各自重读全章，这里合并后每章省 3 次调用。
+    # 它和 proofread/toc 只读正文、写不同文件，可并发；chapter_summary 依赖它。
+    {"id": "chapter_digest", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "parallel_ok": True, "model": "fast", "phase": "章后抽取"},
+    {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。列出发现的问题和修改建议。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告_第{n}章.md", "every": 1, "optional": True, "thinking": "off", "parallel_ok": True, "model": "fast"},
+    {"id": "toc", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "parallel_ok": True},
+    {"id": "chapter_summary", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "parallel_ok": True, "depends_on": ["chapter_digest"], "model": "fast"},
+    {"id": "quality_check", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "parallel_ok": True},
+    # 这两个都会读写 characters.json（补卡/同步/触摸），必须串行，不能标 parallel_ok。
+    {"id": "world_state_update", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "model": "fast"},
+    {"id": "percept_extract", "needs": "剧情审查", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "model": "fast", "phase": "感知抽取"},
     {"id": "seal_chapter", "needs": "", "prompt": "", "output": "", "every": 1, "optional": True, "thinking": "off", "phase": "封印"},
-    {"id": "offscreen_tick", "needs": "剧情审查", "prompt": "", "output": "", "every": 5, "optional": True, "thinking": "off", "phase": "离场tick"},
-    {"id": "proofread", "needs": "错别字检查", "prompt": "校对第{n}章的错别字、语法、标点。列出发现的问题和修改建议。", "input": ["chapters/{n}_chapter.txt"], "output": "review/校对报告_第{n}章.md", "every": 1, "optional": True, "thinking": "off"},
-    {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True, "thinking": "off"},
-    {"id": "update_outline", "needs": "故事结构", "prompt": "根据前{n}章的实际内容，更新故事大纲。保留原有结构，补充实际发生的剧情走向、新增的支线、调整后的节奏。输出完整的新大纲。", "input": ["planning/大纲.md", "prev_chapters"], "output": "planning/大纲.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
-    {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
-    {"id": "update_foreshadow", "needs": "伏笔设计", "prompt": "根据前{n}章的实际内容，更新伏笔清单。标注哪些伏笔已回收、哪些仍悬而未决、新增了哪些伏笔。保留原有清单，在末尾追加【进展更新】。", "input": ["planning/伏笔.md", "prev_chapters"], "output": "planning/伏笔.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
+    {"id": "offscreen_tick", "needs": "剧情审查", "prompt": "", "output": "", "every": 5, "optional": True, "thinking": "off", "model": "fast", "phase": "离场tick"},
+    {"id": "summary", "needs": "剧情摘要", "prompt": "将前{n}章的剧情浓缩为一份结构化摘要。格式要求：\n## 剧情摘要\n（150字内，只写关键转折）\n## 角色状态\n- 角色名: 当前状态/位置/实力\n## 伏笔\n- [埋设] 伏笔描述（第X章）\n- [回收] 伏笔描述（第X章）\n## 未解悬念\n- 悬念描述\n## 承接点\n（30字内，下一章应从哪里接）", "input": ["prev_chapters", "planning/人物设定.md"], "output": "summary/第1-{n}章摘要.md", "every": 5, "optional": True, "thinking": "off", "model": "fast"},
+    {"id": "update_characters", "needs": "人物设定", "prompt": "根据前{n}章的实际内容，更新人物设定。补充角色的实际成长变化、新增的关系、性格变化。保留原有设定，在末尾追加【进展更新】章节。", "input": ["planning/人物设定.md", "prev_chapters"], "output": "planning/人物设定.md", "every": 10, "optional": True, "update_planning": True, "thinking": "off"},
     {"id": "update_chapter_outline", "needs": "故事结构", "prompt": "", "output": "planning/章节细纲.md", "every": 5, "optional": True, "update_planning": True, "thinking": "off"},
     {"id": "review_panel", "needs": "剧情审查", "prompt": "", "output": "review/会审报告.md", "every": 10, "optional": True, "thinking": "off", "phase": "会审"},
-    {"id": "quality_check", "needs": "", "prompt": "", "output": "review/质量检查报告.md", "every": 1, "optional": True, "thinking": "off"},
-    {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/*", "chapters/*.txt"], "output": "review/审核报告.md", "thinking": "off"},
+    {"id": "review", "needs": "剧情审查", "prompt": "审查全部章节的剧情逻辑、人物一致性、节奏，给出修改建议。", "input": ["planning/立意.md", "planning/大纲.md", "planning/人物设定.md", "planning/世界观.md", "chapters/*.txt"], "output": "review/审核报告.md", "thinking": "off"},
 ]
 
 
@@ -220,6 +231,43 @@ PLANNING_WORKFLOW = {
     "description": "只生成规划文档，不写正文",
     "steps": _PLANNING_STEPS,
 }
+
+
+# ── 速度档位 ──
+# 只调「辅助步骤」的频率，不动正文 / 润色 / 章后抽取（digest）——
+# 这三步直接决定正文质量与跨章一致性。快速档适合长跑试水或赶进度。
+SPEED_PROFILES: dict[str, dict[str, dict]] = {
+    "standard": {},
+    "fast": {
+        # 校对报告目前没有 UI 出口，每 5 章一份足够
+        "proofread": {"every": 5},
+        # 推演隔章跑；同时关思考，单次也更快（章前少一次长思考）
+        "sim": {"every": 2, "thinking": "off"},
+        "inspiration": {"every": 6},
+        "summary": {"every": 10},
+        "offscreen_tick": {"every": 10},
+        "update_chapter_outline": {"every": 10},
+        "update_characters": {"every": 20},
+        "review_panel": {"every": 20},
+    },
+}
+
+SPEED_PROFILE_LABELS = {"standard": "标准", "fast": "快速"}
+
+
+def _apply_speed_profile(steps: list[dict], profile: str) -> None:
+    """就地覆盖辅助步骤的 every/thinking。
+
+    只改**本来就有 every** 的周期步骤：VALIDATE 里的 proofread 是一次性步骤
+    （every 缺省 0），不能被快速档改成「每 5 章」。
+    """
+    overrides = SPEED_PROFILES.get(profile) or {}
+    if not overrides:
+        return
+    for step in steps:
+        patch = overrides.get(step.get("id"))
+        if patch and step.get("every"):
+            step.update(patch)
 
 
 def _parse_expected_chapters(project_dir: str) -> int | None:
@@ -266,6 +314,7 @@ def build_workflow(
     project_info: dict,
     start_chapter: int = 1,
     end_chapter: int = 100,
+    speed_profile: str = "standard",
 ) -> WorkflowDef:
     """根据模式构建工作流定义。
 
@@ -274,6 +323,7 @@ def build_workflow(
         project_info: 项目信息
         start_chapter: 起始章节号（续写模式用）
         end_chapter: 结束章节号
+        speed_profile: ``standard``（默认）或 ``fast``；只调辅助步骤频率
     """
     if mode == WorkflowMode.NEW_BOOK:
         data = json.loads(json.dumps(DEFAULT_WORKFLOW))
@@ -311,8 +361,23 @@ def build_workflow(
     else:
         data = json.loads(json.dumps(DEFAULT_WORKFLOW))
 
+    if speed_profile not in SPEED_PROFILES:
+        logger.warning("未知速度档位 %s，回落 standard", speed_profile)
+        speed_profile = "standard"
+    # 只覆盖辅助步骤频率；规划/校验模式的步骤没有 every，不会被误改成周期步骤。
+    _apply_speed_profile(data.get("steps", []), speed_profile)
+    # 快速档的 sim 隔章跑：把「第一张有推演」的章对齐到本次起始章，
+    # 避免新书第 1 章 / 续写第一章恰好没有推演。
+    if speed_profile == "fast":
+        for step in data.get("steps", []):
+            if step.get("id") == "sim" and int(step.get("every", 0)) > 1:
+                step["offset"] = start_chapter % int(step["every"])
+
     # 设置项目信息
+    from ..narrative_voice import normalize_voice
+    from ..meme_style import normalize_meme_level
     data["project"] = {
+        **project_info,
         "title": project_info.get("title", ""),
         "genre": project_info.get("genre", ""),
         "style": project_info.get("style", ""),
@@ -342,7 +407,10 @@ def build_workflow(
     # 续写模式：跳过已完成的章节
     if mode == WorkflowMode.CONTINUE:
         wf.project["_start_chapter"] = start_chapter
-    logger.info("构建工作流: mode=%s, steps=%d, chapters=%d-%d", mode.value, len(wf.steps), start_chapter, end_chapter)
+    logger.info(
+        "构建工作流: mode=%s, steps=%d, chapters=%d-%d, profile=%s",
+        mode.value, len(wf.steps), start_chapter, end_chapter, speed_profile,
+    )
     return wf
 
 
@@ -379,7 +447,10 @@ def refresh_builtin_workflow(
         return None
 
     try:
-        fresh = build_workflow(mode, merged, start_chapter, end)
+        fresh = build_workflow(
+            mode, merged, start_chapter, end,
+            speed_profile=merged.get("speed_profile", "standard"),
+        )
     except Exception as e:  # 存档结构异常时不影响续跑
         logger.warning("刷新内置工作流失败，沿用存档定义: %s", e)
         return None

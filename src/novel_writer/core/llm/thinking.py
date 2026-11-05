@@ -1,7 +1,9 @@
 """思考（reasoning/thinking）开关方言映射。
 
 不同厂商的 OpenAI 兼容接口，思考开关字段并不统一：
-- 通义千问 / DashScope / vLLM / SGLang : extra_body.enable_thinking
+- 通义千问 / DashScope                 : extra_body.enable_thinking
+- llama.cpp / vLLM / LM Studio（本地）  : extra_body.chat_template_kwargs.enable_thinking
+  （顶层 enable_thinking 会被本地服务静默忽略，模型照常思考、吃光额度）
 - 智谱 GLM                             : extra_body.thinking = {type: disabled|enabled}
 - DeepSeek                             : extra_body.reasoning_effort = none|low|...
 - Moonshot / Kimi                      : extra_body.enable_thinking（新版）或 thinking
@@ -25,6 +27,7 @@ logger = get_logger(__name__)
 
 ThinkingDialect = Literal[
     "qwen",       # enable_thinking
+    "llamacpp",   # chat_template_kwargs.enable_thinking
     "glm",        # thinking: {type}
     "deepseek",   # reasoning_effort
     "openai",     # reasoning_effort
@@ -38,6 +41,12 @@ _DIALECT_PAYLOADS: dict[str, tuple[dict, dict]] = {
     "qwen": (
         {"enable_thinking": False},
         {"enable_thinking": True},
+    ),
+    # 本地 OpenAI 兼容服务（llama.cpp / vLLM / LM Studio）：开关只认 chat_template_kwargs，
+    # 顶层 enable_thinking 会被忽略（实测同一请求 0 正文 64s vs 20 字 0.4s）。
+    "llamacpp": (
+        {"chat_template_kwargs": {"enable_thinking": False}},
+        {"chat_template_kwargs": {"enable_thinking": True}},
     ),
     "glm": (
         {"thinking": {"type": "disabled"}},
@@ -73,6 +82,12 @@ def detect_dialect(model: str = "", base_url: str = "") -> ThinkingDialect:
     # 本地 Ollama 优先：模型名可能带 qwen/glm 等，但接口走原生 think 字段
     if "localhost:11434" in url or "127.0.0.1:11434" in url or "ollama" in url:
         return "none"
+    # 本地 OpenAI 兼容服务（llama.cpp / vLLM / LM Studio）也必须先于模型名判断：
+    # 模型文件名里通常带 qwen，会被下面的 qwen 分支截走，发出无效的顶层字段。
+    # 这类服务只把 chat_template_kwargs 透传给模板，顶层 enable_thinking 被静默忽略。
+    if any(x in url for x in ("localhost", "127.0.0.1", "0.0.0.0",
+                              "8000", "8080", "1234", "vllm", "lmstudio")):
+        return "llamacpp"
     if "milai.com" in url or "mimo" in name or name.startswith("mimo-"):
         return "mimo"
     if "bigmodel.cn" in url or "zhipu" in url or name.startswith("glm"):
@@ -85,9 +100,6 @@ def detect_dialect(model: str = "", base_url: str = "") -> ThinkingDialect:
         return "qwen"
     if "openai.com" in url or name.startswith("o1") or name.startswith("o3") or name.startswith("gpt-5"):
         return "openai"
-    # vLLM / LM Studio / llama.cpp 等本地推理：模板方言最接近 Qwen
-    if any(x in url for x in ("8000", "8080", "1234", "vllm", "lmstudio")):
-        return "qwen"
     return "none"
 
 

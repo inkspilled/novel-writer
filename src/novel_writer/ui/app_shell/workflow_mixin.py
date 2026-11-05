@@ -63,6 +63,12 @@ class WorkflowMixin:
 
     def _workflow_start(self):
         """开始执行工作流 — 先弹出模式选择对话框。"""
+        if getattr(self, "mode_tabs", None) and self.mode_tabs.currentIndex() == 1:
+            QMessageBox.information(
+                self, "短剧工作流",
+                "当前在「短剧」大页签。\n短剧工作流在右侧面板，小说工作流请切回「小说」页签。"
+            )
+            return
         if not self.project.title:
             QMessageBox.information(self, t("dialog_prompt"), t("workflow_no_project"))
             return
@@ -74,14 +80,19 @@ class WorkflowMixin:
         if self._try_resume_workflow():
             return
 
-        dialog = WorkflowModeDialog(self.project.project_dir, self.project.target_chapters or 100, self)
+        dialog = WorkflowModeDialog(
+            self.project.project_dir, self.project.target_chapters or 100, self,
+            default_speed=self.project.speed_profile,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        mode, start_ch, end_ch = dialog.get_result()
+        mode, start_ch, end_ch, speed = dialog.get_result()
 
-        # 保存目标章节数到项目配置
+        # 保存目标章节数与速度档位到项目配置（下次打开默认沿用）
         if end_ch > 0:
             self.project.target_chapters = end_ch
+        self.project.speed_profile = speed
+        if self.project.project_dir:
             self.project.save()
 
         # 新书模式：检查是否已有章节内容
@@ -106,9 +117,14 @@ class WorkflowMixin:
             "target_chapters": end_ch,
             "seal_chapters": self.config.get("seal_chapters", False),
             "enable_offscreen_tick": self.config.get("enable_offscreen_tick", True),
+            "fast_model": self.config.get("fast_model", ""),
             "_project_dir": str(self.project.project_dir),
+            "narrative_voice": self.project.narrative_voice,
+            "meme_level": self.project.meme_level,
         }
-        self._wf_def = build_workflow(mode, project_info, start_ch, end_ch)
+        self._wf_def = build_workflow(
+            mode, project_info, start_ch, end_ch, speed_profile=speed,
+        )
         self._wf_progress = {}
 
         # 保存工作流定义
@@ -183,22 +199,10 @@ class WorkflowMixin:
                 return True
         return False
 
-    def _embedding_config(self) -> dict | None:
-        """解析 embedding 配置：model 为空 = 不启用语义检索；base_url/key 留空回落当前供应商。"""
-        cfg = dict(self.config.get("embedding") or {})
-        if not cfg.get("model"):
-            return None
-        provider = self.config.get("current_provider") or {}
-        if not cfg.get("base_url"):
-            cfg["base_url"] = provider.get("base_url", "")
-        if not cfg.get("api_key"):
-            cfg["api_key"] = provider.get("api_key", "")
-        return cfg
-
     def _launch_workflow(self, wf_def, progress: dict):
         """创建工作流执行器与后台线程并启动。"""
-        from ...core.rag import configure_embedding
-        configure_embedding(self._embedding_config())
+        self._configure_retrieval()
+        wf_def.project.update(narrative_voice=self.project.narrative_voice, meme_level=self.project.meme_level)
         max_context_tokens = self.config.get("max_context_tokens", 48_000)
         self._wf_runner = WorkflowRunner(
             agents=self.agents,
@@ -219,6 +223,7 @@ class WorkflowMixin:
         self._wf_thread.step_error.connect(self._on_wf_step_error)
         self._wf_thread.progress_updated.connect(self._on_wf_progress)
         self._wf_thread.log_message.connect(self._on_wf_log)
+        self._wf_thread.story_track.connect(self._on_wf_story_track)
         self._wf_thread.chapter_chunk.connect(self._on_wf_chapter_chunk)
         self._wf_thread.workflow_done.connect(self._on_wf_done)
         self._wf_thread.workflow_stopped.connect(self._on_wf_stopped)
@@ -259,10 +264,11 @@ class WorkflowMixin:
         # 规划步骤 / 规划反哺（含章节细纲）完成后刷新编辑器
         if step_id in PLANNING_STEP_IDS or step_id.startswith("update_"):
             self.editor.refresh_planning()
-        # 故事线台账：世界状态更新 / 章节写完后由 runner 落盘，这里即时刷新「世界→故事线」
-        if step_id == "world_state_update" or step_id == "chapter":
+        # 故事线台账：sediment 完成后统一同步并 emit story_track，由 _on_wf_story_track 刷新；
+        # chapter 步骤结束时刷新一次，先显示上一章已对账的结果。
+        if step_id == "chapter":
             self.editor.world_page.reload_storyline()
-        if step_id == "world_state_update":
+        if step_id in ("world_state_update", "percept_extract", "offscreen_tick", "characters", "update_characters"):
             # 世界状态里的位置/目标已同步进角色档案，人物页立即反映
             self.editor.world_page.character_page.reload()
         if step_id in {
@@ -272,6 +278,14 @@ class WorkflowMixin:
         }:
             # 写作台只读页：工作流产出后刷新当前页，不打断写作
             self.editor.assist_page.reload()
+        if step_id == "world_state_update":
+            self.editor.world_page.item_page.reload()
+            self.editor.world_page.location_page.reload()
+
+    def _on_wf_story_track(self, payload: dict):
+        """故事线台账对账完成 → 刷新「世界→故事线」（唯一刷新点）。"""
+        self.editor.world_page.reload_storyline()
+        self.editor.world_page.character_page.reload()
 
     def _on_wf_step_error(self, step_id: str, error: str):
         if step_id == "chapter":

@@ -52,8 +52,11 @@ class LLMResponse:
     finish_reason: str = ""                # stop / length / tool_calls
 
 class BaseLLM:
-    async def chat(messages, tools=None, thinking="auto", **kwargs) -> LLMResponse
+    async def chat(messages, tools=None, thinking="auto", model=None, **kwargs) -> LLMResponse
 ```
+
+`model=` 是**单次调用**的模型覆盖（同 provider/base_url 下的另一个模型）：步骤级快模型、
+AgentLoop 的每轮工具调用都走它；不传则用客户端构造时的主模型。思考方言按实际模型推断。
 
 Agent 层只依赖 `BaseLLM`，不感知后端差异。
 
@@ -67,6 +70,7 @@ Agent 层只依赖 `BaseLLM`，不感知后端差异。
 - 网关/模型拒绝 `tools` 时自动去掉该字段重试一次（`_is_invalid_request`），降级为纯文本；
 - 流式 `stream_chat` 不承载工具调用（自由对话纯文本），工具循环只走非流式 `chat`。
 - MiMo 的 `enable_thinking=false` 不保证关思考，`thinking=off` 同时发 `reasoning_effort=none`；实测同样 100 字开头从 53s 降到 12s。
+- 本地 llama.cpp / vLLM / LM Studio 走 `llamacpp` 方言：开关必须放进 `chat_template_kwargs.enable_thinking`。顶层的 `enable_thinking` 会被本地服务**静默忽略**，模型照常思考并把输出额度吃光（实测同一请求：思考 64s、正文 0 字 vs 0.4s 出完整正文）。方言判定里本地 base_url 优先于模型名——本地模型文件名通常带 `qwen`，否则会被 qwen 云端分支截走。
 
 其余三个驱动（Claude/Ollama/OpenAICompat）接受 `tools` 参数但当前未实现，工作流只装配 `LLMClient`。
 
@@ -91,7 +95,7 @@ Agent 层只依赖 `BaseLLM`，不感知后端差异。
 
 ## 与 Agent 层的关系
 
-`config/agents.json` 每个 Agent 可配独立模型；`BaseAgent.run(prompt)` 内部走所配 LLM 驱动。工作流技能匹配在 Agent 层完成。
+`config/agents.json` 的所有 Agent **共用主模型**（每 Agent 独立模型已移除：跨 Agent 换模型会让同一本书的措辞、判断标准与上下文理解不一致）。工作流可以给单个步骤标 `model`（`"fast"` 读 `config.fast_model`，或直接写模型名），runner 用 contextvar 让该步骤内所有调用改用覆盖模型。`BaseAgent.run(prompt)` 内部走所配 LLM 驱动。工作流技能匹配在 Agent 层完成。
 
 ## 边界
 

@@ -56,6 +56,35 @@ def sediment_chapter(project_dir, chapter: int, content: str, llm_data: dict | N
         source_chapter=chapter,
     ))
 
+    # 时间线：world_state_update 已把本章 2-3 条关键转折写入 world_state.timeline，
+    # 这里同步进 memory.timeline，保证 11 桶里的 timeline 不是空桶。
+    try:
+        from ..world_state import WorldState
+        gs = WorldState(project_dir)
+        gs.load()
+        for event in gs.timeline:
+            if not isinstance(event, dict):
+                continue
+            try:
+                event_chapter = int(event.get("chapter") or 0)
+            except (TypeError, ValueError):
+                continue
+            if event_chapter != chapter:
+                continue
+            event_text = str(event.get("event") or "").strip()
+            if not event_text:
+                continue
+            mem.upsert(MemoryItem(
+                category="timeline",
+                subject=event_text[:40],
+                aspect="事件",
+                value=event_text,
+                source_chapter=chapter,
+                payload={"location": event.get("location", "")},
+            ))
+    except Exception as e:
+        logger.debug("时间线记忆同步失败（忽略）: %s", e)
+
     # 四维追踪：资源/情感/信息边界/支线
     try:
         from ..chapter_tracker import track_all

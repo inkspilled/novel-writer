@@ -27,7 +27,7 @@ def test_main_window_layout_and_focus_mode(qapp):
 
     assert w.editor.tab_bar.count() == 4
     assert [w.editor.tab_bar.tabText(i) for i in range(4)] == ["正文", "规划", "世界", "写作台"]
-    assert w.editor.planning_list.count() == 9
+    assert w.editor.planning_list.count() == 5  # 时间线/主线/支线/伏笔已收进故事线台账
     assert w.splitter.count() == 3
 
     w._toggle_focus_mode(True)
@@ -210,11 +210,14 @@ def test_storyline_page_shows_progress_and_threads(qapp, tmp_path):
     assert page.tree.topLevelItemCount() == 2  # 主线 + 伏笔
     assert page.cards["main"].value.text() == "0 / 2"
     assert page.cards["foreshadow"].value.text() == "0 / 1"
+    # 未选中线程时详情区收起，把整行宽度让给树
+    assert not page.detail_scroll.isVisibleTo(page)
 
     main_group = page.tree.topLevelItem(0)
     thread_item = main_group.child(0).child(0)
     page.tree.setCurrentItem(thread_item)
     qapp.processEvents()
+    assert page.detail_scroll.isVisibleTo(page)
     assert page.edit_title.text() == "拜入宗门"
 
     jumps: list[int] = []
@@ -228,6 +231,43 @@ def test_storyline_page_shows_progress_and_threads(qapp, tmp_path):
     qapp.processEvents()
     assert page.cards["main"].value.text() == "1 / 2"
     assert "主线 1/2" in page.headline.text()
+    page.close()
+
+
+def test_storyline_tree_gives_room_to_titles(qapp, tmp_path):
+    """状态/章节列保持窄列，分组汇总跨列显示，标题列吃掉剩余宽度。"""
+    from src.novel_writer.core.story_threads import sync_story_threads
+    from src.novel_writer.ui.character.storyline_page import StorylinePage
+
+    (tmp_path / "planning").mkdir()
+    (tmp_path / "chapters").mkdir()
+    (tmp_path / "meta.json").write_text('{"target_chapters": 50}', encoding="utf-8")
+    (tmp_path / "chapters" / "1_第1章.txt").write_text("正文", encoding="utf-8")
+    (tmp_path / "planning" / "主线.md").write_text(
+        "# 主线\n## 第一卷\n- 拜入宗门（第1章）\n", encoding="utf-8")
+    (tmp_path / "planning" / "伏笔.md").write_text(
+        "# 伏笔\n- 剑灵（第1章埋设，第20章回收）\n", encoding="utf-8")
+    sync_story_threads(tmp_path)
+
+    page = StorylinePage()
+    page.set_project_dir(tmp_path)
+    page.resize(1000, 760)
+    page.show()
+    qapp.processEvents()
+
+    main_group = page.tree.topLevelItem(0)
+    page.tree.setCurrentItem(main_group.child(0).child(0))  # 展开详情，压缩树宽
+    qapp.processEvents()
+
+    assert main_group.isFirstColumnSpanned()
+    assert page.tree.columnCount() == 4  # 线程/状态/章节/人物；备注仍在右侧详情
+    assert page.tree.headerItem().text(2) == "章节"
+    assert page.tree.headerItem().text(3) == "人物/备注"
+    assert main_group.text(1) == ""  # 分组汇总不再占用状态列
+    assert "已完成" in main_group.text(0)
+    assert page.tree.columnWidth(1) <= 104
+    assert page.tree.columnWidth(2) <= 136
+    assert page.tree.columnWidth(0) >= 280
     page.close()
 
 

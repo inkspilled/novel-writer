@@ -90,6 +90,7 @@ novel-writer/
     │   │   ├── context.py          # → docs/分层上下文组装算法.md
     │   │   ├── prompts.py          # → docs/节奏控制与角色锚定算法.md
     │   │   ├── builtin_steps.py    # 特殊步骤处理器注册表
+    │   │   ├── digest.py           # 章后抽取：一次调用产出五段（→ docs/工作流引擎算法.md）
     │   │   ├── sediment.py         # → docs/写后沉淀算法.md
     │   │   ├── journal.py          # runs/*.jsonl 运行日志
     │   │   └── runner.py           # WorkflowRunner（重试/超时/DAG/工具）
@@ -101,6 +102,9 @@ novel-writer/
     │   ├── anti_patterns.py        # → docs/反模式追踪算法.md
     │   ├── memory.py               # → docs/长期记忆算法.md
     │   ├── rag.py                  # → docs/RAG检索算法.md
+    │   ├── rag_chunking.py         # 场景分块 + 块元数据（章节/场景类型/人物/时间线）
+    │   ├── rerank.py               # 重排序客户端（任意 /rerank 模型：Qwen3/BGE/Cohere/TEI 等）
+    │   ├── embeddings.py           # OpenAI 兼容 embedding 客户端（语义召回）
     │   ├── chapter_tracker.py      # → docs/章节四维追踪算法.md
     │   ├── character_sim.py        # → docs/角色推演算法.md
     │   └── text_signals.py         # 钩子/爽点/微兑现词表（唯一权威）
@@ -174,7 +178,7 @@ novel-writer/
 
 ### Agent 系统 (`core/agents/`)
 
-配置集中在 `config/agents.json`，每个 Agent 可配独立模型。`skills` 字段用于工作流技能匹配（`WorkflowStep.needs` → `find_agent`）。
+配置集中在 `config/agents.json`，**所有 Agent 共用主模型**（不再支持每 Agent 独立模型，避免同书措辞/判断标准不一致）；每个 Agent 仍可配 `temperature` / `max_tokens` / `thinking`。`skills` 字段用于工作流技能匹配（`WorkflowStep.needs` → `find_agent`）。
 
 ### 工作流引擎 (`core/workflow/`) → [docs/工作流引擎算法.md](docs/工作流引擎算法.md)
 
@@ -239,7 +243,7 @@ exporter.export_pdf()    # PDF（需 reportlab）
 ```
 MainWindow (splitter: 240 / 680 / 480)
 ├── Sidebar         # 项目管理、章节树、字数统计
-├── EditorPanel     # 正文 / 规划（9 份文档）/ 世界（人物/物品/地点/故事线）
+├── EditorPanel     # 正文 / 规划（5 份文档）/ 世界（人物/物品/地点/故事线）
 └── AgentPanel      # 办公室场景 + 工作流进度/日志 + 对话区
 ```
 

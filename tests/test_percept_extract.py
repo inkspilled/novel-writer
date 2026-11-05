@@ -5,7 +5,8 @@ import asyncio
 import json
 from pathlib import Path
 
-from src.novel_writer.core.canon.events import CanonLog
+from src.novel_writer.core.canon.events import CanonEvent, CanonLog
+from src.novel_writer.core.canon.extract import apply_death_events
 from src.novel_writer.core.characters.registry import CharacterRegistry, CharacterTier
 from src.novel_writer.core.characters.view import CharacterViewBuilder
 from src.novel_writer.core.llm.base import LLMResponse
@@ -47,6 +48,28 @@ def _project(tmp_path: Path):
         "# 第1章 开端\n\n林牧看见楚夜从药圃离开，掌心符文发烫。", encoding="utf-8"
     )
     return reg
+
+
+def test_death_event_freezes_character_status(tmp_path: Path):
+    """death 事件必须落状态机，否则死了的角色还能继续 POV 推演。"""
+    reg = CharacterRegistry(tmp_path)
+    rec = reg.create("楚夜", chapter=1, tier=CharacterTier.CORE, auto_sim=True)
+    assert rec.auto_sim is True
+
+    event = CanonEvent(
+        chapter=2, type="death", actor="楚夜", targets=["林牧"],
+        observable="楚夜被一剑穿心，当场气绝。", known_by=["楚夜", "林牧"],
+    )
+    affected = apply_death_events([event], reg, 2)
+    assert affected == ["楚夜"]
+
+    got = CharacterRegistry(tmp_path).get("楚夜")
+    assert got.status.value == "dead"
+    assert got.knowledge_cutoff == 2
+    assert got.death_chapter == 2
+    assert got.auto_sim is False
+    # 幂等：重复事件不再重复处理
+    assert apply_death_events([event], reg, 2) == []
 
 
 def test_percept_extract_writes_events_and_isolates_hidden(tmp_path: Path):

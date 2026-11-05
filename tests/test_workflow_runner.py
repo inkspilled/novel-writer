@@ -112,6 +112,35 @@ class TestResume:
         assert progress["chapter"]["current"] == 3
 
 
+# ── 规划文档预检 ──
+
+class TestPlanningPreSkip:
+    """已有规划文档时不该先烧一次调用再在落盘处跳过。"""
+
+    def test_existing_planning_output_skips_llm(self, project_dir):
+        out = project_dir / "planning" / "立意.md"
+        out.write_text("# 用户写的立意", encoding="utf-8")
+        agent = make_agent("立意规划", "主编")
+        runner = make_runner(project_dir, {"主编": agent})
+        wf = make_wf([WorkflowStep(id="ideation", needs="立意规划", prompt="写立意",
+                                   output="planning/立意.md", max_tokens=2400)])
+        progress = asyncio.run(runner.run(wf, {}))
+        assert agent.calls == []                      # 一次 LLM 都没打
+        assert progress["ideation"] == "done"
+        assert out.read_text(encoding="utf-8") == "# 用户写的立意"
+
+    def test_update_planning_step_still_runs(self, project_dir):
+        """反哺步骤（update_planning=True）必须照常跑，不能被预检吃掉。"""
+        out = project_dir / "planning" / "人物设定.md"
+        out.write_text("# 旧设定", encoding="utf-8")
+        agent = make_agent("人物设定", "策划")
+        runner = make_runner(project_dir, {"策划": agent})
+        wf = make_wf([WorkflowStep(id="update_characters", needs="人物设定", prompt="更新人物",
+                                   output="planning/人物设定.md", update_planning=True)])
+        asyncio.run(runner.run(wf, {}))
+        assert len(agent.calls) == 1
+
+
 # ── 历史治理 ──
 
 class TestHistory:
@@ -644,7 +673,7 @@ class TestCompressGraded:
             "=== 第3章 ===\n" + "旧" * 4000,   # 旧章全文 → 截断
             "=== 第8章 ===\n" + "正" * 4000,   # 最近章 → 保持完整
         ]
-        # 缩量后：meta + RAG(2×120字) + 旧章600字 + 第8章全文
+        # 缩量后：meta + RAG(2×400字) + 旧章600字 + 第8章全文
         result = compress_context(parts, max_tokens=9500)
         text = "\n\n".join(result)
         assert "正" * 100 in text                    # 最近章全文保留

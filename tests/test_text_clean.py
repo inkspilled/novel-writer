@@ -37,7 +37,7 @@ def test_long_output_auto_continues_on_length():
             self.calls = 0
 
         async def chat(self, messages, temperature=0.7, max_tokens=4096,
-                       thinking="auto", tools=None):
+                       thinking="auto", tools=None, model=None):
             self.calls += 1
             return self.responses.pop(0)
 

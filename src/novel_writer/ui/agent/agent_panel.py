@@ -72,6 +72,7 @@ class AgentPanel(QWidget):
         self.office.setMinimumHeight(OfficeScene.HEIGHT)
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
         layout.addWidget(self.office)
+        self.office.setVisible(False)  # 默认收成一行摘要，把高度让给对话/日志
 
         # ── 工作流迷你进度条（含日志） ──
         from ..workflow.workflow_bar import WorkflowMiniBar
@@ -92,7 +93,22 @@ class AgentPanel(QWidget):
         self.agent_name_label = QLabel(t("agent_select"))
         self.agent_name_label.setStyleSheet("font-size: 13px; font-weight: 600;")
         header_layout.addWidget(self.agent_name_label)
+
+        # 状态条默认收起成一行摘要；点「状态条」展开 7 张卡片
+        self._strip_label = QLabel("智能体")
+        self._strip_label.setStyleSheet("font-size: 11px; color: palette(placeholderText);")
+        self._strip_label.setMaximumWidth(150)
+        header_layout.addWidget(self._strip_label)
         header_layout.addStretch()
+
+        self.btn_strip = QPushButton("状态条")
+        self.btn_strip.setCheckable(True)
+        self.btn_strip.setFixedHeight(24)
+        self.btn_strip.setToolTip("展开/收起智能体状态卡片")
+        self.btn_strip.setStyleSheet(
+            "font-size: 11px; padding: 2px 8px; border-radius: 6px;")
+        self.btn_strip.toggled.connect(self._on_strip_toggled)
+        header_layout.addWidget(self.btn_strip)
 
         self.btn_chat_toggle = QPushButton(t("agent_free_chat"))
         self.btn_chat_toggle.setCheckable(True)
@@ -285,6 +301,17 @@ class AgentPanel(QWidget):
 
         # 初始化办公室场景
         self.office.setup_agents(agents_cfg, colors)
+        self._update_strip(f"{len(agents_cfg)} 个 · 待命")
+
+    def _on_strip_toggled(self, expanded: bool):
+        self.office.setVisible(expanded)
+        self._strip_label.setVisible(not expanded)
+
+    def _update_strip(self, text: str):
+        """一行摘要：未展开时显示智能体数量/当前在跑的 Agent。"""
+        text = text if len(text) <= 18 else text[:17] + "…"
+        self._strip_label.setText(text)
+        self._strip_label.setToolTip(text)
 
     def set_config(self, config: dict):
         """传入应用配置，用于主题感知。"""
@@ -309,14 +336,9 @@ class AgentPanel(QWidget):
         info = self._agents_cfg.get(name, {})
         title = info.get("title", name)
 
-        # 智能体名称 + 模型信息（同一行）
-        agent_model = info.get("model", "").strip()
-        if agent_model:
-            model_html = f'  <span style="font-size:11px;font-weight:400;color:#4da6ff;">🤖 {agent_model}</span>'
-        else:
-            model_html = f'  <span style="font-size:11px;font-weight:400;color:gray;">🤖 {t("agent_model_default")}</span>'
-        self.agent_name_label.setTextFormat(Qt.TextFormat.RichText)
-        self.agent_name_label.setText(f"{emoji}  {title}{model_html}")
+        # 智能体名称（所有 Agent 共用主模型，不再显示专属模型）
+        self.agent_name_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.agent_name_label.setText(f"{emoji}  {title}")
 
         self._restore_chat(name)
         self._update_quick_actions(name)
@@ -690,6 +712,9 @@ class AgentPanel(QWidget):
         self.indicator.update_theme(colors)
         self.office.apply_theme(colors)
         self.workflow_bar.apply_theme(colors)
+        self._strip_label.setStyleSheet(
+            f"font-size: 11px; color: {colors.get('fg3', '#8e8e9a')};"
+        )
 
         self._apply_quick_style()
         for msg in self._msg_widgets:
@@ -704,6 +729,7 @@ class AgentPanel(QWidget):
             from .office_scene import AgentState
             desc = f"{step_id} #{n}" if n > 1 else step_id
             self.office.set_agent_state(agent_name, AgentState.WORKING, task_desc=desc)
+            self._update_strip(f"{agent_title} · {step_id}")
             self.indicator.start(get_color(agent_name))
             self._on_agent_selected(agent_name)
             self.workflow_bar.set_current_step(step_id, agent_title, n, 0)
@@ -714,6 +740,11 @@ class AgentPanel(QWidget):
         if agent_name:
             from .office_scene import AgentState
             self.office.set_agent_state(agent_name, AgentState.DONE)
+            working = [s for s in self.office.iter_slots() if s.state == AgentState.WORKING]
+            if working:
+                self._update_strip(f"{working[0].title} · {len(working)} 个运行中")
+            else:
+                self._update_strip("全部待命")
 
     def on_workflow_step_error(self, step_id: str, error: str):
         """工作流步骤出错。"""
@@ -722,6 +753,7 @@ class AgentPanel(QWidget):
             if slot.state == AgentState.WORKING:
                 self.office.set_agent_state(slot.name, AgentState.ERROR)
                 break
+        self._update_strip("出错 · 查看日志")
 
     def on_workflow_progress(self, percent: int, step_text: str = ""):
         self.workflow_bar.set_progress(percent, step_text)
@@ -732,6 +764,7 @@ class AgentPanel(QWidget):
             if slot.state != AgentState.WORKING:
                 self.office.set_agent_state(slot.name, AgentState.WAITING)
         self.workflow_bar.set_running(True)
+        self._update_strip("工作流运行中")
         active = self._current_agent or next(iter(self._agents_cfg), "")
         if active:
             self.indicator.start(get_color(active))
@@ -742,6 +775,7 @@ class AgentPanel(QWidget):
     def on_workflow_finished(self):
         from .office_scene import AgentState
         self.office.reset_states(AgentState.DONE)
+        self._update_strip("全部完成")
         self.workflow_bar.set_running(False)
         if not self._working_active:
             self.indicator.stop()

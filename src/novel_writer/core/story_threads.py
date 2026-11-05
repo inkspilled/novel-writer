@@ -1,19 +1,21 @@
 """故事线台账 — 时间线 / 主线 / 支线 / 伏笔的统一结构化视图。
 
 定位（与已有模块的分工）：
-- ``planning/时间线.md`` 等四份规划文档：**人读的规划稿**（作者与 LLM 写）
+- ``planning/{时间线,主线,支线,伏笔}.md``：**归档种子**（规划步骤生成一次，
+  之后 UI 不再展示、正文/细纲/审校不再回读）
 - ``memory.json``：跨章事实流水（open_loops / subplots / story_facts）
 - ``world_state.json``：世界快照（含 timeline 实际发生事件）
-- **本模块 = 四者的对账结果**：每条线一条记录，带状态、埋设/回收章、所属卷，
-  供「世界」菜单的独立 UI 展示，也供工作流把台账摘要反哺回写作上下文。
+- **本模块 = 四类线程的唯一可编辑来源**：每条线一条记录，带状态、埋设/回收章、
+  所属卷；作者只在「世界 → 故事线」改，工作流只做对账与反哺。
 
 数据落盘：``story_threads.json``（项目根目录，原子写）。
 
 状态口径：``planned`` 未开始 / ``active`` 推进中 / ``done`` 已完成（伏笔=已回收）
 / ``abandoned`` 已放弃。伏笔的「超期」是**派生状态**（未回收且埋设 ≥15 章），不落盘。
 
-反哺链路（单向、可重放）：
-1. ``sync_from_planning``：解析四份规划文档 → 导入条目（LLM 规划完成后自动可读）
+链路：
+1. ``sync_from_planning``：**首轮**从归档规划稿种子导入（某类型已有 planning 条目后
+   不再回灌；``force=True`` 供 UI「重导入规划」显式触发）
 2. ``reconcile``：memory.subplots / memory.open_loops / world_state.timeline → 推进状态
 3. ``build_context_block``：把「进行中的主线/支线 + 待回收伏笔 + 最近时间线」注入写作上下文
 4. ``story_threads_changed`` 事件 → UI 刷新（见 ``core/workflow/runner.py``）
@@ -36,7 +38,7 @@ logger = get_logger(__name__)
 
 STORY_THREADS_FILE = "story_threads.json"
 
-# 规划文档 → 线程类型（文件名固定，与 project_io.PLANNING_FILES 一致）
+# 规划文档 → 线程类型（归档种子；文件名与 story_threads 内部约定固定）
 DOC_THREAD_KINDS = {
     "timeline": "时间线.md",
     "main": "主线.md",
@@ -125,11 +127,12 @@ def extract_chapters(text: str) -> list[int]:
             if b != a:
                 found.append(b)
 
-    # 单点：第12章 / 第十二章 / 12章
-    for m in re.finditer(rf"第?({_NUM})\s*章", text):
-        value = cn_to_int(m.group(1))
-        if value:
-            found.append(value)
+    # 单点/列表：第12章 / 第十二章 / 第30/68/84章 / 第30、68、84章
+    for m in re.finditer(rf"第?((?:{_NUM})(?:\s*[/、,，]\s*(?:{_NUM}))*)\s*章", text):
+        for part in re.split(r"[/、,，]", m.group(1)):
+            value = cn_to_int(part.strip())
+            if value:
+                found.append(value)
 
     # 去重保序
     seen: set[int] = set()
@@ -215,6 +218,21 @@ def infer_owner(text: str, names, limit: int = 4) -> str:
             hits.append(name)
     hits.sort(key=lambda n: hay.find(n))
     return "、".join(hits[:limit])
+def parse_chapter_span(text: str) -> tuple[int, int]:
+    """解析「起止章节」这类纯范围单元格：8-96 / 第8-96章 / 39-100+。
+
+    只用于表头已明确是「起止/范围」的列，避免把正文里的普通数字误当章号。
+    """
+    if not text:
+        return (0, 0)
+    match = re.search(
+        rf"第?\s*({_NUM})\s*(?:章)?\s*[-~—–至到]\s*第?\s*({_NUM})\s*(?:章)?\s*[+＋]?",
+        text,
+    )
+    if not match:
+        return (0, 0)
+    start, end = cn_to_int(match.group(1)), cn_to_int(match.group(2))
+    return (start or 0, end or 0)
 
 
 # ── 状态词判定 ──
@@ -310,8 +328,9 @@ class StoryThread:
                 return "已发生", "ok"
             return "计划中", "muted"
         if self.status == ThreadStatus.DONE.value:
+            # 回收章已在「章节」列展示，状态列保持短标签，避免撑宽整列
             if self.kind == ThreadKind.FORESHADOW.value:
-                return (f"已回收·第{self.resolve_chapter}章" if self.resolve_chapter else "已回收"), "ok"
+                return "已回收", "ok"
             return "已完成", "ok"
         if self.status == ThreadStatus.ACTIVE.value:
             if self.kind == ThreadKind.FORESHADOW.value and self.resolve_chapter:
@@ -487,7 +506,9 @@ def _column_roles(header: list[str]) -> dict[str, int]:
     roles: dict[str, int] = {}
     for i, cell in enumerate(header):
         c = cell or ""
-        if any(k in c for k in ("埋设", "埋下", "起点", "开始", "出处", "首次")):
+        if any(k in c for k in ("起止", "章节范围", "章范围", "跨度")):
+            roles.setdefault("span", i)
+        elif any(k in c for k in ("埋设", "埋下", "起点", "开始", "出处", "首次")):
             roles.setdefault("plant", i)
         elif any(k in c for k in ("回收", "揭晓", "解决", "完成", "终点", "收束")):
             roles.setdefault("resolve", i)
@@ -589,20 +610,34 @@ def parse_planning_doc(content: str, kind: str) -> list[dict]:
                 continue
             title_idx = table_roles.get("title", 0)
             title = cells[title_idx] if title_idx < len(cells) else cells[0]
+            # 已映射到结构化字段的列不再重复塞进详情（否则会出现
+            # 「F；赵无极/玄真；8-96；第30/68/84章；主线内完结」这种整行回显）
+            mapped = {title_idx}
+            for role in ("owner", "status", "span", "plant", "resolve", "group"):
+                if role in table_roles:
+                    mapped.add(table_roles[role])
             detail = "；".join(
                 c for i, c in enumerate(cells)
-                if c and i not in (title_idx,) and i < len(table_header)
+                if c and i < len(table_header) and i not in mapped
             )
             if not title:
                 continue
             status_text = ""
             if "status" in table_roles and table_roles["status"] < len(cells):
                 status_text = cells[table_roles["status"]]
+            span_text = cells[table_roles["span"]] if table_roles.get("span", 99) < len(cells) else ""
+            span_start, span_end = parse_chapter_span(span_text)
+            plant_text = cells[table_roles["plant"]] if table_roles.get("plant", 99) < len(cells) else ""
+            resolve_text = cells[table_roles["resolve"]] if table_roles.get("resolve", 99) < len(cells) else ""
+            if not plant_text and span_start:
+                plant_text = f"{span_start}章"
+            if not resolve_text and span_end:
+                resolve_text = f"{span_end}章"
             items.append(_make_item(
                 kind=kind, title=title, detail=detail, group=group_label(),
                 text=" ".join(cells), status_text=status_text,
-                plant_text=cells[table_roles["plant"]] if table_roles.get("plant", 99) < len(cells) else "",
-                resolve_text=cells[table_roles["resolve"]] if table_roles.get("resolve", 99) < len(cells) else "",
+                plant_text=plant_text,
+                resolve_text=resolve_text,
                 owner=cells[table_roles["owner"]] if table_roles.get("owner", 99) < len(cells) else "",
             ))
             continue
@@ -1014,9 +1049,12 @@ class StoryLedger:
         return any(self._doc_signature(k) != signatures.get(k, "") for k in DOC_THREAD_KINDS)
 
     def sync_from_planning(self, force: bool = False) -> int:
-        """把 planning/{时间线,主线,支线,伏笔}.md 导入台账。返回新增条数。
+        """把归档规划稿导入台账（首轮种子）。返回新增条数。
 
-        已存在的条目只补空字段（不覆盖 UI 手工编辑），规划稿删掉的条目标 ``active=False``。
+        单一写入方：某一类型一旦有 ``source=planning`` 的条目，后续不再从
+        规划文档回灌；只有 ``force=True``（UI「重导入规划」）才重新解析。
+        之后 时间线/主线/支线/伏笔 的唯一可编辑来源是 ``story_threads.json``，
+        规划稿只作为生成时的种子与归档。
         """
         from . import project_io
 
@@ -1024,7 +1062,10 @@ class StoryLedger:
         added = 0
         for kind, filename in DOC_THREAD_KINDS.items():
             signature = self._doc_signature(kind)
-            if not force and signatures.get(kind, "") == signature:
+            has_planning = any(
+                t.source == "planning" and t.kind == kind for t in self.threads.values()
+            )
+            if not force and (has_planning or signatures.get(kind, "") == signature):
                 continue
             signatures[kind] = signature
             path = self.project_dir / "planning" / filename
@@ -1408,6 +1449,22 @@ class StoryLedger:
 
     # ── 反哺：写作上下文 ──
 
+    def build_update_context(self, chapter: int = 0) -> str:
+        """章后抽取用：列出主线/支线的准确标题与当前状态。
+
+        模型只允许按这些标题回填状态（主线不新造，支线可显式 new），
+        这样自动推进不需要人工先改台账。
+        """
+        lines: list[str] = []
+        for kind, label in ((ThreadKind.MAIN.value, "主线"), (ThreadKind.SUBPLOT.value, "支线")):
+            items = self.all(kind)
+            if not items:
+                continue
+            lines.append(f"【{label}】")
+            for t in items[:20]:
+                lines.append(f"- {t.title}｜{t.status_label}｜{t.chapter_text()}")
+        return "\n".join(lines)
+
     def build_context_block(self, chapter: int = 0, max_items: int = 14) -> str:
         """写作上下文注入块：进行中的主线/支线 + 待回收伏笔 + 最近时间线。"""
         current, _ = self.clock()
@@ -1463,8 +1520,78 @@ class StoryLedger:
 
 # ── 便捷入口 ──
 
+def apply_thread_updates(project_dir: Path, payload: dict, chapter: int) -> int:
+    """把章后抽取的 ``threads`` 段写回台账（主线/支线自动推进）。
+
+    - 只更新**已存在**的主线；支线可带 ``new: true`` 新建；
+    - ``status`` 只接受 active / done；done 时补 ``chapters.resolve``；
+    - 作者手工改过的字段（``user_edited``）不覆盖；
+    - 无匹配的主线静默忽略，避免模型编造主线条目。
+    """
+    if not isinstance(payload, dict):
+        return 0
+    ledger = StoryLedger(project_dir).load()
+    changed = 0
+    for kind in (ThreadKind.MAIN.value, ThreadKind.SUBPLOT.value):
+        items = payload.get(kind)
+        if not isinstance(items, list):
+            continue
+        for item in items[:30]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status not in (ThreadStatus.ACTIVE.value, ThreadStatus.DONE.value):
+                status = ""
+            target = ledger.find_by_title(title, kind)
+            if target is None:
+                if kind == ThreadKind.SUBPLOT.value and item.get("new"):
+                    created = ledger.add(
+                        kind=kind, title=title,
+                        detail=str(item.get("detail") or "").strip(),
+                        status=status or ThreadStatus.ACTIVE.value,
+                        plant=chapter, source="digest",
+                    )
+                    if status == ThreadStatus.DONE.value:
+                        created.chapters["resolve"] = chapter
+                    changed += 1
+                    logger.info("[THREADS] 新增支线: %s（第%d章）", title, chapter)
+                continue
+
+            # 已完成的线不自动回退成推进中；要重开请手工改（user_edited 会保护）
+            if status == ThreadStatus.ACTIVE.value and target.status == ThreadStatus.DONE.value:
+                status = ""
+
+            touched = False
+            if status and "status" not in target.user_edited and target.status != status:
+                target.status = status
+                touched = True
+            if status == ThreadStatus.DONE.value and "chapters" not in target.user_edited:
+                if not target.chapters.get("resolve"):
+                    target.chapters["resolve"] = chapter
+                    touched = True
+            if not target.planted_chapter and chapter:
+                target.chapters["plant"] = chapter
+                touched = True
+            if touched:
+                target.updated_at = datetime.now().isoformat(timespec="seconds")
+                changed += 1
+    if changed:
+        try:
+            ledger.save()
+        except OSError as e:
+            logger.warning("[THREADS] 台账保存失败: %s", e)
+    return changed
+
+
 def sync_story_threads(project_dir: Path, force_planning: bool = False) -> StoryLedger:
-    """工作流/UI 共用的同步入口：规划导入 + 记忆/世界状态对账 + 落盘。"""
+    """工作流/UI 共用的同步入口：首次种子导入 + 记忆/世界状态对账 + 落盘。
+
+    ``force_planning=True`` 才从归档规划稿重导入（会按文档重建 planning 条目）；
+    日常同步只做对账，台账是四类线程的唯一可编辑来源。
+    """
     ledger = StoryLedger(project_dir).load()
     ledger.sync_from_planning(force=force_planning)
     ledger.reconcile()
@@ -1485,5 +1612,5 @@ __all__ = [
     "ThreadKind", "ThreadStatus", "KIND_LABELS", "STATUS_LABELS",
     "StoryThread", "StoryProgress", "StoryLedger",
     "cn_to_int", "extract_chapters", "detect_status", "parse_planning_doc",
-    "sync_story_threads", "load_story_threads",
+    "sync_story_threads", "load_story_threads", "apply_thread_updates",
 ]

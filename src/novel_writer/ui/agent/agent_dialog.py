@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...locales import t
-from ...core.agents import load_agents, save_agents, reset_agents
+from ...core.agents import load_agents, save_agents, reset_agents, is_builtin_agent
 
 
 class AgentDialog(QDialog):
@@ -21,7 +21,9 @@ class AgentDialog(QDialog):
         self.setMinimumSize(640, 560)
         self.config = dict(config)
         self._agents = load_agents()
-        self._saved_models: dict = self.config.get("saved_models", {})
+        # 旧配置里的每 Agent 模型字段直接丢弃：所有 Agent 统一用主模型
+        for info in self._agents.values():
+            info.pop("model", None)
         self._setup_ui()
         self._load_config()
 
@@ -54,6 +56,9 @@ class AgentDialog(QDialog):
         btn_row.addWidget(self._btn_del)
         btn_row.addWidget(self._btn_reset)
         left_layout.addLayout(btn_row)
+        # 默认智能体锁定策略：新增/删除入口先隐藏（逻辑保留，后续开放自定义时恢复）
+        self._btn_add.setVisible(False)
+        self._btn_del.setVisible(False)
         body.addWidget(left, 1)
 
         # 右侧详情
@@ -83,12 +88,6 @@ class AgentDialog(QDialog):
         self.agent_emoji_combo.addItems(self._emoji_list)
         self.agent_emoji_combo.setPlaceholderText(t("settings_ph_emoji"))
         form.addRow(t("settings_agent_emoji"), self.agent_emoji_combo)
-
-        self.agent_model_combo = QComboBox()
-        self.agent_model_combo.addItem(t("model_use_global"), "")
-        for model_name in self._saved_models:
-            self.agent_model_combo.addItem(model_name, model_name)
-        form.addRow(t("settings_agent_model"), self.agent_model_combo)
 
         self.agent_temp_spin = QDoubleSpinBox()
         self.agent_temp_spin.setRange(0.0, 2.0)
@@ -123,12 +122,20 @@ class AgentDialog(QDialog):
         btn_row2.addWidget(self._btn_cancel)
         layout.addLayout(btn_row2)
 
+    def _detail_inputs(self) -> list:
+        """右侧详情的全部输入控件（用于整体切只读）。"""
+        return [
+            self.agent_name_input, self.agent_title_input, self.agent_emoji_combo,
+            self.agent_temp_spin, self.agent_skills_input, self.agent_prompt_input,
+        ]
+
     def _refresh_agent_list(self):
         self.agent_list.clear()
         for name, info in self._agents.items():
             emoji = info.get("emoji", "🤖")
             title = info.get("title", name)
-            self.agent_list.addItem(f"{emoji} {title}")
+            lock = " 🔒" if is_builtin_agent(name) else ""
+            self.agent_list.addItem(f"{emoji} {title}{lock}")
 
     def _on_agent_selected(self, current, _prev):
         if not current:
@@ -139,8 +146,11 @@ class AgentDialog(QDialog):
             return
         name = names[row]
         info = self._agents[name]
+        builtin = is_builtin_agent(name)
+        # 内置智能体只读展示，不允许改
+        for w in self._detail_inputs():
+            w.setEnabled(not builtin)
         self.agent_name_input.setText(name)
-        self.agent_name_input.setEnabled(True)
         self.agent_title_input.setText(info.get("title", ""))
         emoji = info.get("emoji", "🤖")
         idx = self.agent_emoji_combo.findText(emoji)
@@ -148,9 +158,6 @@ class AgentDialog(QDialog):
             self.agent_emoji_combo.setCurrentIndex(idx)
         else:
             self.agent_emoji_combo.setEditText(emoji)
-        model_val = info.get("model", "")
-        idx = self.agent_model_combo.findData(model_val)
-        self.agent_model_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.agent_temp_spin.setValue(info.get("temperature", 0.7))
         self.agent_skills_input.setText(", ".join(info.get("skills", [])))
         self.agent_prompt_input.setPlainText(info.get("system_prompt", ""))
@@ -159,6 +166,9 @@ class AgentDialog(QDialog):
         name = self.agent_name_input.text().strip()
         if not name:
             return
+        # 内置智能体不允许改写（双保险：输入已只读，这里再拦一次）
+        if is_builtin_agent(name):
+            return
         if name not in self._agents:
             self._agents[name] = {}
         self._agents[name]["title"] = self.agent_title_input.text().strip()
@@ -166,12 +176,14 @@ class AgentDialog(QDialog):
         self._agents[name]["temperature"] = self.agent_temp_spin.value()
         self._agents[name]["skills"] = [s.strip() for s in self.agent_skills_input.text().split(",") if s.strip()]
         self._agents[name]["system_prompt"] = self.agent_prompt_input.toPlainText().strip()
-        self._agents[name]["model"] = self.agent_model_combo.currentData() or ""
 
     def _add_agent(self):
         name, ok = QInputDialog.getText(self, t("settings_btn_add"), t("settings_ph_agent_id"))
         if ok and name:
             name = name.strip().lower().replace(" ", "_")
+            if is_builtin_agent(name):
+                QMessageBox.warning(self, t("dialog_prompt"), t("msg_agent_builtin_locked", name))
+                return
             if name in self._agents:
                 QMessageBox.warning(self, t("dialog_prompt"), t("msg_agent_exists", name))
                 return
@@ -187,6 +199,10 @@ class AgentDialog(QDialog):
         if row >= len(names):
             return
         name = names[row]
+        if is_builtin_agent(name):
+            # 内置智能体不允许删除（入口已隐藏，这里防御性再拦）
+            QMessageBox.warning(self, t("dialog_prompt"), t("msg_agent_builtin_locked", name))
+            return
         if QMessageBox.question(self, t("dialog_confirm"),
                                 t("msg_delete_agent", name)) == QMessageBox.StandardButton.Yes:
             del self._agents[name]
@@ -207,6 +223,9 @@ class AgentDialog(QDialog):
 
     def _save(self):
         self._save_current_agent()
+        # 彻底移除旧字段：避免以后又被 load/save 带回来
+        for info in self._agents.values():
+            info.pop("model", None)
         save_agents(self._agents)
         self.accept()
 

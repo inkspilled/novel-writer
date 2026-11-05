@@ -41,10 +41,10 @@ SUMMARY_DIR = "summary"
 META_FILE = "meta.json"
 WORKFLOW_FILE = "workflow.json"
 
-# planning/ 下的固定文件名
+# planning/ 下仍常驻、允许 Agent 读取的文档
+# 时间线/主线/支线/伏笔只做归档种子，不在此列：四类线程以 story_threads.json 为准
 PLANNING_FILES = [
     "立意.md", "大纲.md", "章节细纲.md", "人物设定.md", "世界观.md",
-    "时间线.md", "主线.md", "支线.md", "伏笔.md",
 ]
 
 
@@ -187,6 +187,7 @@ def load_chapter_summaries(project_dir: Path, up_to_chapter: int = 9999, window:
         if content:
             summaries.append((num, content))
 
+    summaries.sort(key=lambda item: item[0])
     if window and len(summaries) > window:
         summaries = summaries[-window:]
 
