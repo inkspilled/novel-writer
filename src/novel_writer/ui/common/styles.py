@@ -240,12 +240,13 @@ QTabBar::tab:selected {{
     background-color: {t['accent_bg']};
 }}
 
-/* 顶层大页签：小说 / 短剧 */
+/* 顶层大页签：小说 / 短剧（压扁：原来 10px padding + 14px 字，占掉一整行高度） */
 QTabWidget#modeTabs QTabBar::tab {{
-    padding: 10px 28px;
-    font-size: 14px;
-    font-weight: 700;
-    min-width: 88px;
+    padding: 4px 18px;
+    margin: 2px 2px 0 2px;
+    font-size: 12px;
+    font-weight: 600;
+    min-width: 60px;
 }}
 QTabWidget#modeTabs QTabBar::tab:selected {{
     background-color: {t['accent_bg']};

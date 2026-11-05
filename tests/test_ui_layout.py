@@ -513,3 +513,30 @@ def test_load_chapter_keeps_current_tab(qapp):
     panel.load_chapter(chapter, switch_tab=True)
     assert panel.tab_bar.currentIndex() == 0
     panel.close()
+
+
+def test_agent_header_removed_and_menu_toggles(qapp):
+    """重复的智能体状态行已隐藏；状态条/自由对话收进「设置」菜单。"""
+    from src.novel_writer.ui.main_window import MainWindow
+
+    window = MainWindow()
+    window.show()
+    qapp.processEvents()
+
+    assert not window.agent_panel._header.isVisible()
+    assert not window.agent_panel.office.isVisible()
+
+    window._agent_strip_action.setChecked(True)
+    qapp.processEvents()
+    assert window.agent_panel.office.isVisible()
+
+    window._free_chat_action.setChecked(True)
+    qapp.processEvents()
+    assert window.agent_panel._chat_expanded
+
+    window._free_chat_action.setChecked(False)
+    window._agent_strip_action.setChecked(False)
+    qapp.processEvents()
+    assert not window.agent_panel.office.isVisible()
+    assert not window.agent_panel._chat_expanded
+    window.close()

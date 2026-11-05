@@ -135,6 +135,10 @@ class AgentPanel(QWidget):
         self.btn_clear.clicked.connect(self._clear_current_chat)
         header_layout.addWidget(self.btn_clear)
         self._header = header
+        # 这一行原本重复显示「当前智能体」：状态卡片（OfficeScene）已经展示每个智能体
+        # 的名与状态，工作流条也会显示当前步骤。整行隐藏，按钮收进「设置」菜单，
+        # 省下一行高度；控件保留（信号/状态同步逻辑不用改）。
+        header.setVisible(False)
         layout.addWidget(header)
 
         # ── 未打开项目提示 ──
@@ -306,6 +310,21 @@ class AgentPanel(QWidget):
     def _on_strip_toggled(self, expanded: bool):
         self.office.setVisible(expanded)
         self._strip_label.setVisible(not expanded)
+
+    def set_office_visible(self, visible: bool) -> None:
+        """菜单「智能体状态条」用：展开/收起 7 张智能体卡片。"""
+        self.office.setVisible(bool(visible))
+        self.btn_strip.blockSignals(True)
+        self.btn_strip.setChecked(bool(visible))
+        self.btn_strip.blockSignals(False)
+
+    def set_chat_expanded(self, expanded: bool) -> None:
+        """菜单「自由对话」用。"""
+        self._set_chat_expanded(bool(expanded))
+
+    def clear_current_chat(self) -> None:
+        """菜单「清空当前对话」用。"""
+        self._clear_current_chat()
 
     def _update_strip(self, text: str):
         """一行摘要：未展开时显示智能体数量/当前在跑的 Agent。"""

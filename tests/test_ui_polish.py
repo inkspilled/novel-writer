@@ -104,19 +104,19 @@ class TestWorkflowLogPlaceholder:
 
 
 class TestAgentStrip:
-    def test_collapsed_to_one_line_by_default(self, qapp):
+    def test_collapsed_by_default_and_no_duplicate_status_row(self, qapp):
         from src.novel_writer.ui.agent.agent_panel import AgentPanel
 
         panel = AgentPanel()
         panel.set_config({})
         panel.update_agent_buttons({"a": {"title": "主编"}, "b": {"title": "写手"}})
         assert panel.office.isHidden()
-        assert panel._strip_label.isVisibleTo(panel)
-        assert "2 个" in panel._strip_label.text()
-
-        panel.btn_strip.setChecked(True)
-        assert panel.office.isVisibleTo(panel)
+        # 重复的状态行整行隐藏：智能体状态由卡片 / 工作流条展示
+        assert panel._header.isHidden()
         assert not panel._strip_label.isVisibleTo(panel)
+
+        panel.set_office_visible(True)
+        assert panel.office.isVisibleTo(panel)
         panel.close()
 
 

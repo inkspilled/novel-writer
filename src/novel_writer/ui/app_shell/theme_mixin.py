@@ -97,11 +97,49 @@ class ThemeMixin:
         self._focus_action.triggered.connect(self._toggle_focus_mode)
         self._settings_menu.addAction(self._focus_action)
 
+        # ── 协作栏显示项：原先占右侧面板一整行按钮，收进菜单省一行高度 ──
+        self._settings_menu.addSeparator()
+        self._agent_strip_action = QAction("智能体状态条", self)
+        self._agent_strip_action.setCheckable(True)
+        self._agent_strip_action.setShortcut(QKeySequence("Ctrl+Alt+G"))
+        self._agent_strip_action.toggled.connect(self._toggle_agent_strip)
+        self._settings_menu.addAction(self._agent_strip_action)
+
+        self._free_chat_action = QAction("自由对话", self)
+        self._free_chat_action.setCheckable(True)
+        self._free_chat_action.setShortcut(QKeySequence("Ctrl+Alt+C"))
+        self._free_chat_action.toggled.connect(self._toggle_free_chat)
+        self._settings_menu.addAction(self._free_chat_action)
+
+        self._clear_chat_action = QAction("清空当前对话", self)
+        self._clear_chat_action.triggered.connect(self._clear_agent_chat)
+        self._settings_menu.addAction(self._clear_chat_action)
+
         # ── 帮助 ──
         self._about_menu = menubar.addMenu(t("menu_help"))
         self._about_action = QAction(t("menu_about_app"), self)
         self._about_action.triggered.connect(self._show_about)
         self._about_menu.addAction(self._about_action)
+
+    def _toggle_agent_strip(self, checked: bool):
+        """菜单：展开/收起右侧智能体状态卡片（替代面板里的「状态条」按钮）。"""
+        panel = getattr(self, "agent_panel", None)
+        if panel is not None:
+            panel.set_office_visible(bool(checked))
+            self._agent_strip_action.blockSignals(True)
+            self._agent_strip_action.setChecked(panel.office.isVisible())
+            self._agent_strip_action.blockSignals(False)
+
+    def _toggle_free_chat(self, checked: bool):
+        """菜单：展开/收起右侧自由对话区。"""
+        panel = getattr(self, "agent_panel", None)
+        if panel is not None:
+            panel.set_chat_expanded(bool(checked))
+
+    def _clear_agent_chat(self):
+        panel = getattr(self, "agent_panel", None)
+        if panel is not None:
+            panel.clear_current_chat()
 
     def _toggle_focus_mode(self, checked: bool | None = None):
         """专注模式：隐藏侧栏与协作栏，只留正文；再按一次恢复。"""
