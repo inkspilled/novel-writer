@@ -304,3 +304,100 @@ def test_adapt_prompt_includes_rolling_summary(qapp, tmp_path):
     prompt = worker._adapt_prompt()
     assert "已完成章节滚动摘要" in prompt
     assert "夺回家产" in prompt
+
+
+class _ResumeFlowLLM(FakeLLM):
+    """全流程用：分集规划 / 剧本 / 分镜各回各的。"""
+
+    async def chat(self, messages, temperature=0.7, max_tokens=4096,
+                   thinking="auto", tools=None, model=None):
+        prompt = messages[-1].content
+        self.calls.append(prompt)
+        if "source_chapters" in prompt:
+            content = json.dumps({
+                "source_chapters": [3, 4, 5], "title": "反杀", "goal": "夺回家产",
+                "hook": "谁在暗处", "beats": ["亮牌", "反杀"], "carry_reason": "本轮吃完",
+            }, ensure_ascii=False)
+            finish = "stop"
+        elif "JSON 结构" in prompt:
+            content = json.dumps({"shots": [{
+                "scene_id": "SC01", "shot_size": "近景", "camera": "推近",
+                "duration_sec": 3, "location": "祠堂", "time": "夜",
+                "characters": "顾言", "action": "把令牌拍在桌上",
+                "dialogue": "顾言：从今天起。", "sfx": "", "transition": "硬切",
+                "status": "draft", "notes": "",
+            }]}, ensure_ascii=False)
+            finish = "stop"
+        else:
+            content = "# 第2集 反杀\n\n## 第1场 祠堂 · 夜\n\n顾言：从今天起。"
+            finish = "stop"
+        return LLMResponse(content=content, model="fake-model",
+                           usage={"total_tokens": 100}, finish_reason=finish)
+
+
+def _seed_half_done_project(tmp_path):
+    """第1集已完成（剧本+分镜），第3–5章待用，圣经是人工精修版。"""
+    store = DramaStore(tmp_path)
+    store.ensure({"title": "测试", "target_chapters": 30})
+    chapters = [
+        {"number": n, "title": f"章{n}", "text": f"第{n}章正文：顾言拔刀，血溅三尺。"}
+        for n in range(1, 6)
+    ]
+    store.save_bible("# 改编圣经（人工精修）\n\n## 一句话卖点\n\n骨牌吞灵，废柴逆袭。")
+    store.commit_adaptive_episode(
+        1,
+        {"title": "开局", "goal": "退婚", "hook": "令牌现身", "beats": ["退婚"],
+         "source_chapters": [1, 2], "carry_reason": ""},
+        chapters[:2],
+        "# 第1集 开局\n\n## 第1场 山门 · 夜\n\n顾言：走。",
+    )
+    store.save_storyboard(1, {"shots": [{
+        "shot_id": "E01-S001", "scene_id": "SC01", "shot_size": "特写",
+        "camera": "固定", "duration_sec": 2, "location": "山门", "time": "夜",
+        "characters": "顾言", "action": "握紧骨牌", "dialogue": "",
+        "sfx": "", "transition": "硬切", "status": "draft", "notes": "",
+    }]}, update_source=True)
+    return store, chapters
+
+
+def test_full_flow_skips_finished_and_only_fills_gaps(qapp, tmp_path):
+    """全流程：圣经/已生成剧本/已拆分镜都不动，只补待用章节与缺的分镜。"""
+    store, chapters = _seed_half_done_project(tmp_path)
+    worker, _, _, ok, failed = _worker(tmp_path, "full", scope="all", chapters=chapters)
+    worker.llm = _ResumeFlowLLM()
+    worker.run()
+
+    assert ok and not failed, failed
+    logs = "\n".join(worker.llm.calls)
+    assert len(worker.llm.calls) == 3  # 分集规划 + 剧本 + 新一集分镜
+
+    # 圣经没被覆盖
+    assert "人工精修" in store.bible_text()
+    # 第1集剧本与分镜保持原样
+    assert "顾言：走。" in store.load_script(1)
+    assert store.load_storyboard(1)["shots"][0]["shot_id"] == "E01-S001"
+    # 待用章节被消费成第2集
+    ep2 = next(e for e in store.load_episodes() if e["number"] == 2)
+    assert ep2["source_chapters"] == [3, 4, 5]
+    assert "第2集 反杀" in store.load_script(2)
+    # 第2集分镜补上，资产清单非空
+    assert store.load_storyboard(2)["shots"]
+    assert store.load_assets()
+    # 汇总里说明了跳过了什么
+    assert "跳过" in ok[0] and "圣经" in ok[0]
+
+
+def test_full_flow_second_run_is_a_noop(qapp, tmp_path):
+    """再跑一次全流程：没有任何待用素材/缺分镜时不该报错，也不该再调模型。"""
+    store, chapters = _seed_half_done_project(tmp_path)
+    worker, _, _, ok, failed = _worker(tmp_path, "full", scope="all", chapters=chapters)
+    worker.llm = _ResumeFlowLLM()
+    worker.run()
+    assert ok and not failed
+
+    again, _, _, ok2, failed2 = _worker(tmp_path, "full", scope="all", chapters=chapters)
+    again.llm = _ResumeFlowLLM()
+    again.run()
+    assert ok2 and not failed2, failed2
+    assert again.llm.calls == []  # 全部已完成 → 一次模型都不调
+    assert "跳过" in ok2[0]

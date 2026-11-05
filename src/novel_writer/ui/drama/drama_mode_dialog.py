@@ -32,11 +32,12 @@ _HINTS = {
 class DramaModeDialog(QDialog):
     """短剧「执行模式」对话框,返回 (task, scope)。"""
 
-    def __init__(self, storyboard_all_label: str = "全部集", parent=None):
+    def __init__(self, storyboard_all_label: str = "全部集", full_hint: str = "", parent=None):
         super().__init__(parent)
         self.setWindowTitle("短剧工作流")
         self.setMinimumWidth(420)
         self._storyboard_all_label = storyboard_all_label
+        self._full_hint = full_hint
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -119,7 +120,10 @@ class DramaModeDialog(QDialog):
         task = self._mode_combo.currentData()
         has_scope = next((has for key, _t, has in _MODES if key == task), False)
         self._scope_group.setVisible(has_scope)
-        self._hint_label.setText(_HINTS.get(task, ""))
+        hint = _HINTS.get(task, "")
+        if task == "full" and self._full_hint:
+            hint = self._full_hint
+        self._hint_label.setText(hint)
         if not has_scope:
             return
         if task in ("full", "segment"):

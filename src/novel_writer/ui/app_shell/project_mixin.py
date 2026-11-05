@@ -77,14 +77,34 @@ class ProjectMixin:
             return
         self.drama_workspace.save_all(silent=True)
         store = self.drama_workspace.store
-        episodes_with_script = [
-            e for e in store.load_episodes() if store.has_script(int(e["number"]))
+        episodes = store.load_episodes()
+        episodes_with_script = [e for e in episodes if store.has_script(int(e["number"]))]
+        used_chapters = set()
+        for ep in episodes:
+            numbers = ep.get("source_chapters") or (
+                [ep["source_chapter"]] if ep.get("source_chapter") else []
+            )
+            used_chapters.update(int(n) for n in numbers if n)
+        pending = [
+            c for c in self.project.chapters
+            if c.number not in used_chapters and (c.content or "").strip()
         ]
+        missing_shots = [
+            e for e in episodes_with_script
+            if not store.load_storyboard(int(e["number"]))["shots"]
+        ]
+        full_hint = (
+            f"已有剧本 {len(episodes_with_script)} 集 · 待用正文 {len(pending)} 章 · "
+            f"缺分镜 {len(missing_shots)} 集 · 圣经"
+            f"{'已有（跳过）' if store.bible_text().strip() else '待生成'}。\n"
+            "全流程只补缺的：已完成的剧本/分镜/资产不动，可随时停止再续。"
+        )
         dialog = DramaModeDialog(
             storyboard_all_label=(
                 f"全部集（{len(episodes_with_script)} 集有剧本，逐集调用模型）"
                 if episodes_with_script else "全部集（暂无剧本）"
             ),
+            full_hint=full_hint,
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:

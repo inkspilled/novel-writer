@@ -125,12 +125,36 @@ class DramaAIWorker(QThread):
     # ── 全流程 ──
 
     async def _run_full(self) -> str:
-        """圣经 → 智能分集(剧本) → 分镜 → 资产；已有产物跳过，中断后可重跑续上。"""
+        """圣经 → 智能分集(剧本) → 分镜 → 资产；已完成的跳过，只补没做完的。"""
         parts: list[str] = []
+        skipped: list[str] = []
+
+        episodes = self.store.load_episodes()
+        used: set[int] = set()
+        for ep in episodes:
+            numbers = ep.get("source_chapters") or (
+                [ep["source_chapter"]] if ep.get("source_chapter") else []
+            )
+            used.update(int(n) for n in numbers if n)
+        pending = [
+            c for c in self.chapters
+            if int(c["number"]) not in used and (c.get("text") or "").strip()
+        ]
+        with_script = [e for e in episodes if self.store.has_script(int(e["number"]))]
+        missing_shots = [
+            e for e in with_script
+            if not self.store.load_storyboard(int(e["number"]))["shots"]
+        ]
+        self.log.emit(
+            f"全流程接续点：剧本 {len(with_script)} 集 · 待用正文 {len(pending)} 章 · "
+            f"缺分镜 {len(missing_shots)} 集 · "
+            f"圣经{'已有，将跳过' if self.store.bible_text().strip() else '待生成'}"
+        )
 
         self.progress.emit("全流程 1/4：改编圣经", 5)
         if self.store.bible_text().strip():
-            self.log.emit("改编圣经已存在，跳过")
+            skipped.append("圣经")
+            self.log.emit("① 改编圣经已存在，跳过（要重写请单独跑「重编圣经」）")
         else:
             try:
                 parts.append(await self._run_adapt())
@@ -141,7 +165,12 @@ class DramaAIWorker(QThread):
             return self._partial(parts)
 
         self.progress.emit("全流程 2/4：智能分集（剧本）", 25)
+        before = len([e for e in self.store.load_episodes() if self.store.has_script(int(e["number"]))])
         parts.append(await self._run_segment())
+        after = len([e for e in self.store.load_episodes() if self.store.has_script(int(e["number"]))])
+        if after == before:
+            skipped.append("分集")
+            self.log.emit("② 没有待用正文，分集跳过（已生成的剧本不动）")
         if self._stop:
             return self._partial(parts)
 
@@ -151,9 +180,17 @@ class DramaAIWorker(QThread):
             return self._partial(parts)
 
         self.progress.emit("全流程 4/4：提取资产", 90)
-        parts.append(self._run_assets())
+        try:
+            parts.append(self._run_assets())
+        except RuntimeError as e:
+            if "还没有分镜" in str(e):
+                skipped.append("资产")
+                self.log.emit("④ 还没有分镜，资产跳过")
+            else:
+                raise
         self.progress.emit("全流程已完成", 100)
-        return "全流程完成 · " + "；".join(parts)
+        tail = f"（跳过：{'、'.join(skipped)}）" if skipped else ""
+        return "全流程完成 · " + "；".join(p for p in parts if p) + tail
 
     @staticmethod
     def _partial(parts: list[str]) -> str:
@@ -218,10 +255,10 @@ class DramaAIWorker(QThread):
     async def _run_storyboard(self, only_missing_shots: bool = False) -> str:
         items = self._episode_items(only_missing_shots)
         if not items:
-            raise RuntimeError(
-                "没有可拆分镜的剧本。先「智能分集」生成剧本，再一键分镜。"
-                if only_missing_shots else "没有可用的剧本。先「智能分集」，再一键分镜。"
-            )
+            if only_missing_shots:
+                self.log.emit("③ 所有剧本都已有最新分镜，跳过")
+                return "分镜已齐全"
+            raise RuntimeError("没有可用的剧本。先「智能分集」，再一键分镜。")
         agent = self._make_agent(
             "分镜师",
             "你是短剧分镜师。把剧本拆成可拍摄的镜头表，严格只输出 JSON，不要 Markdown 代码块和解释。",
@@ -311,11 +348,17 @@ class DramaAIWorker(QThread):
             if self.store.has_script(int(e["number"]))
         ]
         if only_missing_shots:
-            # 全流程增量模式：只拆还没有分镜的集，已有的不重拆
-            return [
-                e for e in items
-                if not self.store.load_storyboard(int(e["number"]))["shots"]
-            ]
+            # 全流程增量模式：缺分镜的补，剧本改过的重拆，已有最新分镜的不动
+            need: list[dict] = []
+            for ep in items:
+                number = int(ep["number"])
+                data = self.store.load_storyboard(number)
+                if not data["shots"]:
+                    need.append(ep)
+                elif data.get("script_changed"):
+                    self.log.emit(f"第{number}集剧本改过，分镜需要重拆")
+                    need.append(ep)
+            return need
         if self.scope == "current":
             current = self.current_episode or (items[-1]["number"] if items else 0)
             return [e for e in items if int(e["number"]) == int(current)][:1]

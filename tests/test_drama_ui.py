@@ -224,6 +224,17 @@ def test_drama_mode_dialog_defaults_and_scope(qapp):
     dialog.close()
 
 
+def test_drama_mode_dialog_shows_resume_point(qapp):
+    """全流程模式要先把「接续点」摆出来：几集有剧本、几章待用、几集缺分镜。"""
+    from src.novel_writer.ui.drama.drama_mode_dialog import DramaModeDialog
+
+    hint = "已有剧本 3 集 · 待用正文 12 章 · 缺分镜 1 集 · 圣经已有（跳过）。"
+    dialog = DramaModeDialog(full_hint=hint)
+    dialog._mode_combo.setCurrentIndex(0)  # 全流程
+    assert hint in dialog._hint_label.text()
+    dialog.close()
+
+
 def test_drama_panel_workflow_bar_under_agents(qapp):
     """工作流条紧跟智能体卡片（不贴底、也不悬在中间），日志向下展开。"""
     from src.novel_writer.ui.drama.drama_panel import DramaAgentPanel
