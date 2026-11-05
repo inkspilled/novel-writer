@@ -524,8 +524,11 @@ def test_agent_header_removed_and_menu_toggles(qapp):
     qapp.processEvents()
 
     assert not window.agent_panel._header.isVisible()
-    assert not window.agent_panel.office.isVisible()
+    assert window.agent_panel.office.isVisible()  # 卡片默认展示
 
+    window._agent_strip_action.setChecked(False)
+    qapp.processEvents()
+    assert not window.agent_panel.office.isVisible()
     window._agent_strip_action.setChecked(True)
     qapp.processEvents()
     assert window.agent_panel.office.isVisible()

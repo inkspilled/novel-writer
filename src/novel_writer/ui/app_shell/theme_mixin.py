@@ -104,6 +104,11 @@ class ThemeMixin:
         self._agent_strip_action.setShortcut(QKeySequence("Ctrl+Alt+G"))
         self._agent_strip_action.toggled.connect(self._toggle_agent_strip)
         self._settings_menu.addAction(self._agent_strip_action)
+        # 卡片默认展示；把菜单初始勾选对齐（_setup_ui 先于 _setup_menu 执行）
+        panel = getattr(self, "agent_panel", None)
+        self._agent_strip_action.blockSignals(True)
+        self._agent_strip_action.setChecked(bool(panel and not panel.office.isHidden()))
+        self._agent_strip_action.blockSignals(False)
 
         self._free_chat_action = QAction("自由对话", self)
         self._free_chat_action.setCheckable(True)
@@ -127,7 +132,7 @@ class ThemeMixin:
         if panel is not None:
             panel.set_office_visible(bool(checked))
             self._agent_strip_action.blockSignals(True)
-            self._agent_strip_action.setChecked(panel.office.isVisible())
+            self._agent_strip_action.setChecked(not panel.office.isHidden())
             self._agent_strip_action.blockSignals(False)
 
     def _toggle_free_chat(self, checked: bool):

@@ -72,7 +72,9 @@ class AgentPanel(QWidget):
         self.office.setMinimumHeight(OfficeScene.HEIGHT)
         self.office.agent_clicked.connect(self._on_office_agent_clicked)
         layout.addWidget(self.office)
-        self.office.setVisible(False)  # 默认收成一行摘要，把高度让给对话/日志
+        # 智能体卡片默认展示（状态行已删，再收起就什么都看不见了）；
+        # 想省空间可在「设置 → 智能体状态条」里收起。
+        self.office.setVisible(True)
 
         # ── 工作流迷你进度条（含日志） ──
         from ..workflow.workflow_bar import WorkflowMiniBar
