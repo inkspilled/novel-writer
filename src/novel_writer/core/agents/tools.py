@@ -138,6 +138,8 @@ class NovelToolkit:
                 top_k=top_k,
                 chapter=chapter,
                 scene_type=scene_type,
+                # 工具调用不赌 embedding 冷启动：只走 BM25 + 重排序（e2f2184 的取舍）
+                use_semantic=False,
             )
         except Exception as e:
             return f"ERROR: 检索失败: {e}"

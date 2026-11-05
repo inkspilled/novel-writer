@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea,
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QTimer
+from PySide6.QtCore import Qt, Signal, QTimer
 
 from .agent_animation import AgentIndicator
 from ..common.chat_rendering import COLOR_POOL, AGENT_PANEL_GLOBALS, get_color

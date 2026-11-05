@@ -119,8 +119,6 @@ class WorkflowMixin:
             "enable_offscreen_tick": self.config.get("enable_offscreen_tick", True),
             "fast_model": self.config.get("fast_model", ""),
             "_project_dir": str(self.project.project_dir),
-            "narrative_voice": self.project.narrative_voice,
-            "meme_level": self.project.meme_level,
         }
         self._wf_def = build_workflow(
             mode, project_info, start_ch, end_ch, speed_profile=speed,

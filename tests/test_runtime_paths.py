@@ -190,3 +190,45 @@ class TestConfigLayers:
             assert "editor" in agents.load_agents()  # 保存后读取走用户层
         finally:
             importlib.reload(agents)
+
+    def test_agents_reset_clears_user_layer_only(self, packaged):
+        """重置只删用户层；随包 _internal/config 永远是出厂内容。"""
+        acm, user_cfg, bundled_cfg = packaged
+        agents = importlib.import_module("src.novel_writer.core.agents")
+        importlib.reload(agents)
+        try:
+            user_cfg.mkdir(exist_ok=True)
+            (user_cfg / "agents.json").write_text('{"custom": {}}', encoding="utf-8")
+            assert "custom" in agents.load_agents()
+            agents.reset_agents()
+            assert not (user_cfg / "agents.json").exists()
+            assert json.loads((bundled_cfg / "agents.json").read_text(encoding="utf-8")) == {"editor": 1}
+            assert agents.load_agents() == {"editor": 1}
+        finally:
+            importlib.reload(agents)
+
+    def test_agents_reset_keeps_file_when_layers_share_dir(self, tmp_path):
+        """开发环境两层同目录：重置不能把唯一的默认配置删掉。"""
+        import src.novel_writer.core.app_config as acm
+        shared = tmp_path / "config"
+        shared.mkdir()
+        (shared / "agents.json").write_text('{"editor": {}}', encoding="utf-8")
+        import src.novel_writer.core.runtime_paths as rpm
+
+        saved = (rpm.resolve_runtime_dirs, rpm.is_frozen, rpm.bundle_dir, rpm.project_root)
+        rpm.resolve_runtime_dirs = lambda **kw: RuntimeDirs(
+            data=tmp_path / "data", logs=tmp_path / "logs", user_config=shared,
+        )
+        rpm.is_frozen = lambda: False
+        rpm.project_root = lambda: tmp_path  # 开发布局：项目根 config/ 就是用户层
+        importlib.reload(acm)
+        agents = importlib.import_module("src.novel_writer.core.agents")
+        importlib.reload(agents)
+        try:
+            agents.reset_agents()
+            assert (shared / "agents.json").exists()  # 同目录时不删
+            assert "editor" in agents.load_agents()
+        finally:
+            rpm.resolve_runtime_dirs, rpm.is_frozen, rpm.bundle_dir, rpm.project_root = saved
+            importlib.reload(acm)
+            importlib.reload(agents)

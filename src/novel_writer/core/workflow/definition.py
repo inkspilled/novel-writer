@@ -374,8 +374,6 @@ def build_workflow(
                 step["offset"] = start_chapter % int(step["every"])
 
     # 设置项目信息
-    from ..narrative_voice import normalize_voice
-    from ..meme_style import normalize_meme_level
     data["project"] = {
         **project_info,
         "title": project_info.get("title", ""),

@@ -729,7 +729,7 @@ class StorylinePage(QWidget):
         if thread.kind == ThreadKind.TIMELINE.value and thread.happened:
             row.setForeground(0, QColor(colors["fg"]))
         if not thread.active:
-            row.setForeground(0, QColor(palette().color(QPalette.ColorRole.PlaceholderText)))
+            row.setForeground(0, QColor(self.palette().color(QPalette.ColorRole.PlaceholderText)))
         hint = f"{thread.kind_label} · {thread.status_label}"
         if thread.group:
             hint += f"\n卷/组：{thread.group}"

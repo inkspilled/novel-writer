@@ -75,9 +75,13 @@ def save_agents(agents_cfg: dict):
 
 
 def reset_agents() -> dict:
-    """重置为随包默认：清空用户层，回落到内置。"""
+    """重置为随包默认：清空用户层，回落到内置。
+
+    开发环境用户层与随包层是同目录同一个文件，删掉就再没有默认配置可回落，
+    此时只重读、不删文件（打包后两层分开，删除才是真正的「恢复出厂」）。
+    """
     path = user_agents_path()
-    if path.exists():
+    if path.exists() and path != bundled_agents_path():
         path.unlink()
         logger.info("已清空自定义智能体: %s", path)
     return load_agents()

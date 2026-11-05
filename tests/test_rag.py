@@ -407,3 +407,38 @@ class TestVectorSearch:
         live_ids = {c.id for c in r.index.chunks}
         assert {k.split(":")[0] for k in r._vectors} <= live_ids
         assert not any(k.startswith("ch1_p1") for k in r._vectors)
+
+
+class TestToolFastPath:
+    """Agent 工具检索走 use_semantic=False（e2f2184 的取舍：不赌 embedding 冷启动）。"""
+
+    def test_use_semantic_false_skips_embedding(self, tmp_path):
+        _write_chapter(tmp_path, 1, "甲", "# 甲\n玄铁令在藏经阁的暗格里，无人知晓。")
+        configure_embedding({"model": "fake-embed"})
+        configure_rerank(None)
+        r = RAGRetriever(tmp_path)
+        fake = FakeEmbedClient()
+        r._embed_client = fake
+        r._embed_cfg_used = ("fake-embed", "", "")
+        r.load_chapters(up_to_chapter=2)
+        fake.embedded_texts.clear()
+
+        out = r.retrieve("玄铁令", top_k=2, use_semantic=False)
+        assert "玄铁令" in out  # BM25 仍然召回
+        assert fake.embedded_texts == []  # 连查询向量都没算
+        assert r._vectors == {}  # 也没为 chunk 建向量
+
+    def test_default_still_embeds(self, tmp_path):
+        _write_chapter(tmp_path, 1, "甲", "# 甲\n玄铁令在藏经阁的暗格里，无人知晓。")
+        configure_embedding({"model": "fake-embed"})
+        configure_rerank(None)
+        r = RAGRetriever(tmp_path)
+        fake = FakeEmbedClient()
+        r._embed_client = fake
+        r._embed_cfg_used = ("fake-embed", "", "")
+        r.load_chapters(up_to_chapter=2)
+        fake.embedded_texts.clear()
+
+        r.retrieve("玄铁令", top_k=2)
+        assert fake.embedded_texts  # 默认路径仍走语义召回
+

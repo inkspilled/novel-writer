@@ -651,9 +651,10 @@ class RAGRetriever:
     # ── 检索：召回 →（元数据过滤）→ 重排序 → top-k ──
 
     def _recall(self, query: str, candidate_k: int,
-                chunk_filter: Callable[[Chunk], bool] | None) -> list[tuple[Chunk, float]]:
+                chunk_filter: Callable[[Chunk], bool] | None,
+                use_semantic: bool = True) -> list[tuple[Chunk, float]]:
         """候选召回：语义与 BM25 按 RRF 名次融合，未配置语义时使用 BM25。"""
-        vector_hits = self._vector_search(query, candidate_k, chunk_filter)
+        vector_hits = self._vector_search(query, candidate_k, chunk_filter) if use_semantic else None
         lexical_hits = self.index.search(query, candidate_k, chunk_filter=chunk_filter)
         if not vector_hits:
             return lexical_hits[:RAG_MAX_CANDIDATES]
@@ -747,6 +748,7 @@ class RAGRetriever:
         scene_type: str | None = None,
         candidate_k: int | None = None,
         text_cap: int = RAG_TEXT_CAP,
+        use_semantic: bool = True,
     ) -> str:
         """检索相关叙事块，返回格式化文本。
 
@@ -754,6 +756,8 @@ class RAGRetriever:
         - ``chapter`` / ``scene_type`` 显式传入时按元数据硬过滤（无结果自动回退）；
         - 查询里出现的「第N章」「战斗/对话/回忆」只做软排序，避免误伤召回；
         - 配置了 embedding 时与 BM25 按 RRF 融合；未配置或失败时纯 BM25；
+        - ``use_semantic=False`` 时跳过语义召回（Agent 工具用：一次工具调用
+          不能阻塞在 embedding 冷启动上），仍走 BM25 + 重排序；
         - 配置了 reranker 时对候选二次打分，未配置则保留召回排序。
         """
         if not self.index._built:
@@ -776,11 +780,14 @@ class RAGRetriever:
         k = int(candidate_k or max(RAG_CANDIDATE_K, top_k * 6))
         k = max(top_k, min(k, RAG_MAX_CANDIDATES))
 
-        results = self._recall(query, k, chunk_filter)
+        results = self._recall(query, k, chunk_filter, use_semantic=use_semantic)
         if not results and hard_filter:
             logger.debug("元数据过滤后无候选（chapter=%s scene=%s），回退章节范围内召回",
                          chapter, scene_type)
-            results = self._recall(query, k, in_scope if limit is not None else None)
+            results = self._recall(
+                query, k, in_scope if limit is not None else None,
+                use_semantic=use_semantic,
+            )
         if not results:
             return ""
         results = self._rerank_results(query, results)
