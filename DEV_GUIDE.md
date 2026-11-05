@@ -289,6 +289,11 @@ build_installer.bat              # 一键：venv → 依赖 → ico → PyInstal
                                  # 输出 output/NovelWriter-Setup.exe
 ```
 
+## 发布约定（安装器）
+
+- `installer.iss` 的 `AppId` / `PrivilegesRequired` / `DefaultDirName` 随 0.1.0 首版发布后**禁止变更**：升级时 Inno 靠旧版留在注册表的卸载记录（lowest→HKCU / admin→HKLM）回填原安装路径（含用户自选的 D 盘等自定义目录）；改权限模式或换默认目录会让升级"失忆"，被装到新默认路径且无权限清理旧版（smt 项目 2026-11-04 客户事故即 admin↔lowest 切换所致，两项目策略各自固定、勿互相照搬）
+- 每次发版前用上一版安装器实测旧→新升级链路：装旧版（可自选目录）→ 跑新版 Setup → 确认目录页默认值与旧版一致
+
 ## 扩展指南
 
 ### 添加新供应商
