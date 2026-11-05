@@ -11,8 +11,8 @@ from PySide6.QtGui import QDesktopServices
 from ..editor.editor_panel import PLANNING_DOCS
 from ..project.project_dialogs import OpenProjectDialog
 from ..project.new_project_dialog import NewProjectDialog
-from ..drama.drama_worker import DramaAIWorker
-from ..drama.drama_scope_dialog import DramaScopeDialog
+from ..drama.drama_worker import DramaAIWorker, NEEDS_LLM_TASKS
+from ..drama.drama_mode_dialog import DramaModeDialog
 from ...models.project import Project
 from ...models.chapter import Chapter
 from ...core import project_io
@@ -67,8 +67,8 @@ class ProjectMixin:
     def _drama_busy(self) -> bool:
         return self._drama_worker is not None and self._drama_worker.isRunning()
 
-    def _on_drama_action(self, action: str):
-        """短剧工作流：改编/转剧本/分镜调真实模型；资产走本地提取。"""
+    def _drama_start(self):
+        """短剧「执行模式」：弹出模式对话框（对齐小说侧），选任务与范围后启动。"""
         if self._drama_busy():
             QMessageBox.information(self, "短剧工作流", "短剧任务正在运行，先等它结束或点「停止」。")
             return
@@ -76,79 +76,34 @@ class ProjectMixin:
             QMessageBox.information(self, "短剧工作流", "请先新建或打开一个小说项目。")
             return
         self.drama_workspace.save_all(silent=True)
-        panel = self.drama_panel
-        if action == "assets":
-            self._drama_action_assets()
+        store = self.drama_workspace.store
+        episodes_with_script = [
+            e for e in store.load_episodes() if store.has_script(int(e["number"]))
+        ]
+        dialog = DramaModeDialog(
+            storyboard_all_label=(
+                f"全部集（{len(episodes_with_script)} 集有剧本，逐集调用模型）"
+                if episodes_with_script else "全部集（暂无剧本）"
+            ),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if action not in ("adapt", "script", "storyboard", "segment"):
-            panel.append_log(f"未知短剧动作：{action}")
-            return
-        if self.llm is None:
+        task, scope = dialog.get_result()
+        if task in NEEDS_LLM_TASKS and self.llm is None:
             QMessageBox.warning(
                 self, "未配置模型",
-                "短剧一键生成需要调用大模型。\n请先到「模型与智能体」里配置 API Key / 模型。",
+                "该任务需要调用大模型。\n请先到「模型与智能体」里配置 API Key / 模型。",
             )
             return
-        if action == "adapt" and self.drama_workspace.store.bible_text().strip():
+        if task == "adapt" and store.bible_text().strip():
             ret = QMessageBox.question(
-                self, "一键改编",
+                self, "重编圣经",
                 "已存在改编圣经。将调用模型重新生成并覆盖，继续？",
             )
             if ret != QMessageBox.StandardButton.Yes:
                 return
-        scope = "all"
-        if action in ("script", "storyboard", "segment"):
-            scope = self._ask_drama_scope(action)
-            if scope is None:
-                return
-        self._start_drama_worker(action, scope)
-
-    def _ask_drama_scope(self, action: str) -> str | None:
-        """让用户选当前章节/全部；返回 None 表示取消。"""
-        store = self.drama_workspace.store
-        if action == "segment":
-            if not any((c.content or "").strip() for c in self.project.chapters):
-                QMessageBox.information(self, "智能分集", "先写至少一章小说正文，再按剧情重新分集。")
-                return None
-            dialog = DramaScopeDialog(
-                "智能分集", "生成下一集（最多读5章，剩余素材顺延）",
-                "持续分集（处理待用正文，可随时停止）", self,
-                hint="按剧情选择连续章节合为一集，每集先规划再写剧本。\n"
-                     "已有来源映射会保留；只有剧本成功保存后才标记素材已使用，失败可继续。",
-            )
-            return dialog.scope() if dialog.exec() == QDialog.DialogCode.Accepted else None
-        if action == "script":
-            chapters = [c for c in self.project.chapters if (c.content or "").strip()]
-            if not chapters:
-                QMessageBox.information(self, "一键转剧本", "小说还没有正文。先写至少一章。")
-                return None
-            current = getattr(self.editor, "_current_chapter", None) or chapters[-1]
-            current_label = f"当前章节：第{current.number}章 {current.title}"
-            all_label = f"全部章节（{len(chapters)} 章有正文，逐章调用模型）"
-        else:
-            episodes = [
-                e for e in store.load_episodes()
-                if store.has_script(int(e["number"]))
-            ]
-            if not episodes:
-                QMessageBox.information(self, "一键分镜", "还没有剧本。先「一键转剧本」。")
-                return None
-            current_num = self.drama_workspace.script_page._current or int(episodes[-1]["number"])
-            current = next(
-                (e for e in episodes if int(e["number"]) == int(current_num)),
-                episodes[-1],
-            )
-            current_label = f"当前集：第{current['number']}集 {current['title']}"
-            all_label = f"全部集（{len(episodes)} 集有剧本，逐集调用模型）"
-        dialog = DramaScopeDialog(
-            "一键转剧本" if action == "script" else "一键分镜",
-            current_label,
-            all_label,
-            self,
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return dialog.scope()
+        self._start_drama_worker(task, scope)
 
     def _start_drama_worker(self, task: str, scope: str):
         self._flush_content_save()
@@ -180,18 +135,28 @@ class ProjectMixin:
         )
         worker.progress.connect(self._on_drama_progress)
         worker.log.connect(self.drama_panel.append_log)
+        worker.usage_updated.connect(self.drama_panel.set_usage)
         worker.agent_state.connect(self._on_drama_agent_state)
         worker.finished_ok.connect(self._on_drama_done)
         worker.failed.connect(self._on_drama_failed)
         self._drama_worker = worker
         self.drama_workspace.setEnabled(False)
-        self.drama_panel.set_running(True, task)
-        scope_text = "全部" if scope == "all" else "当前"
-        model = getattr(self.llm, "model", "当前模型")
-        self.drama_panel.set_status(f"准备调用模型（{scope_text}）…", 2)
-        self.drama_panel.append_log(
-            f"开始 {task}：范围={scope_text} · 模型={model} · 会逐章/逐集调用，真实耗时。"
-        )
+        self.drama_panel.set_running(True)
+        scope_labels = {
+            ("full", "current"): "下一集", ("full", "all"): "全部待用",
+            ("segment", "current"): "下一集", ("segment", "all"): "全部待用",
+            ("storyboard", "current"): "当前集", ("storyboard", "all"): "全部集",
+        }
+        scope_text = scope_labels.get((task, scope), "—")
+        model = getattr(self.llm, "model", "") if self.llm else ""
+        if task in NEEDS_LLM_TASKS:
+            self.drama_panel.set_status(f"准备调用模型（{scope_text}）…", 2)
+            self.drama_panel.append_log(
+                f"开始 {task}：范围={scope_text} · 模型={model} · 会逐章/逐集调用，真实耗时。"
+            )
+        else:
+            self.drama_panel.set_status("正在本地提取…", 2)
+            self.drama_panel.append_log(f"开始 {task}：范围={scope_text} · 本地规则提取，不调模型。")
         worker.start()
 
     def _on_drama_progress(self, message: str, percent: int):
@@ -224,7 +189,7 @@ class ProjectMixin:
                 store, keep=self.drama_workspace.script_page._current
             )
             self.drama_workspace.assets_page.load(store)
-            page = {"adapt": 0, "script": 1, "segment": 1, "storyboard": 2}.get(task, 0)
+            page = {"adapt": 0, "segment": 1, "storyboard": 2, "assets": 3, "full": 2}.get(task, 0)
             self.drama_workspace.nav.setCurrentRow(page)
         self._finish_drama_worker()
 
@@ -249,47 +214,6 @@ class ProjectMixin:
             self.drama_panel.set_status("正在停止…", 0)
             if not silent:
                 self.drama_panel.append_log("已请求停止，当前这一次模型调用结束后会停。")
-
-    def _drama_action_assets(self):
-        """资产是本地规则提取，不调用模型；支持当前集/全部集。"""
-        store = self.drama_workspace.store
-        panel = self.drama_panel
-        if store is None:
-            return
-        episodes = [
-            e for e in store.load_episodes()
-            if store.load_storyboard(int(e["number"]))["shots"]
-        ]
-        if not episodes:
-            panel.append_log("还没有分镜，先「一键分镜」。")
-            panel.set_status("等待分镜", 0)
-            return
-        current_num = self.drama_workspace.storyboard_page._current or int(episodes[-1]["number"])
-        current = next(
-            (e for e in episodes if int(e["number"]) == int(current_num)),
-            episodes[-1],
-        )
-        dialog = DramaScopeDialog(
-            "一键资产",
-            f"当前集：第{current['number']}集 {current['title']}",
-            f"全部集（{len(episodes)} 集有分镜）",
-            self,
-            hint="资产提取是本地规则，不调用模型；会从已有分镜提取角色/地点占位。",
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        scope = dialog.scope()
-        targets = [current] if scope == "current" else episodes
-        from ..agent.office_scene import AgentState
-        panel.set_agent_state("prompt", AgentState.WORKING, "提取资产")
-        added = 0
-        for ep in targets:
-            added += store.extract_assets_from_storyboard(int(ep["number"]))
-        self.drama_workspace.nav.setCurrentRow(3)
-        self.drama_workspace.assets_page.load(store)
-        panel.set_agent_state("prompt", AgentState.DONE, f"新增 {added}")
-        panel.set_status(f"资产清单 +{added}", 100)
-        panel.append_log(f"已从 {len(targets)} 集分镜提取 {added} 个角色/地点资产占位。")
 
     def _new_project(self):
         if self._drama_busy():

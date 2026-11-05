@@ -35,7 +35,7 @@ MODULES = [
     "novel_writer.ui.drama.drama_workspace",
     "novel_writer.ui.drama.drama_panel",
     "novel_writer.ui.drama.drama_worker",
-    "novel_writer.ui.drama.drama_scope_dialog",
+    "novel_writer.ui.drama.drama_mode_dialog",
     "novel_writer.ui.app_shell.theme_mixin",
     "novel_writer.ui.app_shell.llm_mixin",
     "novel_writer.ui.app_shell.project_mixin",

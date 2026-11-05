@@ -1,4 +1,12 @@
-"""短剧 AI 工作流 Worker：真正调用模型做改编 / 转剧本 / 分镜。"""
+"""短剧 AI 工作流 Worker：真正调用模型做改编 / 分集 / 分镜。
+
+任务一览（DramaModeDialog 的五个模式）：
+- full       全流程：圣经 → 智能分集(剧本) → 分镜 → 资产，已有产物自动跳过
+- segment    智能分集：滑动窗口按剧情冲突合并章节，先规划再写剧本
+- adapt      重编圣经：小说规划 + 滚动摘要 → 改编圣经
+- storyboard 一键分镜：剧本 → 镜头 JSON
+- assets     提取资产：分镜 → 角色/地点占位（本地规则，不调模型）
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,14 +16,10 @@ import time
 from PySide6.QtCore import QThread, Signal
 
 from ...core.agents.base import AgentConfig, BaseAgent
-from ...core.drama import (
-    DramaStore, clean_script_output, parse_storyboard_output,
-)
+from ...core.drama import DramaStore, parse_storyboard_output
 from ...core.drama_context import (
-    ADAPT_DOC_BUDGET, BIBLE_BUDGET, CONTEXT_BUDGET, PREV_TAIL_BUDGET,
-    RAG_BUDGET, RECAP_EPISODES, STORYBOARD_BUDGET, chapter_brief, compress_script,
-    episode_material, parse_character_names, rag_queries, recap_lines,
-    retrieve_prior, slice_bible, truncate,
+    ADAPT_DOC_BUDGET, STORYBOARD_BUDGET, parse_character_names, slice_bible,
+    truncate, compress_script,
 )
 from ...core.llm.base import BaseLLM
 from ...core.drama_adaptation import AdaptiveDramaRunner
@@ -23,25 +27,27 @@ from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 
-_TASK_AGENTS = {
-    "adapt": ("短剧策划", "showrunner"),
-    "script": ("分集编剧", "writer"),
-    "storyboard": ("分镜师", "storyboard"),
-}
+# 需要大模型的任务（assets 是本地规则提取，llm 可为 None）
+NEEDS_LLM_TASKS = ("full", "adapt", "segment", "storyboard")
 
 
 class DramaAIWorker(QThread):
-    """顺序执行短剧任务；每章/每集一次模型调用，支持停止。"""
+    """顺序执行短剧任务；每章/每集一次模型调用，支持停止。
+
+    各任务方法只返回 summary，由 _run() 统一 emit finished_ok；
+    异常透传到 run() 统一 emit failed。
+    """
 
     progress = Signal(str, int)          # 状态文字, 百分比
     log = Signal(str)
+    usage_updated = Signal(dict)         # 累计 token（对齐小说侧 mini bar）
     agent_state = Signal(str, str, str)  # agent key, working/done/error/idle, task
     finished_ok = Signal(str)
     failed = Signal(str)
 
     def __init__(
         self,
-        llm: BaseLLM,
+        llm: BaseLLM | None,
         store: DramaStore,
         project_info: dict,
         task: str,
@@ -64,6 +70,7 @@ class DramaAIWorker(QThread):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
         self._context_note = ""
+        self._total_usage: dict = {}
 
     def request_stop(self):
         self._stop = True
@@ -99,21 +106,62 @@ class DramaAIWorker(QThread):
 
     async def _run(self):
         try:
-            if self.task == "adapt":
-                await self._run_adapt()
-            elif self.task == "script":
-                await self._run_script()
-            elif self.task == "storyboard":
-                await self._run_storyboard()
+            if self.task == "full":
+                summary = await self._run_full()
+            elif self.task == "adapt":
+                summary = await self._run_adapt()
             elif self.task == "segment":
-                await self._run_segment()
+                summary = await self._run_segment()
+            elif self.task == "storyboard":
+                summary = await self._run_storyboard()
+            elif self.task == "assets":
+                summary = self._run_assets()
             else:
-                self.failed.emit(f"未知短剧任务：{self.task}")
-                return
+                raise ValueError(f"未知短剧任务：{self.task}")
+            self.finished_ok.emit(summary)
         except asyncio.CancelledError:
             raise
 
-    async def _run_segment(self):
+    # ── 全流程 ──
+
+    async def _run_full(self) -> str:
+        """圣经 → 智能分集(剧本) → 分镜 → 资产；已有产物跳过，中断后可重跑续上。"""
+        parts: list[str] = []
+
+        self.progress.emit("全流程 1/4：改编圣经", 5)
+        if self.store.bible_text().strip():
+            self.log.emit("改编圣经已存在，跳过")
+        else:
+            try:
+                parts.append(await self._run_adapt())
+            except Exception as e:
+                # 圣经是节选增强材料，失败不拦全流程；分集在无圣经下也能跑
+                self.log.emit(f"改编圣经生成失败，继续分集：{str(e)[:200]}")
+        if self._stop:
+            return self._partial(parts)
+
+        self.progress.emit("全流程 2/4：智能分集（剧本）", 25)
+        parts.append(await self._run_segment())
+        if self._stop:
+            return self._partial(parts)
+
+        self.progress.emit("全流程 3/4：一键分镜", 60)
+        parts.append(await self._run_storyboard(only_missing_shots=True))
+        if self._stop:
+            return self._partial(parts)
+
+        self.progress.emit("全流程 4/4：提取资产", 90)
+        parts.append(self._run_assets())
+        self.progress.emit("全流程已完成", 100)
+        return "全流程完成 · " + "；".join(parts)
+
+    @staticmethod
+    def _partial(parts: list[str]) -> str:
+        return "已停止" + ("（" + "；".join(parts) + "）" if parts else "")
+
+    # ── 智能分集 ──
+
+    async def _run_segment(self) -> str:
         planner = self._make_agent("分集策划", "你是短剧策划，按戏剧冲突合并小说章节，严格返回指定 JSON。", 0.4, 4096)
         writer = self._make_agent("分集编剧", "你是短剧编剧，按分集规划与目标时长创作可拍摄的场次剧本。", 0.7, 8192)
 
@@ -133,12 +181,11 @@ class DramaAIWorker(QThread):
 
         runner = AdaptiveDramaRunner(self.store, ask, log=self.log.emit,
                                      progress=self.progress.emit, stopped=lambda: self._stop)
-        summary = await runner.run(self.chapters, one_episode=self.scope == "current")
-        self.finished_ok.emit(summary)
+        return await runner.run(self.chapters, one_episode=self.scope == "current")
 
-    # ── 一键改编 ──
+    # ── 重编圣经 ──
 
-    async def _run_adapt(self):
+    async def _run_adapt(self) -> str:
         agent = self._make_agent(
             "短剧策划",
             "你是竖屏短剧总策划。把小说规划重新组织成可执行的短剧改编圣经，"
@@ -153,12 +200,10 @@ class DramaAIWorker(QThread):
             self.log.emit(self._context_note)
         text, usage, elapsed = await self._ask(agent, prompt, thinking="off", max_tokens=8192)
         if self._stop:
-            self.finished_ok.emit("已停止")
-            return
+            return "已停止"
         if not (text or "").strip():
             self.agent_state.emit("showrunner", "error", "")
-            self.failed.emit("模型没有返回内容，请检查模型配置或稍后重试")
-            return
+            raise RuntimeError("模型没有返回内容，请检查模型配置或稍后重试")
         text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
         self.store.save_bible(text + "\n")
         self.agent_state.emit("showrunner", "done", "改编圣经")
@@ -166,85 +211,17 @@ class DramaAIWorker(QThread):
         self.log.emit(
             f"一键改编完成：{len(text)} 字 · {elapsed:.1f}s · {self._usage(usage)}"
         )
-        self.finished_ok.emit("改编圣经已生成")
-
-    # ── 一键转剧本 ──
-
-    async def _run_script(self):
-        items = self._chapter_items()
-        if not items:
-            self.failed.emit("没有可用的章节正文。先写小说正文，再一键转剧本。")
-            return
-        agent = self._make_agent(
-            "分集编剧",
-            "你是短剧编剧。把小说章节按用户企划中的目标时长改写成单集短剧剧本，"
-            "只输出剧本 Markdown，不要解释。",
-            temperature=0.8,
-            max_tokens=8192,
-        )
-        success = 0
-        failed = 0
-        prev_tail = ""
-        for i, chapter in enumerate(items, start=1):
-            if self._stop:
-                break
-            self.progress.emit(
-                f"正在改第{chapter['number']}章（{i}/{len(items)}）",
-                int((i - 1) / len(items) * 100),
-            )
-            self.agent_state.emit("writer", "working", f"第{chapter['number']}章")
-            target_number = self._target_episode_number(
-                int(chapter["number"]), chapter.get("title", "")
-            )
-            prev_tail = self.store.previous_episode_tail(target_number)
-            prompt = self._script_prompt(chapter, target_number, prev_tail)
-            if self._context_note:
-                self.log.emit(self._context_note)
-            try:
-                text, usage, elapsed = await self._ask(
-                    agent, prompt, thinking="off", max_tokens=8192
-                )
-                if self._stop:
-                    break
-                if not (text or "").strip():
-                    raise RuntimeError("模型返回为空")
-                script = clean_script_output(
-                    text, target_number, chapter.get("title", "")
-                )
-                ep = self.store.upsert_episode_for_chapter(
-                    int(chapter["number"]), chapter.get("title", ""), script
-                )
-                prev_tail = script[-500:]
-                success += 1
-                self.agent_state.emit("writer", "done", f"第{ep['number']}集")
-                self.log.emit(
-                    f"第{chapter['number']}章 → 第{ep['number']}集 · "
-                    f"{len(script)}字 · {elapsed:.1f}s · {self._usage(usage)}"
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                failed += 1
-                self.agent_state.emit("writer", "error", f"第{chapter['number']}章")
-                logger.error("第%s章转剧本失败: %s", chapter.get("number"), e)
-                self.log.emit(f"第{chapter.get('number')}章失败：{str(e)[:200]}")
-            self.progress.emit(
-                f"已完成 {i}/{len(items)}", int(i / len(items) * 100)
-            )
-        if self._stop:
-            self.finished_ok.emit(f"已停止（成功 {success} 集）")
-        elif success == 0:
-            self.failed.emit("所有章节都生成失败，请检查模型配置或日志")
-        else:
-            self.finished_ok.emit(f"已生成 {success} 集剧本" + (f"，失败 {failed}" if failed else ""))
+        return "改编圣经已生成"
 
     # ── 一键分镜 ──
 
-    async def _run_storyboard(self):
-        items = self._episode_items()
+    async def _run_storyboard(self, only_missing_shots: bool = False) -> str:
+        items = self._episode_items(only_missing_shots)
         if not items:
-            self.failed.emit("没有可用的剧本。先一键转剧本，再一键分镜。")
-            return
+            raise RuntimeError(
+                "没有可拆分镜的剧本。先「智能分集」生成剧本，再一键分镜。"
+                if only_missing_shots else "没有可用的剧本。先「智能分集」，再一键分镜。"
+            )
         agent = self._make_agent(
             "分镜师",
             "你是短剧分镜师。把剧本拆成可拍摄的镜头表，严格只输出 JSON，不要 Markdown 代码块和解释。",
@@ -305,34 +282,44 @@ class DramaAIWorker(QThread):
                 self.log.emit(f"第{number}集分镜失败：{str(e)[:200]}")
             self.progress.emit(f"已完成 {i}/{len(items)}", int(i / len(items) * 100))
         if self._stop:
-            self.finished_ok.emit(f"已停止（成功 {success} 集）")
-        elif success == 0:
-            self.failed.emit("所有集分镜都生成失败，请检查模型配置或日志")
-        else:
-            self.finished_ok.emit(f"已生成 {success} 集分镜" + (f"，失败 {failed}" if failed else ""))
+            return f"已停止（成功 {success} 集）"
+        if success == 0:
+            raise RuntimeError("所有集分镜都生成失败，请检查模型配置或日志")
+        return f"已生成 {success} 集分镜" + (f"，失败 {failed}" if failed else "")
+
+    # ── 提取资产（本地，不调模型）──
+
+    def _run_assets(self) -> str:
+        episodes = [
+            e for e in self.store.load_episodes()
+            if self.store.load_storyboard(int(e["number"]))["shots"]
+        ]
+        if not episodes:
+            raise RuntimeError("还没有分镜，先「一键分镜」或跑全流程。")
+        self.agent_state.emit("prompt", "working", "提取资产")
+        added = 0
+        for ep in episodes:
+            added += self.store.extract_assets_from_storyboard(int(ep["number"]))
+        self.agent_state.emit("prompt", "done", f"新增 {added}")
+        return f"资产清单 +{added}"
 
     # ── 选择/提示词 ──
 
-    def _chapter_items(self) -> list[dict]:
-        items = sorted([c for c in self.chapters if (c.get("text") or "").strip()],
-                       key=lambda c: int(c["number"]))
-        if self.scope == "current":
-            current = self.current_chapter or (items[-1]["number"] if items else 0)
-            return [c for c in items if int(c["number"]) == int(current)][:1]
-        return items
-
-    def _episode_items(self) -> list[dict]:
+    def _episode_items(self, only_missing_shots: bool = False) -> list[dict]:
         items = [
             e for e in self.store.load_episodes()
             if self.store.has_script(int(e["number"]))
         ]
+        if only_missing_shots:
+            # 全流程增量模式：只拆还没有分镜的集，已有的不重拆
+            return [
+                e for e in items
+                if not self.store.load_storyboard(int(e["number"]))["shots"]
+            ]
         if self.scope == "current":
             current = self.current_episode or (items[-1]["number"] if items else 0)
             return [e for e in items if int(e["number"]) == int(current)][:1]
         return items
-
-    def _target_episode_number(self, chapter_number: int, title: str) -> int:
-        return self.store.target_episode_number(chapter_number, title)
 
     def _make_agent(self, title: str, system_prompt: str, temperature: float, max_tokens: int) -> BaseAgent:
         cfg = AgentConfig(
@@ -381,6 +368,8 @@ class DramaAIWorker(QThread):
                 "多半是思考把输出预算吃完了：可以在「模型与智能体」里换模型，"
                 "或把该步骤的 max_tokens 调大后重试。"
             )
+        self._total_usage = self._merge_usage(self._total_usage, usage)
+        self.usage_updated.emit(dict(self._total_usage))
         return text, usage, time.monotonic() - t0
 
     def _adapt_prompt(self) -> str:
@@ -446,77 +435,6 @@ class DramaAIWorker(QThread):
             return path.read_text(encoding="utf-8") if path.exists() else ""
         except OSError:
             return ""
-
-    def _known_names(self) -> list[str]:
-        return parse_character_names(self._read_planning("人物设定.md"))
-
-    def _script_prompt(self, chapter: dict, episode_number: int, prev_tail: str) -> str:
-        series = self.store.load_series()
-        episode = next((e for e in self.store.load_episodes() if e["number"] == episode_number), {})
-        raw = chapter.get("text") or ""
-        names = self._known_names()
-        body, kind = episode_material(
-            self.store.project_dir, chapter, str(chapter.get("title") or ""),
-            budget=CONTEXT_BUDGET, known_names=names,
-        )
-        # 跨章检索：只查本章之前的「已发生剧情」，补人物/伏笔/前情，防剧透
-        prior, prior_blocks = retrieve_prior(
-            self.store.project_dir,
-            rag_queries(
-                title=str(chapter.get("title") or ""),
-                brief=chapter_brief(self.store.project_dir, int(chapter["number"]),
-                                    str(chapter.get("title") or ""), budget=400),
-                names=names,
-                extra=[episode.get("goal", ""), episode.get("hook", "")],
-            ),
-            before_chapter=int(chapter["number"]),
-            budget=RAG_BUDGET,
-        )
-        bible = slice_bible(
-            self.store.bible_text(),
-            ("节奏", "钩子", "红线", "视觉", "人物", "分集"),
-            BIBLE_BUDGET,
-        )
-        prev = truncate(prev_tail, PREV_TAIL_BUDGET)
-        recap = recap_lines(self.store.load_episodes(), episode_number, RECAP_EPISODES)
-        self._context_note = (
-            f"第{chapter.get('number')}章上下文：原文 {len(raw)} 字 → 送入 {len(body)} 字"
-            f"（{'细纲/概要/推演/台账 + 对白切片' if kind == 'structured' else '无结构化数据，原文切片兜底'}）；"
-            f"跨章检索 {prior_blocks} 块/{len(prior)} 字；圣经 {len(bible)} 字；"
-            f"前情 {len(recap)} 字；上集结尾 {len(prev)} 字"
-        )
-        prev_block = f"\n【上一集结尾】\n{prev}\n" if prev else ""
-        recap_block = f"【前情提要】\n{recap}\n\n" if recap else ""
-        prior_block = f"【相关前文（RAG 跨章检索，均为已发生剧情）】\n{prior}\n\n" if prior else ""
-        return (
-            f"把小说第{chapter['number']}章改写成短剧第{episode_number}集。"
-            "只输出剧本 Markdown，不要解释、不要分析。\n\n"
-            f"【本集标题】{chapter.get('title', '')}\n"
-            f"【平台/画幅】{series.get('platform')} / {series.get('aspect')}\n"
-            f"【目标时长】{series.get('episode_seconds')} 秒\n"
-            f"【本集目标】{episode.get('goal') or '推进核心冲突并产生局面变化'}\n"
-            f"【集尾钩子】{episode.get('hook') or '留下必须追看的悬念'}\n"
-            f"{recap_block}"
-            f"{prior_block}"
-            f"【短剧改编圣经（节选）】\n{bible or '（空）'}\n"
-            f"{prev_block}\n"
-            "【硬性格式】\n"
-            f"# 第{episode_number}集 {chapter.get('title', '')}\n"
-            "## 第1场 地点 · 日/夜\n"
-            "（动作/画面，只写观众能看见的）\n"
-            "角色：台词\n"
-            "## 第2场 地点 · 日/夜\n"
-            "……\n\n"
-            "【改写要求】\n"
-            "- 严格按目标时长设计场次与台词，前 3 秒有冲突/异常，结尾 5 秒留钩子。\n"
-            "- 衔接上一集结尾的人物位置、持有道具、已知信息和未决冲突，不重复已发生的反转。\n"
-            "- 只保留本章 1-2 个核心冲突；删环境铺陈和支线。\n"
-            "- 情节与人物动机以「结构化简报」为准，台词/动作参考原文切片；标了「（略）」的地方不要补写。\n"
-            "- 心理描写全部翻译成动作、表情、道具、空间。\n"
-            "- 台词短、口语化；不要大段旁白。\n"
-            "- 不要出现「本章」「原文」「小说」等元叙述。\n\n"
-            f"【本章材料（结构化简报 + 原文对白/动作切片）】\n{body}\n"
-        )
 
     def _storyboard_prompt(self, episode: dict, script: str, duration: int) -> str:
         compact = compress_script(script, STORYBOARD_BUDGET)

@@ -152,7 +152,7 @@ class MainWindow(
         self.drama_workspace.status_message.connect(
             lambda msg: self.statusBar().showMessage(msg, 3000)
         )
-        self.drama_panel.action_requested.connect(self._on_drama_action)
+        self.drama_panel.start_requested.connect(self._drama_start)
         self.drama_panel.stop_requested.connect(self._drama_stop)
         self.mode_tabs.currentChanged.connect(self._on_mode_tab_changed)
 

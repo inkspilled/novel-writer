@@ -117,15 +117,58 @@ def test_drama_workspace_generates_from_script(qapp, tmp_path):
 def test_drama_agent_panel_has_agents_and_actions(qapp, tmp_path):
     from src.novel_writer.ui.drama.drama_panel import DramaAgentPanel
     from src.novel_writer.ui.agent.office_scene import AgentState
+    from src.novel_writer.ui.workflow.workflow_bar import WorkflowMiniBar
 
     panel = DramaAgentPanel()
     panel.set_project(_novel_project(tmp_path))
     assert len(panel.office.iter_slots()) == 4
-    assert set(panel.workflow.buttons) == {"adapt", "segment", "script", "storyboard", "assets"}
+    # 工作流条复用小说侧 WorkflowMiniBar：单个「执行模式」入口，不再是一键按钮网格
+    assert isinstance(panel.workflow, WorkflowMiniBar)
+    assert panel.workflow._btn_start.text() == "执行模式"
+    assert panel.workflow._btn_start.isEnabled()  # 有项目即可执行
     panel.set_agent_state("storyboard", AgentState.WORKING, "拆镜")
     assert any(s.name == "storyboard" and s.state == AgentState.WORKING
                for s in panel.office.iter_slots())
     panel.close()
+
+    # 无项目时执行模式置灰
+    panel2 = DramaAgentPanel()
+    panel2.set_project(None)
+    assert not panel2.workflow._btn_start.isEnabled()
+    panel2.close()
+
+
+def test_drama_mode_dialog_modes_and_scope(qapp):
+    from src.novel_writer.ui.drama.drama_mode_dialog import DramaModeDialog
+
+    dialog = DramaModeDialog(storyboard_all_label="全部集（3 集有剧本，逐集调用模型）")
+    tasks = [dialog._mode_combo.itemData(i) for i in range(dialog._mode_combo.count())]
+    assert tasks == ["full", "segment", "adapt", "storyboard", "assets"]
+    assert "script" not in tasks  # 逐章转剧本已删除，统一走智能分集
+
+    # offscreen 下 dialog 未 show，用 isVisibleTo 断言「假如对话框显示，控件是否可见」
+    def scope_visible() -> bool:
+        return dialog._scope_group.isVisibleTo(dialog)
+
+    # full：范围组显示，默认「生成下一集」
+    dialog._mode_combo.setCurrentIndex(0)
+    assert scope_visible()
+    assert dialog.get_result() == ("full", "current")
+    dialog.radio_all.setChecked(True)
+    assert dialog.get_result() == ("full", "all")
+
+    # storyboard：范围组文案切到当前集/全部集
+    dialog._mode_combo.setCurrentIndex(3)
+    assert scope_visible()
+    assert dialog.radio_all.text().startswith("全部集（3")
+    assert dialog.get_result() == ("storyboard", "all")
+
+    # adapt/assets：范围组隐藏，scope 固定 all
+    for idx, task in ((2, "adapt"), (4, "assets")):
+        dialog._mode_combo.setCurrentIndex(idx)
+        assert not scope_visible()
+        assert dialog.get_result() == (task, "all")
+    dialog.close()
 
 
 def test_new_project_dialog_is_novel_only(qapp):

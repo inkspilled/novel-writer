@@ -1,19 +1,19 @@
-"""短剧右侧面板 — 和小说一样：上面智能体，下面工作流执行区。"""
+"""短剧右侧面板 — 和小说一样：上面智能体，下面「执行模式」工作流迷你条。
+
+工作流条直接复用小说侧的 WorkflowMiniBar，两侧视觉与交互保持一致；
+点击「执行模式」弹出 DramaModeDialog 选模式与范围（见 project_mixin）。
+"""
 from __future__ import annotations
 
-from datetime import datetime
-
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QProgressBar,
-    QPushButton, QVBoxLayout, QWidget,
-)
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 
 from ...core.app_config import load_config
 from ...designsystem import get_theme_colors
 from ...models.project import Project
 from ..agent.office_scene import AgentState, OfficeScene
 from ..common.chat_rendering import COLOR_POOL
+from ..workflow.workflow_bar import WorkflowMiniBar
 
 DRAMA_AGENTS = {
     "showrunner": {"title": "短剧策划", "emoji": "🎬"},
@@ -23,97 +23,10 @@ DRAMA_AGENTS = {
 }
 
 
-class DramaWorkflowBar(QWidget):
-    """短剧工作流执行区：一键动作 + 进度 + 日志。"""
-
-    action_requested = Signal(str)
-    stop_requested = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 6, 12, 8)
-        root.setSpacing(6)
-
-        head = QHBoxLayout()
-        title = QLabel("短剧工作流")
-        title.setStyleSheet("font-size: 11px; font-weight: 700;")
-        head.addWidget(title)
-        head.addStretch()
-        self.status = QLabel("待命")
-        self.status.setStyleSheet("font-size: 10px; color: palette(placeholderText);")
-        head.addWidget(self.status)
-        self.btn_stop = QPushButton("停止")
-        self.btn_stop.setObjectName("danger")
-        self.btn_stop.setFixedHeight(22)
-        self.btn_stop.setStyleSheet("font-size: 10px; padding: 2px 8px;")
-        self.btn_stop.setVisible(False)
-        self.btn_stop.clicked.connect(self.stop_requested.emit)
-        head.addWidget(self.btn_stop)
-        root.addLayout(head)
-
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(4)
-        root.addWidget(self.progress)
-
-        actions = QGridLayout()
-        actions.setHorizontalSpacing(6)
-        actions.setVerticalSpacing(6)
-        self.buttons: dict[str, QPushButton] = {}
-        for index, (key, text) in enumerate((
-            ("adapt", "一键改编"),
-            ("segment", "智能分集"),
-            ("script", "一键转剧本"),
-            ("storyboard", "一键分镜"),
-            ("assets", "一键资产"),
-        )):
-            btn = QPushButton(text)
-            btn.setMinimumHeight(30)
-            btn.setStyleSheet("font-size: 11px; padding: 4px 6px;")
-            btn.clicked.connect(lambda checked=False, k=key: self.action_requested.emit(k))
-            actions.addWidget(btn, index // 2, index % 2)
-            self.buttons[key] = btn
-        root.addLayout(actions)
-
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setPlaceholderText("工作流日志：一键改编 → 一键转剧本 → 一键分镜 → 一键资产")
-        self.log.setMinimumHeight(90)
-        self.log.setStyleSheet(
-            "font-size: 10px; font-family: Menlo, Consolas, monospace;"
-            " background: rgba(0,0,0,0.08); border-radius: 6px; padding: 4px;"
-        )
-        root.addWidget(self.log, 1)
-
-    def set_status(self, text: str, percent: int | None = None) -> None:
-        self.status.setText(text)
-        if percent is not None:
-            self.progress.setValue(max(0, min(100, int(percent))))
-
-    def set_running(self, running: bool, active: str = "") -> None:
-        for key, btn in self.buttons.items():
-            btn.setEnabled(not running or key == active)
-        self.btn_stop.setVisible(running)
-        if running:
-            self.set_status("执行中…", 15)
-
-    def append_log(self, text: str) -> None:
-        stamp = datetime.now().strftime("%H:%M:%S")
-        self.log.appendPlainText(f"[{stamp}] {text}")
-        self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
-
-    def reset(self) -> None:
-        self.log.clear()
-        self.set_status("待命", 0)
-
-
 class DramaAgentPanel(QWidget):
-    """短剧右侧：OfficeScene 智能体卡片 + 短剧工作流执行区。"""
+    """短剧右侧：OfficeScene 智能体卡片 + 工作流迷你条（与小说同款）。"""
 
-    action_requested = Signal(str)
+    start_requested = Signal()
     stop_requested = Signal()
 
     def __init__(self, parent=None):
@@ -151,9 +64,10 @@ class DramaAgentPanel(QWidget):
         self.office.agent_clicked.connect(self._on_agent_clicked)
         root.addWidget(self.office)
 
-        self.workflow = DramaWorkflowBar()
-        self.workflow.action_requested.connect(self.action_requested)
-        self.workflow.stop_requested.connect(self.stop_requested)
+        self.workflow = WorkflowMiniBar()
+        self.workflow.set_summary("短剧工作流")
+        self.workflow.start_requested.connect(self.start_requested.emit)
+        self.workflow.stop_requested.connect(self.stop_requested.emit)
         root.addWidget(self.workflow, 1)
         self.refresh_theme()
 
@@ -170,7 +84,11 @@ class DramaAgentPanel(QWidget):
         else:
             self.project_label.setText("依附当前小说")
         self.reset_agents()
-        self.workflow.reset()
+        self.workflow.set_has_workflow(bool(project and project.title))
+        self.workflow.clear_log()
+        self.workflow.set_progress(0, "")
+        self.workflow.set_summary("短剧工作流")
+        self.workflow.set_running(False)
 
     def set_agent_state(self, name: str, state: AgentState, task: str = "") -> None:
         self.office.set_agent_state(name, state, task)
@@ -178,11 +96,14 @@ class DramaAgentPanel(QWidget):
     def reset_agents(self) -> None:
         self.office.reset_states(AgentState.IDLE)
 
-    def set_status(self, text: str, percent: int | None = None) -> None:
-        self.workflow.set_status(text, percent)
+    def set_status(self, text: str, percent: int) -> None:
+        self.workflow.set_progress(max(0, min(100, int(percent))), text)
 
-    def set_running(self, running: bool, active: str = "") -> None:
-        self.workflow.set_running(running, active)
+    def set_running(self, running: bool) -> None:
+        self.workflow.set_running(running)
+
+    def set_usage(self, usage: dict | None) -> None:
+        self.workflow.set_usage(usage)
 
     def append_log(self, text: str) -> None:
         self.workflow.append_log(text)
@@ -192,6 +113,7 @@ class DramaAgentPanel(QWidget):
         name = cfg.get("theme", "dark")
         colors = get_theme_colors(name, cfg if name == "custom" else None)
         self.office.apply_theme(colors)
+        self.workflow.apply_theme(colors)
 
 
 # 兼容旧引用

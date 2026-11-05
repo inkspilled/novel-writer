@@ -180,6 +180,12 @@ class WorkflowMiniBar(QWidget):
             self._log_expanded = True
         self._refresh_log_visibility()
 
+    def clear_log(self):
+        """清空日志并回到空占位（短剧切换项目时用）。"""
+        self._log_area.clear()
+        self._has_log = False
+        self._refresh_log_visibility()
+
     def apply_theme(self, colors: dict):
         accent = colors.get("accent", "#6e8efb")
         elevated = colors.get("elevated", "#242430")
