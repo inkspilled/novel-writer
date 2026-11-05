@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QLabel, QWidget
 
 from ...core.app_config import load_config
@@ -64,11 +64,26 @@ class DramaAgentPanel(QWidget):
         self.office.agent_clicked.connect(self._on_agent_clicked)
         root.addWidget(self.office)
 
+        self.hint_label = QLabel(
+            "流程：改编圣经 → 智能分集（写剧本）→ 分镜 → 资产。\n"
+            "点右下「执行模式」选跑哪一步；进度和日志会显示在底部。"
+        )
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.hint_label.setStyleSheet(
+            "font-size: 11px; color: palette(placeholderText); padding: 8px 14px;"
+        )
+        root.addWidget(self.hint_label)
+
+        # OfficeScene 是固定高度的卡片行，吃不下 stretch；这里用弹簧把剩余空间吃掉，
+        # 工作流条才能贴着面板底部，而不是被撑到中间、上下两截空白。
+        root.addStretch(1)
+
         self.workflow = WorkflowMiniBar()
         self.workflow.set_summary("短剧工作流")
         self.workflow.start_requested.connect(self.start_requested.emit)
         self.workflow.stop_requested.connect(self.stop_requested.emit)
-        root.addWidget(self.workflow, 1)
+        root.addWidget(self.workflow, 0)
         self.refresh_theme()
 
     def _on_agent_clicked(self, name: str) -> None:

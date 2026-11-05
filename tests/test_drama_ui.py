@@ -205,3 +205,35 @@ def test_main_window_has_novel_and_drama_tabs(qapp, tmp_path):
     qapp.processEvents()
     assert window.mode_tabs.currentIndex() == 0
     window.close()
+
+
+def test_drama_mode_dialog_defaults_and_scope(qapp):
+    """默认选中「生成下一集」，范围与模式的组合要能取对。"""
+    from src.novel_writer.ui.drama.drama_mode_dialog import DramaModeDialog
+
+    dialog = DramaModeDialog()
+    assert dialog.radio_current.isChecked()
+    assert not dialog.radio_all.isChecked()
+    assert dialog.get_result() == ("full", "current")
+
+    dialog.radio_all.setChecked(True)
+    assert dialog.get_result() == ("full", "all")
+
+    dialog._mode_combo.setCurrentIndex(2)  # 重编圣经：没有生成范围
+    assert dialog.get_result() == ("adapt", "all")
+    dialog.close()
+
+
+def test_drama_panel_workflow_bar_sticks_to_bottom(qapp):
+    """工作流条必须贴底（曾因拿到全部 stretch 悬在面板中间）。"""
+    from src.novel_writer.ui.drama.drama_panel import DramaAgentPanel
+
+    panel = DramaAgentPanel()
+    panel.resize(340, 780)
+    panel.show()
+    qapp.processEvents()
+
+    assert panel.workflow.y() + panel.workflow.height() == panel.height()
+    assert panel.workflow.height() <= panel.workflow.sizeHint().height() + 8
+    assert panel.hint_label.isVisible()
+    panel.close()

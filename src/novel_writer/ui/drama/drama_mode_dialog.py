@@ -1,10 +1,14 @@
 """短剧工作流模式选择 — 对齐小说的 WorkflowModeDialog：模式 + 生成范围一步选完。"""
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QDialog, QGroupBox, QHBoxLayout, QLabel,
     QPushButton, QRadioButton, QVBoxLayout,
 )
+
+from ...core.app_config import load_config
+from ...designsystem import get_theme_colors
 
 # 模式 → (下拉文案, 需要生成范围)
 _MODES: list[tuple[str, str, bool]] = [
@@ -59,6 +63,7 @@ class DramaModeDialog(QDialog):
         scope_layout.addWidget(self.radio_current)
         scope_layout.addWidget(self.radio_all)
         layout.addWidget(self._scope_group)
+        self._apply_scope_style()
 
         # 模式说明
         self._hint_label = QLabel("")
@@ -79,6 +84,36 @@ class DramaModeDialog(QDialog):
         layout.addLayout(btn_row)
 
         self._on_mode_changed(0)
+
+    def _apply_scope_style(self) -> None:
+        """把单选做成「整行卡片」：选中行有底色 + 粗体 + 实心圆点，避免看不出选哪个。"""
+        cfg = load_config()
+        theme = cfg.get("theme", "dark")
+        colors = get_theme_colors(theme, cfg if theme == "custom" else None)
+        accent = colors.get("accent", "#0071e3")
+        accent_bg = colors.get("accent_bg", "rgba(0,113,227,0.12)")
+        fg3 = colors.get("fg3", "#8a8f98")
+        self._scope_group.setStyleSheet(
+            f"""
+            QRadioButton {{
+                spacing: 10px;
+                padding: 9px 12px;
+                border-radius: 8px;
+                min-height: 22px;
+            }}
+            QRadioButton:hover {{ background: {accent_bg}; }}
+            QRadioButton:checked {{ background: {accent_bg}; font-weight: 700; }}
+            QRadioButton::indicator {{
+                width: 16px; height: 16px; border-radius: 10px;
+                border: 2px solid {fg3}; background: transparent;
+            }}
+            QRadioButton::indicator:checked {{
+                border: 2px solid {accent}; background: {accent};
+            }}
+            """
+        )
+        for radio in (self.radio_current, self.radio_all):
+            radio.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _on_mode_changed(self, _idx: int) -> None:
         task = self._mode_combo.currentData()
