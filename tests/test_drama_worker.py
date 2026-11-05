@@ -236,3 +236,28 @@ def test_adapt_prompt_includes_rolling_summary(qapp, tmp_path):
     prompt = worker._adapt_prompt()
     assert "已完成章节滚动摘要" in prompt
     assert "夺回家产" in prompt
+
+
+def test_script_prompt_includes_rag_prior_without_spoilers(qapp, tmp_path):
+    """跨章检索补前情/伏笔，但不能把本章之后的剧情漏进来。"""
+    chapters = tmp_path / "chapters"
+    chapters.mkdir()
+    (chapters / "1_令牌.txt").write_text(
+        "# 第1章 令牌\n\n玄铁令在藏经阁的暗格里，无人知晓。\n\n顾言握紧令牌，指节发白。",
+        encoding="utf-8",
+    )
+    (chapters / "2_苏月.txt").write_text(
+        "# 第2章 苏月\n\n苏月推门进来，看见桌上的令牌，脸色变了。", encoding="utf-8"
+    )
+    (chapters / "4_终局.txt").write_text(
+        "# 第4章 终局\n\n幕后黑手现身，苏月真实身份揭晓。", encoding="utf-8"
+    )
+    body = "顾言把令牌拍在桌上：“从今天起，我说了算。”"
+    worker, store, _, _, _ = _worker(
+        tmp_path, "script", chapters=[{"number": 3, "title": "摊牌", "text": body}]
+    )
+    prompt = worker._script_prompt({"number": 3, "title": "摊牌", "text": body}, 1, "")
+    assert "相关前文" in prompt
+    assert "玄铁令" in prompt  # 第1章的伏笔被召回
+    assert "幕后黑手" not in prompt  # 第4章不能剧透
+    assert "跨章检索" in worker._context_note

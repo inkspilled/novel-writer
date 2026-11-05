@@ -1,9 +1,10 @@
-"""短剧上下文切片：预算、场景优先、圣经小节、剧本压缩、前情提要。"""
+"""短剧上下文切片：预算、场景优先、圣经小节、剧本压缩、前情提要、跨章检索。"""
 from __future__ import annotations
 
 from src.novel_writer.core.drama_context import (
     compress_script, filter_character_sections, parse_character_names,
-    plan_digest, recap_lines, slice_bible, slice_chapter, truncate,
+    plan_digest, rag_queries, recap_lines, retrieve_prior, slice_bible,
+    slice_chapter, truncate,
 )
 
 FILLER = (
@@ -122,3 +123,53 @@ class TestRecap:
     def test_truncate(self):
         assert truncate("短", 10) == "短"
         assert len(truncate("长" * 100, 20)) <= 21
+
+
+class TestRagPrior:
+    """跨章检索：补前情/人物/伏笔，但绝不越界到未改编的后续章节。"""
+
+    def _project(self, tmp_path):
+        chapters = tmp_path / "chapters"
+        chapters.mkdir()
+        (chapters / "1_令牌.txt").write_text(
+            "# 第1章 令牌\n\n玄铁令在藏经阁的暗格里，无人知晓。\n\n顾言握紧令牌，指节发白。",
+            encoding="utf-8",
+        )
+        (chapters / "2_苏月.txt").write_text(
+            "# 第2章 苏月\n\n苏月推门进来，看见桌上的令牌，脸色变了。",
+            encoding="utf-8",
+        )
+        (chapters / "3_追杀.txt").write_text(
+            "# 第3章 追杀\n\n顾言被杀，玄铁令碎成两半。",
+            encoding="utf-8",
+        )
+        (chapters / "4_终局.txt").write_text(
+            "# 第4章 终局\n\n幕后黑手现身，苏月真实身份揭晓。",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_returns_prior_chapters_only(self, tmp_path):
+        project = self._project(tmp_path)
+        text, blocks = retrieve_prior(project, ["玄铁令"], before_chapter=3)
+        assert blocks >= 1
+        assert "玄铁令" in text
+        assert "顾言被杀" not in text  # 第3章本身不算前文
+        assert "幕后黑手" not in text  # 第4章更不能漏
+
+    def test_first_chapter_has_no_prior(self, tmp_path):
+        project = self._project(tmp_path)
+        text, blocks = retrieve_prior(project, ["玄铁令"], before_chapter=1)
+        assert text == "" and blocks == 0
+
+    def test_budget_is_respected(self, tmp_path):
+        project = self._project(tmp_path)
+        text, _ = retrieve_prior(project, ["玄铁令", "苏月"], before_chapter=4, budget=120)
+        assert len(text) <= 200
+
+    def test_queries_from_title_names_and_goal(self):
+        queries = rag_queries("退婚", "细纲第一行\n细纲第二行", ["顾言", "苏月"], ["夺回家产"])
+        assert "退婚" in queries
+        assert any("顾言" == q for q in queries)
+        assert "夺回家产" in queries
+        assert len(queries) <= 5

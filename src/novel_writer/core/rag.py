@@ -740,25 +740,23 @@ class RAGRetriever:
             text = text[:text_cap] + "…"
         return f"[{'｜'.join(meta)}]\n{text}"
 
-    def retrieve(
+    def search_chunks(
         self,
         query: str,
         top_k: int = 5,
         chapter: int | None = None,
         scene_type: str | None = None,
         candidate_k: int | None = None,
-        text_cap: int = RAG_TEXT_CAP,
         use_semantic: bool = True,
-    ) -> str:
-        """检索相关叙事块，返回格式化文本。
+    ) -> list[tuple[Chunk, float]]:
+        """检索并返回「块 + 分数」，供上层自行去重/拼装（``retrieve`` 只是它的格式化版）。
 
         流程：召回 Top 20–50 候选 → 元数据过滤 → 重排序 → 取 top_k。
         - ``chapter`` / ``scene_type`` 显式传入时按元数据硬过滤（无结果自动回退）；
         - 查询里出现的「第N章」「战斗/对话/回忆」只做软排序，避免误伤召回；
         - 配置了 embedding 时与 BM25 按 RRF 融合；未配置或失败时纯 BM25；
-        - ``use_semantic=False`` 时跳过语义召回（Agent 工具用：一次工具调用
-          不能阻塞在 embedding 冷启动上），仍走 BM25 + 重排序；
-        - 配置了 reranker 时对候选二次打分，未配置则保留召回排序。
+        - ``use_semantic=False`` 时跳过语义召回（一次调用不能阻塞在 embedding 冷启动上）；
+        - ``self._chapter_limit``（``load_chapters(up_to_chapter=N)`` 设置）限制只检索前 N 章。
         """
         if not self.index._built:
             self.index.build()
@@ -789,14 +787,33 @@ class RAGRetriever:
                 use_semantic=use_semantic,
             )
         if not results:
-            return ""
+            return []
         results = self._rerank_results(query, results)
         if not results:
-            return ""
+            return []
         # 查询解析出的章节/场景意图在重排后再稳定分区一次：
         # reranker 只看正文、看不到块元数据，不补这一步会把「第2章」的意图丢掉。
         if not hard_filter and (auto_chapter is not None or auto_scene):
             results = self._soft_order(results, auto_chapter, auto_scene)
+        return results[:top_k]
+
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        chapter: int | None = None,
+        scene_type: str | None = None,
+        candidate_k: int | None = None,
+        text_cap: int = RAG_TEXT_CAP,
+        use_semantic: bool = True,
+    ) -> str:
+        """检索相关叙事块，返回格式化文本（参数与流程见 ``search_chunks``）。"""
+        results = self.search_chunks(
+            query, top_k=top_k, chapter=chapter, scene_type=scene_type,
+            candidate_k=candidate_k, use_semantic=use_semantic,
+        )
+        if not results:
+            return ""
         parts = ["=== RAG 检索相关段落 ==="]
         for chunk, score in results[:top_k]:
             parts.append(self._format_result(chunk, score, text_cap))

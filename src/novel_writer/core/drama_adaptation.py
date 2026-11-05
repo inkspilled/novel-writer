@@ -8,8 +8,9 @@ from . import project_io
 from .drama import DramaStore, clean_script_output
 from .drama_context import (
     BRIEF_BUDGET, CONTEXT_BUDGET, PLAN_CHAPTER_BUDGET, PLAN_WINDOW_BUDGET,
-    PREV_TAIL_BUDGET, chapter_brief, episode_material, parse_character_names,
-    plan_digest, slice_bible, truncate,
+    PREV_TAIL_BUDGET, RAG_BUDGET, chapter_brief, episode_material,
+    parse_character_names, plan_digest, rag_queries, retrieve_prior,
+    slice_bible, truncate,
 )
 from .json_extract import extract_json_object
 
@@ -116,6 +117,18 @@ class AdaptiveDramaRunner:
             ("分集", "节奏", "钩子", "红线", "规则"),
         )
         prev = truncate(previous, PREV_TAIL_BUDGET)
+        # 分集时补「之前写过什么」：伏笔/人物/未决冲突，只查窗口之前的章
+        prior, prior_blocks = retrieve_prior(
+            self.store.project_dir,
+            rag_queries(
+                title=str(window[0].get("title") or ""),
+                names=self._known_names(),
+                extra=[str(window[-1].get("title") or "")],
+            ),
+            before_chapter=int(window[0]["number"]),
+            budget=1600,
+        )
+        prior_block = f"【相关前文（RAG 跨章检索，均为已发生剧情）】\n{prior}\n\n" if prior else ""
         return (
             "你是短剧分集策划。一次阅读最多5章，按冲突、反转、兑现与集尾钩子决定下一集的边界。\n"
             "不要机械地一章一集，也不要强凑5章。可以把前4章合为一集，第5章留给下一集。\n"
@@ -128,6 +141,7 @@ class AdaptiveDramaRunner:
             f"当前窗口是否已到现有正文末尾：{'是' if final else '否'}。\n"
             f"【改编规则】\n{bible}\n"
             f"【上一集结尾】\n{prev or '这是第一集'}\n"
+            f"{prior_block}"
             "【阅读窗口：细纲/概要/事件/推演/台账摘要；没有结构化数据的章才给原文切片】\n"
             f"{material}"
         )
@@ -185,6 +199,17 @@ class AdaptiveDramaRunner:
                 ("节奏", "钩子", "红线", "视觉", "分集"),
             )
             prev = truncate(previous, PREV_TAIL_BUDGET)
+            # 跨章检索：本集来源之前发生过的剧情（人物首次登场、伏笔、旧冲突）
+            prior, prior_blocks = retrieve_prior(
+                self.store.project_dir,
+                rag_queries(
+                    title=plan["title"], names=names,
+                    extra=[plan["goal"], plan["hook"]],
+                ),
+                before_chapter=int(selected[0]["number"]),
+                budget=RAG_BUDGET,
+            )
+            prior_block = f"【相关前文（RAG 跨章检索，均为已发生剧情）】\n{prior}\n" if prior else ""
             script_prompt = (
                 f"把以下选定素材编排为短剧第{number}集，严格按已确认的分集规划写作。只输出 Markdown 剧本。\n"
                 f"平台：{series['platform']}；画幅：{series['aspect']}；目标：{series['episode_seconds']} 秒。\n"
@@ -194,11 +219,13 @@ class AdaptiveDramaRunner:
                 "保留核心因果，可压缩合并场景；不能引入未选章节的剧情，不能重复已完成的反转。\n"
                 "每章先给细纲/概要/推演，再给原文对白与动作切片；切片标了「（略）」的地方不要补写剧情。\n"
                 f"【改编规则】\n{bible}\n【上一集结尾】\n{prev}\n"
+                f"{prior_block}"
                 f"【本集选定素材（结构化简报 + 对白切片）】\n{material}"
             )
             self.log(
                 f"第{number}集上下文：{len(selected)} 章 · {len(material)} 字"
                 f"（{'结构化简报' if 'structured' in kinds else '原文兜底'}）"
+                f" + 跨章检索 {prior_blocks} 块/{len(prior)} 字"
             )
             self.progress(f"编写第{number}集（来源第{selected[0]['number']}–{selected[-1]['number']}章）", int((total-len(pending))/total*100))
             text = await self.ask("script", script_prompt)

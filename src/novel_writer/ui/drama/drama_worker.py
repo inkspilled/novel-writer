@@ -13,8 +13,9 @@ from ...core.drama import (
 )
 from ...core.drama_context import (
     ADAPT_DOC_BUDGET, BIBLE_BUDGET, CONTEXT_BUDGET, PREV_TAIL_BUDGET,
-    RECAP_EPISODES, STORYBOARD_BUDGET, compress_script, episode_material,
-    parse_character_names, recap_lines, slice_bible, truncate,
+    RAG_BUDGET, RECAP_EPISODES, STORYBOARD_BUDGET, chapter_brief, compress_script,
+    episode_material, parse_character_names, rag_queries, recap_lines,
+    retrieve_prior, slice_bible, truncate,
 )
 from ...core.llm.base import BaseLLM
 from ...core.drama_adaptation import AdaptiveDramaRunner
@@ -423,9 +424,23 @@ class DramaAIWorker(QThread):
         series = self.store.load_series()
         episode = next((e for e in self.store.load_episodes() if e["number"] == episode_number), {})
         raw = chapter.get("text") or ""
+        names = self._known_names()
         body, kind = episode_material(
             self.store.project_dir, chapter, str(chapter.get("title") or ""),
-            budget=CONTEXT_BUDGET, known_names=self._known_names(),
+            budget=CONTEXT_BUDGET, known_names=names,
+        )
+        # 跨章检索：只查本章之前的「已发生剧情」，补人物/伏笔/前情，防剧透
+        prior, prior_blocks = retrieve_prior(
+            self.store.project_dir,
+            rag_queries(
+                title=str(chapter.get("title") or ""),
+                brief=chapter_brief(self.store.project_dir, int(chapter["number"]),
+                                    str(chapter.get("title") or ""), budget=400),
+                names=names,
+                extra=[episode.get("goal", ""), episode.get("hook", "")],
+            ),
+            before_chapter=int(chapter["number"]),
+            budget=RAG_BUDGET,
         )
         bible = slice_bible(
             self.store.bible_text(),
@@ -437,10 +452,12 @@ class DramaAIWorker(QThread):
         self._context_note = (
             f"第{chapter.get('number')}章上下文：原文 {len(raw)} 字 → 送入 {len(body)} 字"
             f"（{'细纲/概要/推演/台账 + 对白切片' if kind == 'structured' else '无结构化数据，原文切片兜底'}）；"
-            f"圣经 {len(bible)} 字；前情 {len(recap)} 字；上集结尾 {len(prev)} 字"
+            f"跨章检索 {prior_blocks} 块/{len(prior)} 字；圣经 {len(bible)} 字；"
+            f"前情 {len(recap)} 字；上集结尾 {len(prev)} 字"
         )
         prev_block = f"\n【上一集结尾】\n{prev}\n" if prev else ""
         recap_block = f"【前情提要】\n{recap}\n\n" if recap else ""
+        prior_block = f"【相关前文（RAG 跨章检索，均为已发生剧情）】\n{prior}\n\n" if prior else ""
         return (
             f"把小说第{chapter['number']}章改写成短剧第{episode_number}集。"
             "只输出剧本 Markdown，不要解释、不要分析。\n\n"
@@ -450,6 +467,7 @@ class DramaAIWorker(QThread):
             f"【本集目标】{episode.get('goal') or '推进核心冲突并产生局面变化'}\n"
             f"【集尾钩子】{episode.get('hook') or '留下必须追看的悬念'}\n"
             f"{recap_block}"
+            f"{prior_block}"
             f"【短剧改编圣经（节选）】\n{bible or '（空）'}\n"
             f"{prev_block}\n"
             "【硬性格式】\n"

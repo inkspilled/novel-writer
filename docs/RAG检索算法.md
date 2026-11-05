@@ -195,9 +195,14 @@ TF_norm   = tf × (k1+1) / (tf + k1 × (1 - b + b × dl / avg_dl))
 规划文档侧另有独立路径 `_rag_planning_fragments`（在 `context.py`），输出格式为
 `=== 规划文档相关片段 ===`，与本 `retrieve` 的格式**不同**，两处勿混。
 
-签名：`retrieve(query, top_k=5, chapter=None, scene_type=None, candidate_k=None, text_cap=RAG_TEXT_CAP)`——
+签名：`retrieve(query, top_k=5, chapter=None, scene_type=None, candidate_k=None, text_cap=RAG_TEXT_CAP, use_semantic=True)`——
 `candidate_k` 覆盖默认候选数（`RAG_CANDIDATE_K=30`，上限 `RAG_MAX_CANDIDATES=50`），
-`text_cap` 控制每块注入字数（默认 `RAG_TEXT_CAP=1200`）。
+`text_cap` 控制每块注入字数（默认 `RAG_TEXT_CAP=1200`），`use_semantic=False` 跳过语义召回
+（Agent 工具、短剧改编默认关，避免一次调用触发全量向量化）。
+
+**`search_chunks(...)`**：同样参数（去掉 `text_cap`），返回 `[(Chunk, score)]` 而不是格式化文本。
+上层要自己排序/去重/控制预算时用它——短剧的跨章检索（`drama_context.retrieve_prior`）就是
+多路 `search_chunks` 合并去重后再拼提示词的；`retrieve` 现在只是它的格式化包装。
 
 ## 在上下文组装中的两条链路
 

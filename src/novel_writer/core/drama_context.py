@@ -33,6 +33,9 @@ BRIEF_BUDGET = 900           # 单章结构化简报
 STORYBOARD_BUDGET = 12000    # 分镜：剧本上限
 PREV_TAIL_BUDGET = 900       # 上一集结尾上限
 RECAP_EPISODES = 3           # 前情提要回看的集数
+RAG_BUDGET = 2400            # 跨章检索注入上限（每集）
+RAG_TOP_K = 4                # 每路查询取几块
+RAG_TEXT_CAP = 320           # 单块截断长度
 
 _OMIT = "\n\n（略）\n\n"
 
@@ -457,3 +460,77 @@ def episode_material(project_dir: Path | str, chapter: dict, title: str = "",
     if not parts:
         return "", "empty"
     return "\n\n".join(parts), ("structured" if brief else "raw")
+
+
+# ── 跨章 RAG：短剧的「大量检索」用在这里 ──
+#
+# 简报只覆盖本集素材的那几章；但一集里经常要接「第 3 章埋的伏笔、第 12 章
+# 才回收」「这个角色第 8 章第一次出场」这类跨章长尾。这些信息按章读全文太贵，
+# 交给 RAG：多路查询（章节标题 / 细纲 / 人物名 / 目标与钩子）在**已发生章节**
+# 里召回，合并去重后只注入 2–3k 字。
+#
+# 硬约束：只检索 ``before_chapter`` 之前的章——绝不把还没写到/还没改编的
+# 后续剧情漏进提示词（剧透 + 模型会提前用掉反转）。
+
+
+def rag_queries(title: str = "", brief: str = "", names: list[str] | None = None,
+                extra: list[str] | None = None, limit: int = 5) -> list[str]:
+    """把一章/一集拆成几路检索词：标题、细纲摘要、出场人物、目标/钩子。"""
+    queries: list[str] = []
+    if title:
+        queries.append(str(title)[:40])
+    if brief:
+        snippet = " ".join(line.strip() for line in brief.splitlines()[:4] if line.strip())
+        if snippet:
+            queries.append(snippet[:120])
+    for name in (names or [])[:4]:
+        if name:
+            queries.append(str(name))
+    for item in (extra or [])[:3]:
+        if item:
+            queries.append(str(item)[:60])
+    return queries[:limit]
+
+
+def retrieve_prior(project_dir: Path | str, queries: list[str], before_chapter: int,
+                   budget: int = RAG_BUDGET, top_k: int = RAG_TOP_K,
+                   use_semantic: bool = False) -> tuple[str, int]:
+    """在「第 before_chapter 章之前」的正文里多路检索，返回 (文本, 块数)。"""
+    if int(before_chapter) <= 1 or not queries:
+        return "", 0
+    try:
+        from .rag import RAGRetriever
+        retriever = RAGRetriever(Path(project_dir))
+        retriever.load_chapters(int(before_chapter))
+        if not retriever.index.chunks:
+            return "", 0
+    except Exception:
+        return "", 0
+
+    blocks: list[str] = []
+    seen: set[str] = set()
+    used = 0
+    for query in queries:
+        query = (query or "").strip()
+        if not query:
+            continue
+        try:
+            hits = retriever.search_chunks(query, top_k=top_k, use_semantic=use_semantic)
+        except Exception:
+            continue
+        for chunk, _score in hits:
+            if chunk.id in seen:
+                continue
+            text = (chunk.text or "").strip()
+            if not text:
+                continue
+            seen.add(chunk.id)
+            label = f"【第{chunk.chapter}章·{chunk.scene_type or '剧情'}】"
+            block = label + truncate(text, RAG_TEXT_CAP)
+            if used + len(block) > budget:
+                continue
+            blocks.append(block)
+            used += len(block)
+        if used >= budget:
+            break
+    return "\n\n".join(blocks), len(blocks)
