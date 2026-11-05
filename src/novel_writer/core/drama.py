@@ -65,10 +65,19 @@ ASSET_COLUMNS: list[tuple[str, str]] = [
     ("kind", "类型"),
     ("id", "ID"),
     ("name", "名称"),
+    ("prompt", "提示词"),
     ("ref", "参考图"),
     ("status", "状态"),
     ("notes", "备注"),
 ]
+
+ASSET_KIND_LABELS = {"character": "人物", "location": "场景", "prop": "道具"}
+
+# 人物/场景/道具图统一用的负面词（本地模板，用户可改工作流模板）
+ASSET_NEGATIVE = (
+    "低清晰度，模糊，噪点，畸形手指，多余肢体，比例失调，脸部崩坏，"
+    "文字，水印，logo，签名，多人重复，过曝，杂乱背景"
+)
 
 DEFAULT_SERIES: dict[str, Any] = {
     "title": "",
@@ -85,6 +94,35 @@ DEFAULT_SERIES: dict[str, Any] = {
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _entity_summary(info: Any, cap: int = 200) -> str:
+    """世界状态里 地点/物品 的条目摘要（dict 取前几个字符串字段）。"""
+    if isinstance(info, str):
+        return info.strip()[:cap]
+    if not isinstance(info, dict):
+        return ""
+    bits: list[str] = []
+    for key in ("desc", "description", "说明", "位置", "location", "用途", "note", "notes"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            bits.append(value.strip())
+    if not bits:
+        bits = [str(v).strip() for v in info.values()
+                if isinstance(v, str) and v.strip()]
+    return "；".join(bits)[:cap]
+
+
+def _unique_asset_id(assets: list[dict[str, Any]], kind: str, name: str) -> str:
+    base = re.sub(r"[^\w\u4e00-\u9fff]+", "_", name).strip("_") or "asset"
+    prefix = {"character": "char", "location": "loc", "prop": "prop"}.get(kind, "asset")
+    ids = {a.get("id") for a in assets}
+    candidate = f"{prefix}_{base}"
+    i = 2
+    while candidate in ids:
+        candidate = f"{prefix}_{base}_{i}"
+        i += 1
+    return candidate
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -687,9 +725,14 @@ class DramaStore:
                 "kind": str(asset.get("kind") or "character"),
                 "id": str(asset.get("id") or f"asset_{i:03d}"),
                 "name": str(asset.get("name") or ""),
+                "prompt": str(asset.get("prompt") or ""),
                 "ref": str(asset.get("ref") or ""),
                 "status": str(asset.get("status") or "draft"),
                 "notes": str(asset.get("notes") or ""),
+                # 与小说正典的对应关系：人物/地点/道具的名称或角色 id
+                "entity": str(asset.get("entity") or ""),
+                # 已生成图片的相对路径（assets/generated/...）
+                "image": str(asset.get("image") or ""),
             })
         return cleaned
 
@@ -707,21 +750,16 @@ class DramaStore:
             name = name.strip()
             if not name or (kind, name) in existing:
                 return
-            base = re.sub(r"[^\w\u4e00-\u9fff]+", "_", name).strip("_") or "asset"
-            prefix = {"character": "char", "location": "loc", "prop": "prop"}.get(kind, "asset")
-            candidate = f"{prefix}_{base}"
-            i = 2
-            ids = {a["id"] for a in assets}
-            while candidate in ids:
-                candidate = f"{prefix}_{base}_{i}"
-                i += 1
             assets.append({
                 "kind": kind,
-                "id": candidate,
+                "id": _unique_asset_id(assets, kind, name),
                 "name": name,
+                "prompt": "",
                 "ref": "",
                 "status": "draft",
                 "notes": "从分镜自动提取",
+                "entity": name,
+                "image": "",
             })
             existing.add((kind, name))
             added += 1
@@ -733,6 +771,117 @@ class DramaStore:
         if added:
             self.save_assets(assets)
         return added
+
+    # ── 资产 ↔ 小说正典 ──
+
+    def canon_entities(self, kinds=("character", "location", "prop")) -> list[dict[str, Any]]:
+        """小说侧可对应成资产的实体：人物卡 / 世界状态地点 / 物品图鉴。"""
+        out: list[dict[str, Any]] = []
+        if "character" in kinds:
+            data = _read_json(self.project_dir / "canon" / "characters.json", {})
+            for rec in data.get("characters") or []:
+                if not isinstance(rec, dict):
+                    continue
+                name = str(rec.get("name") or "").strip()
+                if not name:
+                    continue
+                profile = rec.get("public_profile") or {}
+                summary = "；".join(
+                    str(v).strip() for v in profile.values()
+                    if isinstance(v, str) and v.strip()
+                )[:200]
+                out.append({
+                    "kind": "character", "name": name,
+                    "summary": summary, "entity_id": str(rec.get("id") or ""),
+                })
+        world = _read_json(self.project_dir / "world_state.json", {})
+        if "location" in kinds:
+            for name, info in (world.get("locations") or {}).items():
+                out.append({"kind": "location", "name": str(name),
+                            "summary": _entity_summary(info), "entity_id": ""})
+        if "prop" in kinds:
+            for name, info in (world.get("items_catalog") or {}).items():
+                out.append({"kind": "prop", "name": str(name),
+                            "summary": _entity_summary(info), "entity_id": ""})
+        return out
+
+    def sync_assets_from_canon(self, kinds=("character", "location"), limit: int = 0) -> int:
+        """把小说里的人物/地点补进资产表（按 类型+名称 去重，不覆盖已有行）。"""
+        assets = self.load_assets()
+        existing = {(a["kind"], a["name"].strip()) for a in assets if a["name"].strip()}
+        added = 0
+        for ent in self.canon_entities(kinds):
+            key = (ent["kind"], ent["name"])
+            if key in existing:
+                continue
+            assets.append({
+                "kind": ent["kind"],
+                "id": _unique_asset_id(assets, ent["kind"], ent["name"]),
+                "name": ent["name"],
+                "prompt": "",
+                "ref": "",
+                "status": "draft",
+                "notes": "从小说导入",
+                "entity": ent.get("entity_id") or ent["name"],
+                "image": "",
+            })
+            existing.add(key)
+            added += 1
+            if limit and added >= limit:
+                break
+        if added:
+            self.save_assets(assets)
+        return added
+
+    def asset_prompt(self, asset: dict[str, Any]) -> tuple[str, str]:
+        """给一个资产生成 (正向提示词, 负向提示词)；已手填的提示词优先。"""
+        custom = str(asset.get("prompt") or "").strip()
+        if custom:
+            return custom, ASSET_NEGATIVE
+        name = str(asset.get("name") or "").strip()
+        kind = str(asset.get("kind") or "character")
+        label = ASSET_KIND_LABELS.get(kind, "资产")
+        series = self.load_series()
+        meta = _read_json(self.project_dir / "meta.json", {})
+        genre = str(meta.get("genre") or series.get("genre") or "")
+        style = str(meta.get("style") or series.get("style") or "")
+        desc = ""
+        for ent in self.canon_entities((kind,)):
+            if ent["name"] == name and ent.get("summary"):
+                desc = ent["summary"]
+                break
+        if not desc:
+            notes = str(asset.get("notes") or "")
+            if notes and notes not in ("从分镜自动提取", "从小说导入"):
+                desc = notes
+        parts = [f"{name}，{label}设定参考图"]
+        if desc:
+            parts.append(desc)
+        if genre:
+            parts.append(f"{genre}题材")
+        if style:
+            parts.append(f"{style}风格")
+        parts.append("竖屏短剧，写实电影感，柔和布光，背景干净，高清细节，正面参考")
+        positive = "，".join(parts)
+        negative = ASSET_NEGATIVE
+        return positive, negative
+
+    def save_generated_image(self, asset_id: str, data: bytes, ext: str = ".png") -> str:
+        """把生成图落到 assets/generated/，回填路径并标记 ready；返回相对路径。"""
+        folder = self.assets_dir / "generated"
+        folder.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^\w\-]+", "_", asset_id) or "asset"
+        path = folder / f"{safe}{ext}"
+        path.write_bytes(data)
+        rel = f"generated/{path.name}"
+        assets = self.load_assets()
+        for asset in assets:
+            if asset["id"] == asset_id:
+                asset["image"] = rel
+                asset["ref"] = rel
+                asset["status"] = "ready"
+        self.save_assets(assets)
+        return rel
 
     # ── 导出 ──
 

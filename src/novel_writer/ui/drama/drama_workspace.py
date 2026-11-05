@@ -662,6 +662,7 @@ class _AssetsPage(QWidget):
         super().__init__(parent)
         self._store: DramaStore | None = None
         self._loading = False
+        self._comfy_worker = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 16, 20, 16)
@@ -671,8 +672,9 @@ class _AssetsPage(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         root.addWidget(title)
         hint = QLabel(
-            "角色/场景/道具先在这里登记 ID 和参考图。下一阶段接入 ComfyUI 后，"
-            "生成图/视频按 ID 写入 assets/generated/，再回填到这里。"
+            "资产与小说正典对应：人物取自角色卡，地点/道具取自世界状态；"
+            "「从小说导入」补登记，「生成提示词」按人物设定+题材风格拼提示词，"
+            "「生成图片」调 ComfyUI 出参考图，写到 assets/generated/。"
         )
         hint.setStyleSheet("font-size: 12px; color: palette(placeholderText);")
         hint.setWordWrap(True)
@@ -683,6 +685,16 @@ class _AssetsPage(QWidget):
         self.status = QLabel("")
         self.status.setStyleSheet("font-size: 11px; color: palette(placeholderText);")
         bar.addWidget(self.status, 1)
+        self.btn_import = QPushButton("从小说导入")
+        self.btn_import.clicked.connect(self._import_from_canon)
+        bar.addWidget(self.btn_import)
+        self.btn_prompts = QPushButton("生成提示词")
+        self.btn_prompts.clicked.connect(self._fill_prompts)
+        bar.addWidget(self.btn_prompts)
+        self.btn_gen = QPushButton("生成图片")
+        self.btn_gen.setObjectName("primary")
+        self.btn_gen.clicked.connect(self._generate_images)
+        bar.addWidget(self.btn_gen)
         self.btn_add = QPushButton("＋ 资产")
         self.btn_add.clicked.connect(self._add_asset)
         bar.addWidget(self.btn_add)
@@ -707,8 +719,9 @@ class _AssetsPage(QWidget):
         header.setStretchLastSection(True)
         for idx, (key, _label) in enumerate(ASSET_COLUMNS):
             header.setSectionResizeMode(idx, QHeaderView.ResizeMode.Interactive)
-            self.table.setColumnWidth(idx, {"kind": 90, "id": 130, "name": 140, "ref": 220,
-                                             "status": 80, "notes": 180}.get(key, 120))
+            self.table.setColumnWidth(idx, {"kind": 80, "id": 120, "name": 120,
+                                             "prompt": 260, "ref": 180,
+                                             "status": 70, "notes": 140}.get(key, 120))
         self.table.itemChanged.connect(lambda _: self.status.setText("编辑中…"))
         root.addWidget(self.table, 1)
 
@@ -728,10 +741,94 @@ class _AssetsPage(QWidget):
     def _add_asset(self) -> None:
         row = self.table.rowCount()
         self.table.insertRow(row)
-        values = ["character", f"asset_{row + 1:03d}", "", "", "draft", ""]
+        values = ["character", f"asset_{row + 1:03d}", "", "", "", "draft", ""]
         for col, value in enumerate(values):
             _set_table_item(self.table, row, col, value)
         self.status.setText("已新增一行，记得保存")
+
+    # ── 与小说正典 / ComfyUI ──
+
+    def _import_from_canon(self) -> None:
+        if self._store is None:
+            return
+        added = self._store.sync_assets_from_canon()
+        self.load(self._store)
+        self.status.setText(
+            f"从小说导入 {added} 个资产" if added else "人物/地点都已登记，没有新增"
+        )
+
+    def _fill_prompts(self) -> None:
+        if self._store is None:
+            return
+        assets = self._store.load_assets()
+        changed = 0
+        for asset in assets:
+            if not asset.get("prompt"):
+                positive, _negative = self._store.asset_prompt(asset)
+                asset["prompt"] = positive
+                changed += 1
+        if changed:
+            self._store.save_assets(assets)
+            self.load(self._store)
+        self.status.setText(f"生成 {changed} 条提示词" if changed else "提示词都已存在")
+
+    def _selected_assets(self) -> list[dict]:
+        """选中行对应的资产；没选就处理全部。"""
+        if self._store is None:
+            return []
+        assets = {a["id"]: a for a in self._store.load_assets()}
+        rows = sorted({index.row() for index in self.table.selectedIndexes()})
+        if not rows:
+            rows = list(range(self.table.rowCount()))
+        picked: list[dict] = []
+        for row in rows:
+            item = self.table.item(row, 1)  # ID 列
+            if item and item.text().strip() in assets:
+                picked.append(assets[item.text().strip()])
+        return picked
+
+    def _generate_images(self) -> None:
+        if self._store is None:
+            return
+        if self._comfy_worker is not None and self._comfy_worker.isRunning():
+            self.status.setText("正在生成，等这一批结束")
+            return
+        from ...core.comfyui import config_from_app
+        from .comfy_worker import ComfyImageWorker
+
+        cfg = config_from_app()
+        if not cfg.get("workflow"):
+            QMessageBox.information(
+                self, "ComfyUI",
+                "还没配置工作流模板。\n请到「设置 → 模型设置 → 图像生成（ComfyUI）」"
+                "选择一个 API 格式的 workflow.json。",
+            )
+            return
+        self.save(silent=True)
+        picked = self._selected_assets()
+        if not picked:
+            self.status.setText("没有可生成的资产（先「从小说导入」或从分镜提取）")
+            return
+        worker = ComfyImageWorker(self._store, picked, cfg, parent=self)
+        worker.progress.connect(lambda text, pct: self.status.setText(f"{text} · {pct}%"))
+        worker.log.connect(lambda text: self.status.setText(text))
+        worker.finished_ok.connect(self._on_images_done)
+        worker.failed.connect(self._on_images_failed)
+        worker.finished.connect(lambda: self.btn_gen.setEnabled(True))
+        self._comfy_worker = worker
+        self.btn_gen.setEnabled(False)
+        worker.start()
+
+    def _on_images_done(self, summary: str) -> None:
+        self._comfy_worker = None
+        self.btn_gen.setEnabled(True)
+        self.load(self._store)
+        self.status.setText(summary)
+
+    def _on_images_failed(self, error: str) -> None:
+        self._comfy_worker = None
+        self.btn_gen.setEnabled(True)
+        self.status.setText(f"生成失败：{error[:160]}")
 
     def _delete_assets(self) -> None:
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
@@ -749,6 +846,7 @@ class _AssetsPage(QWidget):
     def save(self, silent: bool = False) -> None:
         if self._store is None:
             return
+        old = {a["id"]: a for a in self._store.load_assets()}
         assets: list[dict] = []
         for row in range(self.table.rowCount()):
             asset: dict = {}
@@ -756,7 +854,8 @@ class _AssetsPage(QWidget):
                 item = self.table.item(row, col)
                 asset[key] = item.text().strip() if item else ""
             if any(asset.values()):
-                assets.append(asset)
+                # 表格里没有的字段（entity/image）从原记录保留，避免保存时丢关联
+                assets.append({**old.get(asset.get("id", ""), {}), **asset})
         self._store.save_assets(assets)
         if not silent:
             self.status.setText(f"已保存 {len(assets)} 个资产")

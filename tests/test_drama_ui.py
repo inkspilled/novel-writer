@@ -255,3 +255,37 @@ def test_drama_panel_workflow_bar_under_agents(qapp):
     assert panel.workflow._log_area.height() > 300  # 灰框吃满剩余高度
 
     panel.close()
+
+
+def test_assets_page_imports_canon_and_builds_prompts(qapp, tmp_path):
+    """资产跟小说正典对应：从角色卡/世界状态导入，提示词按题材风格生成。"""
+    import json as _json
+
+    from src.novel_writer.ui.drama.drama_workspace import DramaWorkspace
+
+    project = _novel_project(tmp_path)
+    (tmp_path / "canon").mkdir(exist_ok=True)
+    (tmp_path / "canon" / "characters.json").write_text(_json.dumps({
+        "version": 1,
+        "characters": [{"id": "c1", "name": "顾言",
+                         "public_profile": {"身份": "主角"}}],
+    }, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "world_state.json").write_text(_json.dumps({
+        "version": 1, "world": {}, "characters": {}, "timeline": [],
+        "location_log": [], "locations": {"藏经阁": {"desc": "藏书重地"}},
+        "items_catalog": {},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    workspace = DramaWorkspace()
+    workspace.set_project(project)
+    page = workspace.assets_page
+
+    before = page.table.rowCount()
+    page._import_from_canon()
+    assert page.table.rowCount() >= before + 2  # 顾言 + 藏经阁
+
+    page._fill_prompts()
+    prompts = [page.table.item(r, 3).text() for r in range(page.table.rowCount())]
+    assert any("顾言" in text for text in prompts)
+    assert any("仙侠" in text or "快节奏" in text for text in prompts)
+    workspace.close()
