@@ -110,6 +110,29 @@ Agent 工具 `search_chapters` 已暴露 `chapter` / `scene_type` 参数，问�
 - 与 BM25 的融合用 **RRF 名次融合**（`1/(60+rank)` 累加），不是分数加权：两路分数量纲不同，按名次融更稳；
 - embedding 单次调用有 **60s 硬墙钟**（`NOVEL_WRITER_EMBED_TIMEOUT`）：本地 embedding 冷启动曾挂 9 分钟，超时直接抛错、本次检索回退 BM25。
 
+### 本地 embedding（llama.cpp 示例）
+
+Qwen3-Embedding 用 llama.cpp 起一个 OpenAI 兼容端点即可（`--embedding --pooling last`）：
+
+```bat
+llama.exe server -m D:\aiModels\Qwen3-Embedding-0.6B-Q8_0.gguf ^
+  --host 0.0.0.0 --port 8081 --embedding --pooling last -c 8192 --parallel 2 -ngl 99
+```
+
+对应 `data/config.json`：
+
+```json
+"embedding": {
+  "model": "Qwen3-Embedding-0.6B-Q8_0",
+  "base_url": "http://127.0.0.1:8081/v1",
+  "api_key": ""
+}
+```
+
+提示词里的 `model` 只是本地缓存向量的键名，llama.cpp 单模型时任意字符串都能用；
+换模型名会让 `rag_vectors.json` 整体失效重嵌。实测 40 章项目首次调用（含建向量）约 5.5s，
+之后每次检索 0.3–0.4s；`semantic_available()` 决定上层（如短剧跨章检索）要不要走向量路径。
+
 ## 重排序（任意 /rerank 模型，可选）
 
 **配置**（设置 → 模型设置 → 重排序）：`data/config.json` 的 `rerank` 键

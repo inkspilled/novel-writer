@@ -61,6 +61,11 @@ def configure_embedding(cfg: dict | None):
     _EMBED_CFG = dict(cfg) if cfg and cfg.get("model") else None
 
 
+def semantic_available() -> bool:
+    """是否配置了 embedding（语义检索可用）；调用方据此决定要不要走向量召回。"""
+    return bool(_EMBED_CFG and _EMBED_CFG.get("model"))
+
+
 def _tokenize(text: str) -> list[str]:
     """中文分词：按字符 bigram + 标点切分。"""
     tokens = []

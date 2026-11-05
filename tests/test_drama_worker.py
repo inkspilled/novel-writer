@@ -18,6 +18,16 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def _offline_embedding():
+    """Worker 用例不联网：语义检索自动回退 BM25（真实 embedding 另跑集成脚本）。"""
+    from src.novel_writer.core import rag
+
+    rag.configure_embedding(None)
+    yield
+    rag.configure_embedding(None)
+
+
 class FakeLLM:
     model = "fake-model"
 
@@ -80,6 +90,53 @@ def test_worker_adapt_calls_model_and_writes_bible(qapp, tmp_path):
     assert ok and not failed
     assert len(llm.calls) == 1
     assert "废柴逆袭" in "".join(store.bible_text())
+
+
+class _EmptyThenTextLLM(FakeLLM):
+    """第一次只回 reasoning（content 空），关思考重试后才给正文。"""
+
+    def __init__(self):
+        super().__init__()
+        self.thinking_modes: list[str] = []
+
+    async def chat(self, messages, temperature=0.7, max_tokens=4096,
+                   thinking="auto", tools=None, model=None):
+        self.calls.append(messages[-1].content)
+        self.thinking_modes.append(thinking)
+        if len(self.calls) == 1:
+            return LLMResponse(content="", model="fake-model",
+                               usage={"total_tokens": 40}, finish_reason="length")
+        return LLMResponse(content="# 改编圣经\n\n## 一句话卖点\n\n废柴逆袭。",
+                           model="fake-model",
+                           usage={"total_tokens": 60}, finish_reason="stop")
+
+
+class _AlwaysEmptyLLM(FakeLLM):
+    async def chat(self, messages, temperature=0.7, max_tokens=4096,
+                   thinking="auto", tools=None, model=None):
+        self.calls.append(messages[-1].content)
+        return LLMResponse(content="", model="fake-model",
+                           usage={"total_tokens": 7}, finish_reason="length")
+
+
+def test_empty_content_retries_without_thinking(qapp, tmp_path):
+    """思考吃满预算导致 content 为空时，自动关思考重试一次，而不是直接失败。"""
+    worker, store, _, ok, failed = _worker(tmp_path, "adapt")
+    worker.llm = _EmptyThenTextLLM()
+    worker.run()
+    assert ok and not failed
+    assert worker.llm.thinking_modes[:2] == ["off", "off"]  # adapt 本身已关思考
+    assert "废柴逆袭" in "".join(store.bible_text())
+
+
+def test_empty_content_twice_reports_actionable_error(qapp, tmp_path):
+    """两次都空：错误信息要说清 finish_reason 和下一步，而不是笼统的「没有内容」。"""
+    worker, store, _, ok, failed = _worker(tmp_path, "adapt")
+    worker.llm = _AlwaysEmptyLLM()
+    worker.run()
+    assert failed and not ok
+    assert "没有返回正文" in failed[0]
+    assert "finish=length" in failed[0]
 
 
 def test_worker_script_all_chapters_and_upsert_no_duplicates(qapp, tmp_path):

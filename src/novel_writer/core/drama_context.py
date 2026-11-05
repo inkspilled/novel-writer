@@ -35,7 +35,7 @@ PREV_TAIL_BUDGET = 900       # 上一集结尾上限
 RECAP_EPISODES = 3           # 前情提要回看的集数
 RAG_BUDGET = 2400            # 跨章检索注入上限（每集）
 RAG_TOP_K = 4                # 每路查询取几块
-RAG_TEXT_CAP = 320           # 单块截断长度
+RAG_TEXT_CAP = 600           # 单块截断长度（够一场戏，别把关键句截掉）
 
 _OMIT = "\n\n（略）\n\n"
 
@@ -494,12 +494,18 @@ def rag_queries(title: str = "", brief: str = "", names: list[str] | None = None
 
 def retrieve_prior(project_dir: Path | str, queries: list[str], before_chapter: int,
                    budget: int = RAG_BUDGET, top_k: int = RAG_TOP_K,
-                   use_semantic: bool = False) -> tuple[str, int]:
-    """在「第 before_chapter 章之前」的正文里多路检索，返回 (文本, 块数)。"""
+                   use_semantic: bool | None = None) -> tuple[str, int]:
+    """在「第 before_chapter 章之前」的正文里多路检索，返回 (文本, 块数)。
+
+    ``use_semantic=None``（默认）自动判断：配了 embedding 就走「BM25 + 语义」RRF 融合
+    （本地服务很快，别浪费），没配就纯 BM25。
+    """
     if int(before_chapter) <= 1 or not queries:
         return "", 0
     try:
-        from .rag import RAGRetriever
+        from .rag import RAGRetriever, semantic_available
+        if use_semantic is None:
+            use_semantic = semantic_available()
         retriever = RAGRetriever(Path(project_dir))
         retriever.load_chapters(int(before_chapter))
         if not retriever.index.chunks:

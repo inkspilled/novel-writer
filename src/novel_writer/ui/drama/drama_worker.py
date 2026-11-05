@@ -144,14 +144,14 @@ class DramaAIWorker(QThread):
             "你是竖屏短剧总策划。把小说规划重新组织成可执行的短剧改编圣经，"
             "只输出 Markdown 文档，不要解释过程。",
             temperature=0.5,
-            max_tokens=4096,
+            max_tokens=8192,
         )
         self.agent_state.emit("showrunner", "working", "汇总小说规划")
         self.progress.emit("正在生成改编圣经…", 10)
         prompt = self._adapt_prompt()
         if self._context_note:
             self.log.emit(self._context_note)
-        text, usage, elapsed = await self._ask(agent, prompt, thinking="auto", max_tokens=4096)
+        text, usage, elapsed = await self._ask(agent, prompt, thinking="off", max_tokens=8192)
         if self._stop:
             self.finished_ok.emit("已停止")
             return
@@ -346,12 +346,42 @@ class DramaAIWorker(QThread):
         )
         return BaseAgent(cfg, self.llm)
 
+    @staticmethod
+    def _merge_usage(*usages: dict) -> dict:
+        total: dict[str, int] = {}
+        for usage in usages:
+            for key, value in (usage or {}).items():
+                if isinstance(value, (int, float)):
+                    total[key] = total.get(key, 0) + int(value)
+        return total
+
     async def _ask(self, agent: BaseAgent, prompt: str, thinking: str, max_tokens: int):
         t0 = time.monotonic()
         resp = await agent.run(
             prompt, thinking=thinking, keep_history=False, max_tokens=max_tokens
         )
-        return resp.content or "", resp.usage or {}, time.monotonic() - t0
+        usage = dict(resp.usage or {})
+        text = (resp.content or "").strip()
+        if not text:
+            # 思考型模型把输出预算全用在 reasoning 上时 content 为空；
+            # 关掉思考再来一次（而不是直接把「没有内容」丢给用户）。
+            self.log.emit(
+                f"模型未返回正文（finish={resp.finish_reason or 'n/a'} · "
+                f"{self._usage(usage)}），关闭思考重试一次…"
+            )
+            retry = await agent.run(
+                prompt, thinking="off", keep_history=False, max_tokens=max_tokens
+            )
+            usage = self._merge_usage(usage, retry.usage or {})
+            resp = retry
+            text = (resp.content or "").strip()
+        if not text:
+            raise RuntimeError(
+                f"模型没有返回正文（finish={resp.finish_reason or 'n/a'}）。"
+                "多半是思考把输出预算吃完了：可以在「模型与智能体」里换模型，"
+                "或把该步骤的 max_tokens 调大后重试。"
+            )
+        return text, usage, time.monotonic() - t0
 
     def _adapt_prompt(self) -> str:
         known = parse_character_names(self._read_planning("人物设定.md"))
@@ -511,7 +541,12 @@ class DramaAIWorker(QThread):
 
     @staticmethod
     def _usage(usage: dict) -> str:
-        total = usage.get("total_tokens") if isinstance(usage, dict) else None
-        if total:
-            return f"{int(total)} tok"
-        return "usage n/a"
+        if not isinstance(usage, dict):
+            return "usage n/a"
+        total = usage.get("total_tokens")
+        if not total:
+            # DeepSeek 等只回 prompt/completion，没有 total_tokens
+            total = int(usage.get("prompt_tokens", 0) or 0) + int(
+                usage.get("completion_tokens", 0) or 0
+            )
+        return f"{int(total)} tok" if total else "usage n/a"

@@ -1,11 +1,23 @@
 """短剧上下文切片：预算、场景优先、圣经小节、剧本压缩、前情提要、跨章检索。"""
 from __future__ import annotations
 
+import pytest
+
 from src.novel_writer.core.drama_context import (
     compress_script, filter_character_sections, parse_character_names,
     plan_digest, rag_queries, recap_lines, retrieve_prior, slice_bible,
     slice_chapter, truncate,
 )
+
+
+@pytest.fixture(autouse=True)
+def _offline_embedding():
+    """本文件不联网：清掉全局 embedding 配置，语义检索自动回退 BM25。"""
+    from src.novel_writer.core import rag
+
+    rag.configure_embedding(None)
+    yield
+    rag.configure_embedding(None)
 
 FILLER = (
     "窗外的风把树叶吹得沙沙响，远处的钟楼敲了三下，街上没有人。"
