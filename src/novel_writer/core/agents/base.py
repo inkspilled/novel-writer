@@ -3,9 +3,12 @@ from __future__ import annotations
 from abc import ABC
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+import hashlib
+import json
 from typing import AsyncIterator
 
 from ..llm.base import BaseLLM, LLMMessage, LLMResponse, ThinkingMode
+from ..llm.usage import parse_stream_usage
 from ..logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,6 +31,24 @@ def reset_model_override(token) -> None:
 
 def current_model_override() -> str | None:
     return _MODEL_OVERRIDE.get()
+
+
+# 调用级元数据（步骤/章号）：runner 在步骤入口 set，_record_usage 读出后随 usage
+# 一起交给 sink（runs/usage.jsonl 落盘用）。contextvar 随 asyncio 任务隔离，
+# 并发步骤互不串扰——与 _MODEL_OVERRIDE 同一套路。
+_CALL_META: ContextVar[dict | None] = ContextVar("novel_writer_call_meta", default=None)
+
+
+def set_call_meta(meta: dict):
+    return _CALL_META.set(dict(meta))
+
+
+def reset_call_meta(token) -> None:
+    _CALL_META.reset(token)
+
+
+def current_call_meta() -> dict:
+    return _CALL_META.get() or {}
 
 # 历史消息 token 预算：超限从最旧轮次开始丢弃（防御长对话场景，
 # 与 workflow/context.estimate_tokens 同一启发式口径；本地实现避免循环导入）
@@ -69,6 +90,13 @@ class BaseAgent(ABC):
         # 工作流/宿主可挂 usage 汇总回调：内置步骤绕过 runner._run_single，
         # 没有这个钩子它们的 token 永远不会被计入。
         self.usage_sink = None
+        # 流式调用的 usage 不进 (kind, text) 协议（UI 只认 thinking/text），
+        # 解析后落在这里，由调用方（工作流流式分支）读取记账
+        self.last_stream_usage: dict | None = None
+        # 前缀指纹：system 消息 / 工具 schema 的哈希，供 usage.jsonl 做劈点对照
+        self._fp_system = ""
+        self._fp_tools = ""
+        self._last_call_s = 0.0
 
     @property
     def name(self) -> str:
@@ -78,12 +106,37 @@ class BaseAgent(ABC):
     def title(self) -> str:
         return self.config.title
 
-    def _record_usage(self, usage: dict | None) -> None:
-        if usage and self.usage_sink:
+    def _record_usage(self, usage: dict | None, model: str | None = None) -> None:
+        """汇总本次调用用量给 sink；附调用级元数据与前缀指纹，供 usage.jsonl 落盘。
+
+        payload 里的非数值键（agent/model/指纹）由 runner 侧摘除，数值键
+        （call_count/prefix_changed/duration_s）会随 total_usage 一并累加。
+        """
+        if not usage:
+            return
+        payload = {
+            **current_call_meta(),
+            "agent": self.name,
+            "model": (model or getattr(self.llm, "model", "") or "").strip(),
+            "call_count": 1,
+            "duration_s": round(getattr(self, "_last_call_s", 0) or 0, 2),
+            "fp_system": self._fp_system,
+            "fp_tools": self._fp_tools,
+            **usage,
+        }
+        if self.usage_sink:
             try:
-                self.usage_sink(usage)
+                self.usage_sink(payload)
             except Exception:
                 logger.debug("usage_sink 回调失败（忽略）", exc_info=True)
+
+    def note_tools(self, schemas: list[dict] | None) -> None:
+        """记录本次工具循环的 schema 指纹；工具定义是否计入缓存前缀各家未文档化，先记录供对照。"""
+        try:
+            raw = json.dumps(schemas or [], ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            raw = ""
+        self._fp_tools = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16] if raw else ""
 
     def _build_messages(self, user_input: str, context: str = "") -> list[LLMMessage]:
         # 合并 system_prompt 和 context 为单条 system 消息，兼容 Qwen 等要求单一 system 的模板
@@ -95,6 +148,9 @@ class BaseAgent(ABC):
         messages = [LLMMessage(role="system", content=system_content)]
         messages.extend(history)
         messages.append(LLMMessage(role="user", content=user_input))
+        # system 消息是当前布局里唯一可能命中缓存的前缀：两次组装理应字节一致，
+        # 指纹一变说明前缀被改写（该调用起全 miss），写进 usage.jsonl 供劈点定位
+        self._fp_system = hashlib.sha256(system_content.encode("utf-8")).hexdigest()[:16]
         return messages
 
     @staticmethod
@@ -130,7 +186,7 @@ class BaseAgent(ABC):
 
         keep_history=False 时不写入对话历史——工作流工具类步骤
         （概要/世界状态/沉淀/校对）共享同一 Agent 时，历史跨步骤累积
-        会在一章内重复计费 2～3 份上下文。
+        会在一章内重复发送 2～3 份上下文。
         max_tokens 可临时压低输出配额（如 200 字润色不必给 4096）。
         model 可临时覆盖模型（步骤级快模型）；未显式传时读 contextvar。
         """
@@ -139,6 +195,7 @@ class BaseAgent(ABC):
         mode: ThinkingMode = thinking if thinking is not None else self.config.thinking
         limit = self.config.max_tokens if max_tokens is None else max_tokens
         effective_model = model or current_model_override()
+        self._fp_tools = ""  # 纯文本 run 不带工具块
         t0 = _time.monotonic()
         logger.info(
             "Agent.run 开始: agent=%s thinking=%s max_tokens=%s keep_history=%s model=%s input_len=%d history_msgs=%d",
@@ -172,7 +229,8 @@ class BaseAgent(ABC):
                             len(extra), round_no + 1, more.finish_reason)
                 if more.finish_reason != "length":
                     break
-        self._record_usage(response.usage)
+        self._last_call_s = _time.monotonic() - t0
+        self._record_usage(response.usage, model=effective_model)
         elapsed = _time.monotonic() - t0
         logger.info(
             "Agent.run 完成: agent=%s 耗时=%.1fs 回复=%d字 usage=%s",
@@ -200,6 +258,8 @@ class BaseAgent(ABC):
         工具说明，不发工具 schema）。
         """
         effective_model = model or current_model_override()
+        # 工具循环不走 run()，耗时没人写：清零，别让流水带上上次 run 的旧值
+        self._last_call_s = 0.0
         # 该模型曾把工具调用写成 XML：后续步骤直接降级纯文本，避免反复污染正文
         if getattr(self.llm, "tools_markup_unsupported", False):
             return await self.run(
@@ -226,15 +286,26 @@ class BaseAgent(ABC):
         max_tokens: int | None = None,
         model: str | None = None,
     ) -> AsyncIterator[tuple[str, str]]:
-        """流式执行，逐块返回 (kind, text)。kind: thinking | text。"""
+        """流式执行，逐块返回 (kind, text)。kind: thinking | text。
+
+        末尾的 usage 不外发（老消费方只认 thinking/text，原样转发会把 JSON
+        灌进聊天窗），解析后落在 self.last_stream_usage。
+        """
         messages = self._build_messages(user_input, context)
         mode: ThinkingMode = thinking if thinking is not None else self.config.thinking
         answer_parts: list[str] = []
         limit = self.config.max_tokens if max_tokens is None else max_tokens
         effective_model = model or current_model_override()
+        self._fp_tools = ""  # 流式正文不带工具块
+        self.last_stream_usage = None
         async for kind, chunk in self.llm.stream_chat(
             messages, self.config.temperature, limit, thinking=mode, model=effective_model,
         ):
+            if kind == "usage":
+                parsed = parse_stream_usage(chunk)
+                if parsed is not None:
+                    self.last_stream_usage = parsed
+                continue
             if kind == "text":
                 answer_parts.append(chunk)
             yield kind, chunk

@@ -14,7 +14,7 @@ SIM_CACHE_DIR = "sim_cache"
 
 # 非角色标题跳过名单（唯一权威，prompts.build_character_constraint 转引本表）
 CHARACTER_SKIP_TITLES = frozenset({
-    "核心同伴", "关键对立/引导角色", "关系网络", "动态演进", "主角",
+    "核心同伴", "关键对立/引导角色", "关系网络", "动态演进", "主角", "主要人物档案",
 })
 
 

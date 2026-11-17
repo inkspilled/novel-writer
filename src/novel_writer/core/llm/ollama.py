@@ -73,7 +73,9 @@ class OllamaLLM(BaseLLM):
     ) -> dict:
         payload: dict = {
             "model": model or self.model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [dict({"role": m.role, "content": m.content}, **(
+                {"images": [url.split(",", 1)[1] for url in m.images]} if m.images else {}
+            )) for m in messages],
             "stream": stream,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }

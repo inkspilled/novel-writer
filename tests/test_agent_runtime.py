@@ -225,12 +225,13 @@ def test_review_panel_writes_fan_in_report(tmp_path):
     assert report.exists()
     text = report.read_text(encoding="utf-8")
     assert text.strip()
-    # 3 个视角并行 + 1 次主编聚合；聚合 prompt 必须包含三份视角发现
-    assert len(agent.calls) == 4
+    # 4 个视角并行（含冷读读者）+ 1 次主编聚合；聚合 prompt 必须包含各视角发现
+    assert len(agent.calls) == 5
     aggregate_prompt = agent.calls[-1]
     assert "剧情逻辑" in aggregate_prompt
     assert "人物一致性" in aggregate_prompt
     assert "节奏爽点" in aggregate_prompt
+    assert "冷读读者" in aggregate_prompt
 
 
 def test_dag_groups_and_cycle_detection(tmp_path):

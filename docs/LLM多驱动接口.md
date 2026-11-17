@@ -47,13 +47,40 @@ class LLMMessage:
 class LLMResponse:
     content: str
     model: str = ""
-    usage: dict[str, int] = {}             # prompt/completion/total tokens
+    usage: dict[str, int] = {}             # 归一化用量，见下节
     tool_calls: list[dict] = []
     finish_reason: str = ""                # stop / length / tool_calls
 
 class BaseLLM:
     async def chat(messages, tools=None, thinking="auto", model=None, **kwargs) -> LLMResponse
 ```
+
+## usage 归一化契约（`llm/usage.py`）
+
+各驱动把厂商字段统一成五个键，下游（journal / 工作流条）只认这套：
+
+| 键 | 含义 | 来源 |
+|---|---|---|
+| `prompt_tokens` | 总输入 token。OpenAI/DeepSeek 原样（已含命中部分）；Anthropic = `input_tokens + cache_read + cache_creation` | 归一化 |
+| `completion_tokens` | 输出 token | 原样 |
+| `cached_tokens` | 命中前缀缓存的输入部分（折扣价） | OpenAI `prompt_tokens_details.cached_tokens` / DeepSeek `prompt_cache_hit_tokens` / Anthropic `cache_read_input_tokens` |
+| `cache_write_tokens` | 缓存写入部分（Anthropic 计费，其余为 0） | Anthropic `cache_creation_input_tokens` |
+| `cache_meta` | 本次响应是否携带缓存字段（1/0）。聚合后 = 返回缓存字段的调用次数；为 0 时命中率不可知，UI 显示「缓存 —」而非 0% | 归一化 |
+
+规则：
+
+- **总量只显式加 `prompt_tokens + completion_tokens`**。`cached_tokens` 等键也以
+  tokens 结尾，任何「把 `*tokens` 键求和当总量」的旧逻辑都会重复计数
+  （`workflow_bar.set_usage` 与 runner 的 LONGRUN 日志已按此修正）。
+- **流式**：OpenAI 兼容驱动请求带 `stream_options={"include_usage": true}`，末尾
+  choices 为空的 usage chunk 以 `("usage", json)` 形式从 `stream_chat` 外发；网关
+  不认该参数时自动降级去掉重试（丢 usage 不丢正文）。`BaseAgent.stream_run`
+  解析后落在 `agent.last_stream_usage`，**不进 (kind, text) 协议**——聊天/新书
+  向导等 UI 消费方只认 thinking/text。
+- **工作流流式分支**（正文写作）从 `agent.last_stream_usage` 取 usage 记账并填入
+  `LLMResponse`——正文是全书最贵的一次调用，此前流式分支完全不进统计。
+- journal 的 `step_end` 额外带 `est_tokens`（汉字×1.5 启发式对 context+prompt+
+  system 的估算），与真实 `usage.prompt_tokens` 同条对比，用于校准估算系数（H2）。
 
 `model=` 是**单次调用**的模型覆盖（同 provider/base_url 下的另一个模型）：步骤级快模型、
 AgentLoop 的每轮工具调用都走它；不传则用客户端构造时的主模型。思考方言按实际模型推断。

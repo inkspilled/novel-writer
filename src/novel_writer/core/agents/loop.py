@@ -94,6 +94,9 @@ class AgentLoop:
         merged_context = f"{context}\n\n{guard}" if context else guard
         messages = agent._build_messages(user_input, merged_context)
         mode = thinking if thinking is not None else agent.config.thinking
+        # 工具 schema 指纹：schema 是否计入缓存前缀各家未文档化，先记下来供对照。
+        # 纯文本 run / stream_run 会在入口清空，此处是唯一的赋值点
+        agent.note_tools(self.toolkit.schemas() if self.max_rounds > 0 else None)
         usage: dict[str, int] = {}
         final = LLMResponse(content="")
 
@@ -116,7 +119,7 @@ class AgentLoop:
                 if isinstance(v, (int, float)):
                     usage[k] = int(usage.get(k, 0) + v)
             if hasattr(agent, "_record_usage"):
-                agent._record_usage(response.usage)
+                agent._record_usage(response.usage, model=self.model)
 
             calls = (response.tool_calls or [])[: self.max_calls_per_round]
             if not calls:
@@ -139,7 +142,7 @@ class AgentLoop:
                         if isinstance(v, (int, float)):
                             usage[k] = int(usage.get(k, 0)) + int(v)
                     if hasattr(agent, "_record_usage"):
-                        agent._record_usage(response.usage)
+                        agent._record_usage(response.usage, model=self.model)
                     if _TOOL_MARKUP_RE.search(response.content or ""):
                         logger.error("禁用工具后仍返回工具标记，丢弃本次输出")
                         # 记住这个模型不支持工具：后续 run_with_tools 直接降级为普通 run
@@ -201,7 +204,7 @@ class AgentLoop:
                 if isinstance(value, (int, float)):
                     usage[key] = int(usage.get(key, 0) + value)
             if hasattr(agent, "_record_usage"):
-                agent._record_usage(final.usage)
+                agent._record_usage(final.usage, model=self.model)
         final.usage = usage
         if keep_history and final.content:
             agent.history.append(LLMMessage(role="user", content=user_input))

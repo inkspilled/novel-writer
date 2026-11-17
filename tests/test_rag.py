@@ -347,6 +347,10 @@ class TestVectorSearch:
         r.load_chapters(up_to_chapter=2)
         out = r.retrieve("玄铁令 下落", top_k=3)
         assert "玄铁令" in out  # 服务故障 → BM25 结果
+        previous_calls = list(r._embed_client.embedded_texts)
+        assert previous_calls
+        assert "藏经阁" in r.retrieve("藏经阁", top_k=3)
+        assert r._embed_client.embedded_texts == previous_calls
 
     def test_vectors_persist_and_not_reembedded(self, tmp_path):
         _write_chapter(tmp_path, 1, "甲", "# 甲\n玄铁令在藏经阁的暗格里，无人知晓它的下落。")

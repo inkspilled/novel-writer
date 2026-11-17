@@ -19,6 +19,8 @@ class LLMMessage:
     # assistant 发起工具调用时携带（OpenAI 格式），tool 角色消息用 tool_call_id 回填
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str = ""
+    # 图片 data URL；文本调用保持原协议，审核调用由各驱动转换为原生视觉格式。
+    images: list[str] = field(default_factory=list)
 
 
 @dataclass

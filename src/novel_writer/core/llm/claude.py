@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import inspect
+import json
 from typing import AsyncIterator
 
 from .base import BaseLLM, LLMMessage, LLMResponse, ThinkingMode
+from .usage import normalize_claude_usage
 from ..logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _content(message):
+    if not message.images:
+        return message.content
+    blocks = [{"type": "text", "text": message.content or ""}]
+    for url in message.images:
+        header, data = url.split(",", 1)
+        blocks.append({"type": "image", "source": {
+            "type": "base64", "media_type": header[5:].split(";")[0], "data": data,
+        }})
+    return blocks
 
 # N-02 修复：使用模块级缓存实现真正的单次懒加载
 _anthropic_module = None
@@ -64,7 +79,7 @@ class ClaudeLLM(BaseLLM):
             if m.role == "system":
                 system_parts.append(m.content)
             else:
-                chat_messages.append({"role": m.role, "content": m.content})
+                chat_messages.append({"role": m.role, "content": _content(m)})
         system_msg = "\n\n".join(system_parts) if system_parts else ""
 
         create_kwargs: dict = dict(
@@ -83,7 +98,9 @@ class ClaudeLLM(BaseLLM):
         return LLMResponse(
             content="\n".join(text_parts),
             model=resp.model,
-            usage={"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens},
+            # Anthropic 的 input_tokens 不含缓存部分，归一化时并回总输入；
+            # 只透传 input/output 两个键会让缓存命中在源头被丢掉
+            usage=normalize_claude_usage(resp.usage),
         )
 
     async def stream_chat(
@@ -102,7 +119,7 @@ class ClaudeLLM(BaseLLM):
             if m.role == "system":
                 system_parts.append(m.content)
             else:
-                chat_messages.append({"role": m.role, "content": m.content})
+                chat_messages.append({"role": m.role, "content": _content(m)})
         system_msg = "\n\n".join(system_parts) if system_parts else ""
 
         create_kwargs: dict = dict(
@@ -131,3 +148,15 @@ class ClaudeLLM(BaseLLM):
                     text = getattr(event, "text", None)
                     if text:
                         yield "text", text
+        # 流式没有别的 usage 出口：末次 message 里才有缓存命中字段
+        try:
+            getter = getattr(stream, "get_final_message", None)
+            if getter is not None:
+                final = getter()
+                if inspect.isawaitable(final):
+                    final = await final
+                usage = getattr(final, "usage", None)
+                if usage is not None:
+                    yield "usage", json.dumps(normalize_claude_usage(usage))
+        except Exception as e:
+            logger.debug("读取流式最终 usage 失败（忽略）: %s", e)

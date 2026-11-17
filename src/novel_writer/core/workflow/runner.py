@@ -12,7 +12,10 @@ from typing import Callable, Iterator
 from .. import project_io
 from ..agents.base import (
     BaseAgent,
+    current_model_override,
+    reset_call_meta,
     reset_model_override,
+    set_call_meta,
     set_model_override,
 )
 from ..llm.base import LLMResponse
@@ -30,11 +33,12 @@ from .constants import (
     SKILL_PROOFREAD,
     SKILL_REVIEW,
 )
-from .context import ContextBuilder
+from .context import ContextBuilder, estimate_tokens
 from .definition import WorkflowDef, WorkflowStep
 from .digest import digest_section
 from .prompts import build_memory_sediment_prompt, build_pacing_context, build_title_constraint
 from .sediment import extract_chapter_title, sediment_chapter
+from .usage_ledger import UsageLedger
 from ..json_extract import extract_json_object
 
 logger = get_logger(__name__)
@@ -96,7 +100,9 @@ class WorkflowRunner:
         self._stop = False
         self._abort_reason = ""
         self.total_usage: dict[str, int] = {}  # 本次运行累计 token 用量
+        self._pending_est_tokens = 0  # 当前步骤组装上下文的估算 token（H2 校准用）
         self._journal = None  # RunJournal（run_start 时创建）
+        self._ledger: UsageLedger | None = None  # per-call 用量流水（与 journal 同生命周期）
         self._context_builder = ContextBuilder(project_dir, project_info, max_context_tokens)
         # 周期步骤触发时机（章前/章后）；未声明的自定义周期步骤默认按章后执行
         self._pre_ids = set(PRE_CHAPTER_PERIODIC_IDS)
@@ -119,7 +125,23 @@ class WorkflowRunner:
         self._skill_cycles = {skill: itertools.cycle(items) for skill, items in self._agent_by_skill.items()}
 
     def _record_usage(self, usage: dict | None) -> None:
-        for k, v in (usage or {}).items():
+        """累计本次调用的数值用量；带指纹时先做劈点比对并落 usage.jsonl。
+
+        payload 来自 BaseAgent._record_usage：非数值键（agent/model/指纹）不参与
+        累计；call_count / prefix_changed 是数值键，随 total_usage 累加后经
+        progress["_usage"] 到 UI（迷你条 tooltip 的「前缀稳定 x/y」）。
+        """
+        usage = dict(usage or {})
+        if not usage:
+            return
+        if self._ledger is not None and "fp_system" in usage:
+            changed_system, changed_tools = self._ledger.compare_prefix(usage)
+            usage["prefix_changed"] = 1 if (changed_system or changed_tools) else 0
+            # est_tokens 只进流水（步骤级估算，累加无意义）
+            self._ledger.record({**usage, "est_tokens": self._pending_est_tokens or 0})
+        for k, v in usage.items():
+            if k in ("n", "duration_s"):  # 章号是元数据、耗时是瞬时值，累计无意义
+                continue
             if isinstance(v, (int, float)):
                 self.total_usage[k] = int(self.total_usage.get(k, 0) + v)
 
@@ -177,7 +199,8 @@ class WorkflowRunner:
                     result = await coro
                 self._journal_record("step_end", step=step.id, n=n,
                                      duration_s=round(_time.monotonic() - t0, 2),
-                                     usage=self._usage_delta(usage_before))
+                                     usage=self._usage_delta(usage_before),
+                                     est_tokens=self._pending_est_tokens or None)
                 return result
             except (WorkflowError, ChapterWriteRejected, asyncio.CancelledError) as e:
                 self._journal_record("step_error", step=step.id, n=n, error=str(e),
@@ -220,6 +243,7 @@ class WorkflowRunner:
             progress = {}
         from .journal import RunJournal
         self._journal = RunJournal(self.project_dir, workflow.name)
+        self._ledger = UsageLedger(self.project_dir, run=workflow.name)
         self._journal_record("run_start", workflow=workflow.name,
                              steps=len(workflow.steps), resumed=bool(progress))
 
@@ -454,8 +478,13 @@ class WorkflowRunner:
                 if blocked_at is None:
                     progress[step.id] = {"current": n, "total": step.repeat}
                     self._save_progress(progress)
-                    tokens = self.total_usage.get("total_tokens") or sum(
-                        v for k, v in self.total_usage.items() if k.endswith("tokens")
+                    # 总量只显式加输入/输出：cached_tokens 等键参与求和会重复计数
+                    tokens = self.total_usage.get("total_tokens") or (
+                        int(self.total_usage.get("prompt_tokens", 0) or 0)
+                        + int(self.total_usage.get("completion_tokens", 0) or 0)
+                    ) or sum(
+                        int(v) for k, v in self.total_usage.items()
+                        if k.endswith("tokens") and isinstance(v, (int, float))
                     )
                     logger.info(
                         "[LONGRUN] 第%d章完成 current=%d/%d tokens=%s errors=%d",
@@ -546,9 +575,11 @@ class WorkflowRunner:
             return True
         # 沉淀也是抽取类：老项目没有 digest 时让它走快模型，别用主模型烧一遍
         token = set_model_override(self.fast_model or None)
+        meta_token = set_call_meta({"step": "sediment", "n": n})
         try:
             llm_data = await self._llm_sediment(n, content)
         finally:
+            reset_call_meta(meta_token)
             reset_model_override(token)
         try:
             sediment_chapter(self.project_dir, n, content, llm_data=llm_data)
@@ -615,7 +646,7 @@ class WorkflowRunner:
         active_loops = mem.get_open_loops(limit=15, current_chapter=n)
         prompt = build_memory_sediment_prompt(n, active_loops, content)
         try:
-            # 沉淀是结构化抽取：关思考、不写历史，避免与本章其他工具步重复计费
+            # 沉淀是结构化抽取：关思考、不写历史，避免重复发送本章上下文
             response = await agent.run(prompt, thinking="off", keep_history=False)
         except Exception as e:
             logger.warning("第%d章 LLM 沉淀调用失败，回退正则提取: %s", n, e)
@@ -643,9 +674,11 @@ class WorkflowRunner:
         共享 Agent 上的临时属性会互相串模型；contextvar 随 asyncio 任务隔离。
         """
         token = set_model_override(self.resolve_model(step))
+        meta_token = set_call_meta({"step": step.id, "n": n})
         try:
             return await self._run_single_impl(step, project, n, progress)
         finally:
+            reset_call_meta(meta_token)
             reset_model_override(token)
 
     async def _run_single_impl(self, step: WorkflowStep, project: dict, n: int, progress: dict):
@@ -718,6 +751,14 @@ class WorkflowRunner:
                 if m:
                     prompt += build_title_constraint(m.group(2))
 
+        # H2 观测：同一调用同时记 est_tokens（汉字×1.5 启发式）与真实
+        # prompt_tokens（usage 归一化），比值写进 journal，用于校准估算系数
+        self._pending_est_tokens = (
+            estimate_tokens(context)
+            + estimate_tokens(prompt)
+            + estimate_tokens(getattr(agent.config, "system_prompt", "") or "")
+        )
+
         try:
             thinking = step.thinking if getattr(step, "thinking", "auto") != "auto" else (
                 "off" if step.id in NO_THINKING_STEP_IDS else "auto"
@@ -730,6 +771,8 @@ class WorkflowRunner:
                 # 思考会先占用输出预算：正文流式至少给 8192，避免 reasoning 吃完后没有 text
                 stream_limit = max(int(step.max_tokens or 0), 8192)
                 first_text = True
+                import time as _time
+                _t_stream = _time.monotonic()
                 async for kind, chunk in agent.stream_run(
                     prompt, context=context, thinking=thinking, keep_history=keep_history,
                     max_tokens=stream_limit,
@@ -748,7 +791,13 @@ class WorkflowRunner:
                         prompt, context=context, thinking=thinking, keep_history=keep_history,
                     )
                 else:
-                    response = LLMResponse(content="".join(parts))
+                    # 流式 usage 落在 agent.last_stream_usage（stream_run 不外发）。
+                    # 正文是全书最贵的一次调用，此前这条分支不记账，统计系统性偏低。
+                    # 经 agent._record_usage 补调用级元数据/指纹后进 sink（usage.jsonl）
+                    stream_usage = getattr(agent, "last_stream_usage", None) or {}
+                    response = LLMResponse(content="".join(parts), usage=stream_usage)
+                    agent._last_call_s = _time.monotonic() - _t_stream
+                    agent._record_usage(stream_usage, model=current_model_override())
                 logger.info("步骤完成（流式）: %s (第%d章)", step.id, n)
             else:
                 if step.id == "chapter" and self.on_chunk is not None:

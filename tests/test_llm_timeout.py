@@ -99,3 +99,33 @@ def test_embedding_hard_timeout(monkeypatch):
     monkeypatch.setattr(emb_mod, "EMBED_TIMEOUT", 0.02)
     with pytest.raises(TimeoutError):
         client.embed(["测试"])
+
+
+def test_short_drama_releases_client_on_each_worker_loop(tmp_path, monkeypatch):
+    from src.novel_writer.core.drama import DramaStore
+    from src.novel_writer.ui.drama.drama_worker import DramaAIWorker
+
+    closed = []
+
+    class Client:
+        owner = None
+
+        async def close(self):
+            loop = asyncio.get_running_loop()
+            assert self.owner is None or loop is self.owner
+            if self.owner is not None:
+                closed.append(loop)
+
+    monkeypatch.setattr(LLMClient, "_build_client", lambda self: Client())
+    llm = _stub_llm()
+
+    async def run(worker):
+        llm._sync_loop()
+        llm.client.owner = asyncio.get_running_loop()
+        raise RuntimeError("模拟任务失败")
+
+    monkeypatch.setattr(DramaAIWorker, "_run", run)
+    for _ in range(2):
+        DramaAIWorker(llm, DramaStore(tmp_path), {}, "story_review").run()
+        assert llm.client is None
+    assert len(closed) == 2 and closed[0] is not closed[1]

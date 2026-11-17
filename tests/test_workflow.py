@@ -260,3 +260,23 @@ class TestStepContextTiers:
     def test_review_tier(self):
         """测试审核的上下文层级。"""
         assert STEP_CONTEXT_TIERS["review"] == ContextTier.NARRATIVE
+
+
+def test_review_panel_has_cold_reader_lens():
+    """会审必须含「冷读读者」视角：不带设定资料，模拟第一次读的读者。
+
+    带大纲的审核会自动脑补"这里应该有铺垫"，只有冷读能发现读者真看不懂。
+    """
+    from src.novel_writer.core.workflow.prompts import (
+        REVIEW_PANEL_LENSES, build_review_panel_prompt,
+    )
+
+    lenses = {name for name, _ in REVIEW_PANEL_LENSES}
+    assert "冷读读者" in lenses
+    assert len(REVIEW_PANEL_LENSES) >= 4
+
+    # 冷读 prompt 只给正文，不给任何设定结论
+    _, focus = next(item for item in REVIEW_PANEL_LENSES if item[0] == "冷读读者")
+    assert "没有任何设定资料" in focus
+    prompt = build_review_panel_prompt("冷读读者", focus, "正文内容", 3)
+    assert "正文内容" in prompt and "看懂" in prompt

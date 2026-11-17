@@ -15,12 +15,17 @@ from typing import AsyncIterator
 
 from .base import BaseLLM, LLMMessage, LLMResponse, ThinkingMode
 from .thinking import build_thinking_body, parse_json_body
+from .usage import normalize_openai_usage
 from ..logger import get_logger
 
 logger = get_logger(__name__)
 
 # 在模块级别禁用 shiboken 的特性检查，避免与 openai 导入冲突
 os.environ['SHIBOKEN_DISABLE_FEATURE_IMPORT_CHECK'] = '1'
+
+
+class InvalidCompletionResponse(RuntimeError):
+    """The endpoint returned no usable completion envelope."""
 
 
 def _get_retryable_errors():
@@ -35,7 +40,8 @@ def _get_retryable_errors():
         InternalServerError,
         RateLimitError,
     )
-    return (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)
+    return (RateLimitError, APITimeoutError, APIConnectionError, InternalServerError,
+            InvalidCompletionResponse)
 
 
 # ── 全局限流器：默认不人为拖延；仅 429 后进入冷却 ──
@@ -157,6 +163,11 @@ def _serialize_messages(messages: list[LLMMessage]) -> list[dict]:
     out: list[dict] = []
     for m in messages:
         item: dict = {"role": m.role, "content": m.content or ""}
+        if m.images:
+            item["content"] = [{"type": "text", "text": m.content or ""}] + [
+                {"type": "image_url", "image_url": {"url": url, "detail": "high"}}
+                for url in m.images
+            ]
         if m.tool_calls:
             item["tool_calls"] = m.tool_calls
             if not m.content:
@@ -282,21 +293,30 @@ class LLMClient(BaseLLM):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        if self._bound_loop is loop:
+        if self._bound_loop is loop and self.client is not None:
             return
         old = self.client
         old_loop = self._bound_loop
         self.client = self._build_client()
         self._bound_loop = loop
         if old is not None:
-            # 旧 loop 还活着就异步关掉；已关闭则丢弃（连接随进程回收）
-            try:
-                if old_loop is not None and not old_loop.is_closed() and old_loop is not loop:
-                    old_loop.call_soon_threadsafe(lambda: old_loop.create_task(old.close()))
-                else:
-                    loop.create_task(old.close())
-            except Exception as e:
-                logger.debug("关闭旧 LLM 客户端失败（忽略）: %s", e)
+            async def close_old():
+                try:
+                    await old.close()
+                except Exception as exc:
+                    logger.debug("关闭旧 LLM 客户端失败: %s", exc)
+
+            if old_loop is None:
+                loop.create_task(close_old())
+            elif old_loop.is_running():
+                try:
+                    old_loop.call_soon_threadsafe(lambda: old_loop.create_task(close_old()))
+                except RuntimeError:
+                    pass
+
+    async def close_current_loop(self):
+        if self._bound_loop is asyncio.get_running_loop():
+            await self.close()
 
     async def __aenter__(self):
         """支持 async with 语法。"""
@@ -308,20 +328,21 @@ class LLMClient(BaseLLM):
 
     async def close(self):
         """关闭 HTTP 客户端连接。"""
-        if self.client:
+        client, self.client = self.client, None
+        self._bound_loop = None
+        if client:
             try:
-                await self.client.close()
+                await client.close()
                 logger.debug("OpenAI 兼容客户端已关闭")
             except Exception as e:
                 logger.debug("LLM 客户端 close 异常（忽略）: %s", e)
-            self.client = None
 
     async def chat(
         self,
         messages: list[LLMMessage],
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        max_retries: int = 1,
+        max_retries: int = 2,
         thinking: ThinkingMode = "auto",
         tools: list[dict] | None = None,
         model: str | None = None,
@@ -363,16 +384,23 @@ class LLMClient(BaseLLM):
                             tools = None
                             continue
                     raise
-                choice = resp.choices[0]
-                _think, content = _message_parts(choice.message)
+                choices = getattr(resp, "choices", None)
+                choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+                message = getattr(choice, "message", None)
+                if message is None:
+                    raise InvalidCompletionResponse(
+                        f"模型 {effective_model} 的接口返回空响应或缺少答复。请稍后重试。"
+                        "若反复出现，请检查模型服务或中转接口。"
+                    )
+                _think, content = _message_parts(message)
+                usage = getattr(resp, "usage", None)
                 return LLMResponse(
                     content=content,
-                    model=resp.model,
-                    usage={
-                        "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
-                        "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
-                    },
-                    tool_calls=_serialize_tool_calls(getattr(choice.message, "tool_calls", None)),
+                    model=getattr(resp, "model", None) or effective_model,
+                    # 全字段归一化透传（含 cached_tokens / cache_meta），
+                    # 只留两个字段会让命中率在数据源头就不可得
+                    usage=normalize_openai_usage(usage),
+                    tool_calls=_serialize_tool_calls(getattr(message, "tool_calls", None)),
                     finish_reason=getattr(choice, "finish_reason", "") or "",
                 )
             except asyncio.TimeoutError as e:
@@ -414,6 +442,8 @@ class LLMClient(BaseLLM):
         effective_model = (model or self.model).strip()
         last_exc: Exception | None = None
         extra = self._thinking_body(thinking, effective_model)
+        # create_kwargs 每轮重试都会重建，降级标记必须放循环外才生效
+        include_usage = True
         for attempt in range(max_retries + 1):
             yielded_any = False
             try:
@@ -425,6 +455,10 @@ class LLMClient(BaseLLM):
                     max_tokens=max_tokens,
                     stream=True,
                 )
+                if include_usage:
+                    # 末尾多一个 choices 为空、带 usage 的 chunk——正文 token
+                    # 统计此前是盲区，就缺这一个参数
+                    create_kwargs["stream_options"] = {"include_usage": True}
                 if extra:
                     create_kwargs["extra_body"] = extra
                 try:
@@ -434,10 +468,16 @@ class LLMClient(BaseLLM):
                         "流式首包",
                     )
                 except Exception as e:
-                    if extra and not yielded_any and _is_invalid_request(e):
-                        logger.warning("思考开关被 %s 拒绝（流式），去掉后重试: %s", self.base_url, e)
-                        extra = {}
-                        continue
+                    if not yielded_any and _is_invalid_request(e):
+                        if extra:
+                            logger.warning("思考开关被 %s 拒绝（流式），去掉后重试: %s", self.base_url, e)
+                            extra = {}
+                            continue
+                        # 少数网关不认 stream_options：去掉后重试（丢 usage 不丢正文）
+                        if include_usage:
+                            logger.warning("stream_options 被 %s 拒绝（流式），去掉后重试: %s", self.base_url, e)
+                            include_usage = False
+                            continue
                     raise
                 try:
                     iterator = stream.__aiter__()
@@ -460,6 +500,10 @@ class LLMClient(BaseLLM):
                                            LLM_STREAM_IDLE_TIMEOUT)
                             raise
                         try:
+                            # usage chunk：choices 为空、只带 usage（每家都在末尾）
+                            u = getattr(chunk, "usage", None)
+                            if u is not None:
+                                yield "usage", json.dumps(normalize_openai_usage(u))
                             if chunk.choices and chunk.choices[0].delta:
                                 kind, content = _delta_parts(chunk.choices[0].delta)
                                 if content:

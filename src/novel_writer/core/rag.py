@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import time
 import json
 import math
 import re
@@ -50,6 +51,7 @@ except ImportError:
 # ── 语义检索配置（应用级，UI 设置后经 configure_embedding 注入） ──
 
 _EMBED_CFG: dict | None = None
+_EMBED_RETRY_AT = 0.0
 
 
 def configure_embedding(cfg: dict | None):
@@ -57,13 +59,19 @@ def configure_embedding(cfg: dict | None):
 
     在工作流启动前调用；已缓存的检索器会在下次检索时按新配置重建客户端。
     """
-    global _EMBED_CFG
+    global _EMBED_CFG, _EMBED_RETRY_AT
     _EMBED_CFG = dict(cfg) if cfg and cfg.get("model") else None
+    _EMBED_RETRY_AT = 0.0
 
 
 def semantic_available() -> bool:
     """是否配置了 embedding（语义检索可用）；调用方据此决定要不要走向量召回。"""
     return bool(_EMBED_CFG and _EMBED_CFG.get("model"))
+
+
+def _defer_embedding():
+    global _EMBED_RETRY_AT
+    _EMBED_RETRY_AT = time.monotonic() + 30
 
 
 def _tokenize(text: str) -> list[str]:
@@ -463,6 +471,7 @@ class RAGRetriever:
             return True
         except Exception as e:
             logger.warning("向量补嵌失败，本次回退 BM25: %s", e)
+            _defer_embedding()
             return False
 
     def _vector_search(
@@ -472,6 +481,8 @@ class RAGRetriever:
         chunk_filter: Callable[[Chunk], bool] | None = None,
     ) -> list[tuple[Chunk, float]] | None:
         """语义检索；不可用/失败返回 None（调用方回退 BM25）。"""
+        if time.monotonic() < _EMBED_RETRY_AT:
+            return None
         client = self._get_embed_client()
         if client is None or not self.index.chunks:
             return None
@@ -491,6 +502,7 @@ class RAGRetriever:
             hits = self._top_k_by_cosine(qvec, vectors, top_k)
         except Exception as e:
             logger.warning("语义检索失败，回退 BM25: %s", e)
+            _defer_embedding()
             return None
         by_key = {self._vec_key(c): c for c in self.index.chunks if c.id}
         return [(by_key[k], score) for k, score in hits if k in by_key]
