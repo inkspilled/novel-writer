@@ -364,8 +364,8 @@ def test_drama_panel_workflow_fills_panel_without_status_strip(qapp):
     panel.show()
     qapp.processEvents()
 
-    assert panel.office.isHidden()
-    assert panel.workflow.y() == 0
+    assert not panel.office.isHidden()  # 智能体卡片已恢复显示
+    assert panel.workflow.y() > 0  # 动画在上，工作流条在下
     assert panel.workflow.y() < panel.height() // 2
     assert panel.workflow.y() + panel.workflow.height() == panel.height()
 

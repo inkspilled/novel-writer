@@ -34,7 +34,7 @@ class AgentDock(QWidget):
 
         self.office = OfficeScene(self)
         self.office.agent_clicked.connect(self._dispatch_agent_clicked)
-        self.office.hide()  # 状态卡片 UI 已移除；保留工作流状态接口
+        self._root_layout.addWidget(self.office)
 
         self.workflow = WorkflowMiniBar()
         if workflow_title:

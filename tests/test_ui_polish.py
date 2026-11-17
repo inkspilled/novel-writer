@@ -111,7 +111,7 @@ class TestAgentStrip:
         panel.set_config({})
         panel.update_agent_buttons({"a": {"title": "主编"}, "b": {"title": "写手"}})
         assert not hasattr(panel, "_header")
-        assert panel.office.isHidden()
+        assert not panel.office.isHidden()  # 智能体卡片已恢复显示
         assert not hasattr(panel, "set_office_visible")
         panel.close()
 

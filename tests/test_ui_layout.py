@@ -94,7 +94,7 @@ def test_workflow_panel_keeps_controls_and_log(qapp):
     panel.on_workflow_step_started("write", 1, "写手")
     panel.on_workflow_progress(50, "正在写作")
     panel.on_workflow_finished()
-    assert panel.office.isHidden()
+    assert not panel.office.isHidden()  # 智能体卡片已恢复显示
     assert not hasattr(panel, "btn_chat_toggle")
     panel.close()
 
@@ -485,7 +485,7 @@ def test_removed_menus_and_image_entry(qapp):
     model = [a.text() for a in window._model_agent_menu.actions()]
     assert "图片生成 API" in model
     assert "角色管理" not in model
-    assert window.agent_panel.office.isHidden()
-    assert window.drama_panel.office.isHidden()
+    assert not window.agent_panel.office.isHidden()  # 智能体卡片已恢复显示
+    assert not window.drama_panel.office.isHidden()  # 智能体卡片已恢复显示
     window._refresh_ui_texts()
     window.close()
