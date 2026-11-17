@@ -110,15 +110,9 @@ class TestAgentStrip:
         panel = AgentPanel()
         panel.set_config({})
         panel.update_agent_buttons({"a": {"title": "主编"}, "b": {"title": "写手"}})
-        # 状态行整行隐藏（避免与卡片重复），卡片本身默认展示
-        assert panel._header.isHidden()
-        assert not panel._strip_label.isVisibleTo(panel)
-        assert not panel.office.isHidden()
-
-        panel.set_office_visible(False)
+        assert not hasattr(panel, "_header")
         assert panel.office.isHidden()
-        panel.set_office_visible(True)
-        assert not panel.office.isHidden()
+        assert not hasattr(panel, "set_office_visible")
         panel.close()
 
 

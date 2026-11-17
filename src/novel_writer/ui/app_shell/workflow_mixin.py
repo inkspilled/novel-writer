@@ -364,7 +364,7 @@ class WorkflowMixin:
 
     def _on_wf_stopped(self):
         self._park_wf_thread()
-        # 与完成路径同样解锁自由对话（停止也必须恢复聊天）
+        # 停止时同步恢复工作流控件
         self.agent_panel.on_workflow_finished()
         self.agent_panel.workflow_bar.set_running(False)
         self.agent_panel.workflow_bar.append_log("── <b>工作流已停止</b> ──")

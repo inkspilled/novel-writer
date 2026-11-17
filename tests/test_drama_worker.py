@@ -92,6 +92,55 @@ def test_worker_adapt_calls_model_and_writes_bible(qapp, tmp_path):
     assert "废柴逆袭" in "".join(store.bible_text())
 
 
+@pytest.mark.parametrize("recovers", [True, False])
+def test_worker_adapt_handles_null_after_gateway_error(qapp, tmp_path, monkeypatch, recovers):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from openai import AsyncOpenAI
+    from src.novel_writer.core.llm import client as client_mod
+
+    worker, store, _, ok, failed = _worker(tmp_path, "adapt")
+    store.save_bible("# 原有改编圣经\n")
+    final_choices = [{
+        "index": 0, "finish_reason": "stop",
+        "message": {"role": "assistant", "content": "# 更新后的改编圣经"},
+    }] if recovers else []
+    responses = iter([
+        httpx.Response(500, json={"error": {"message": "Internal Server Error"}}),
+        httpx.Response(200, content=b"null", headers={"Content-Type": "application/json"}),
+        httpx.Response(200, json={"id": "chat-stub", "object": "chat.completion", "created": 0,
+                                  "model": "deepseek-flash", "choices": final_choices}),
+    ])
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return next(responses)
+
+    def build_client(_):
+        return AsyncOpenAI(api_key="stub", base_url="https://test.invalid/v1", max_retries=0,
+                           http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+
+    monkeypatch.setattr(client_mod.LLMClient, "_build_client", build_client)
+    monkeypatch.setattr(client_mod._global_limiter, "acquire", AsyncMock())
+    monkeypatch.setattr(client_mod.asyncio, "sleep", AsyncMock())
+    worker.llm = client_mod.LLMClient("deepseek-flash")
+    try:
+        worker.run()
+    finally:
+        asyncio.run(worker.llm.close())
+
+    assert len(requests) == 3
+    if recovers:
+        assert ok and not failed
+        assert store.bible_text() == "# 更新后的改编圣经\n"
+    else:
+        assert not ok and "接口返回空响应或缺少答复" in failed[0]
+        assert store.bible_text() == "# 原有改编圣经\n"
+
+
 class _EmptyThenTextLLM(FakeLLM):
     """第一次只回 reasoning（content 空），关思考重试后才给正文。"""
 
@@ -401,3 +450,134 @@ def test_full_flow_second_run_is_a_noop(qapp, tmp_path):
     assert ok2 and not failed2, failed2
     assert again.llm.calls == []  # 全部已完成 → 一次模型都不调
     assert "跳过" in ok2[0]
+
+
+def test_storyboard_prompt_carries_prompt_engineering_rules(qapp, tmp_path):
+    """文章的分镜规则要真的进模型提示词，不能只活在文档里。"""
+    from src.novel_writer.ui.drama.drama_worker import DramaAIWorker
+
+    store = DramaStore(tmp_path)
+    store.ensure({"title": "测试"})
+    worker = DramaAIWorker(None, store, {}, "storyboard")
+    prompt = worker._storyboard_prompt(
+        {"number": 1, "title": "第1集"}, "## 第1场 山门 · 夜\n\n林乐天：走。", 90
+    )
+    for needle in (
+        "38%", "62%",                 # 黄金比例构图
+        "平视正面全片最多两次",        # 每镜换角度
+        "机位，运镜",                 # camera 同时写机位和运镜
+        "画面左/右",                  # 方向按画面写
+        "同时",                       # 多人动作有先后
+        "镜子和倒影",                 # AI 固定弱点
+        "道具",                       # 道具交代来源
+        "transition 写清怎么接下一镜",
+    ):
+        assert needle in prompt, needle
+
+
+def test_storyboard_prompt_carries_visual_tone(qapp, tmp_path):
+    """企划的风格与配色要进分镜提示词，否则镜头构图和整体视觉会脱节。"""
+    from src.novel_writer.ui.drama.drama_worker import DramaAIWorker
+
+    store = DramaStore(tmp_path)
+    store.ensure({"title": "测试"})
+    store.save_series({"style": "仙侠写实", "palette": "夜戏冷蓝 + 暖黄灯笼"})
+    worker = DramaAIWorker(None, store, {}, "storyboard")
+    prompt = worker._storyboard_prompt(
+        {"number": 1, "title": "第1集"}, "## 第1场 山门 · 夜\n\n林乐天：走。", 90
+    )
+    assert "视觉基调" in prompt
+    assert "仙侠写实" in prompt and "夜戏冷蓝 + 暖黄灯笼" in prompt
+
+
+class _KeyframeLLM:
+    model = "fake-keyframe"
+
+    async def chat(self, messages, temperature=0.7, max_tokens=4096,
+                   thinking="auto", tools=None, model=None):
+        content = json.dumps({"shots": [{
+            "shot_id": "E01-S001",
+            "first_frame": "顾言站在藏经阁门口，手边木匣清晰可见",
+            "last_frame": "顾言停在书架前，木匣在手里",
+            "motion": "顾言朝画面左走两步，抬手抽出木匣",
+        }]}, ensure_ascii=False)
+        return LLMResponse(content=content, model="fake-keyframe",
+                           usage={"total_tokens": 10}, finish_reason="stop")
+
+
+def test_worker_keyframes_saves_briefs(qapp, tmp_path):
+    worker, store, _llm, ok, failed = _worker(tmp_path, "keyframes")
+    store.save_storyboard(1, {"shots": [{
+        "shot_id": "E01-S001", "shot_size": "全景", "camera": "平视，固定",
+        "duration_sec": 3, "location": "藏经阁", "time": "夜", "characters": "顾言",
+        "action": "顾言朝画面左走两步", "dialogue": "", "sfx": "",
+        "transition": "硬切", "status": "draft", "notes": "",
+    }]})
+    worker.llm = _KeyframeLLM()
+    worker.run()
+    assert ok and not failed, failed
+    briefs = store.load_keyframes(1)["shots"]
+    assert briefs and briefs[0]["shot_id"] == "E01-S001"
+    assert "木匣" in briefs[0]["first_frame"]
+
+
+def test_worker_video_generates_clips_and_episode(qapp, tmp_path, monkeypatch):
+    """首尾帧图 → 视频片段 → 合成：用假客户端验证整条链路，不碰真 ComfyUI。"""
+    import src.novel_writer.core.image_generation as image_mod
+    import src.novel_writer.core.video_generation as video_mod
+
+    worker, store, _llm, ok, failed = _worker(tmp_path, "video")
+    store.save_storyboard(1, {"shots": [{
+        "shot_id": "E01-S001", "shot_size": "全景", "camera": "平视，固定",
+        "duration_sec": 3, "location": "藏经阁", "time": "夜", "characters": "顾言",
+        "action": "顾言朝画面左走两步", "dialogue": "", "sfx": "",
+        "transition": "硬切", "status": "draft", "notes": "",
+    }]})
+    store.save_keyframes(1, [{
+        "shot_id": "E01-S001", "first_frame": "顾言在门口",
+        "last_frame": "顾言在书架前", "motion": "顾言朝画面左走两步",
+    }])
+    from src.novel_writer.core.drama_production import confirm
+    from src.novel_writer.core.drama_review import save_review
+    from PIL import Image
+    import io
+    stream = io.BytesIO()
+    Image.new("RGB", (72,128), "blue").save(stream, format="PNG")
+    for which in ("first", "last"):
+        store.save_keyframe_image(1, "E01-S001", which, stream.getvalue())
+    confirm(store, 1, "story")
+    confirm(store, 1, "style")
+    save_review(store, "submit", 1, "## E01-S001\n通过")
+
+    class FakeImage:
+        def generate(self, positive, negative="", prefix="", width=1024, height=1024, **kwargs):
+            return b"PNG"
+        def close(self):
+            pass
+
+    class FakeVideo:
+        def generate(self, prompt, first, last, prefix="", width=720, height=1280,
+                     seed=None, length=3.0):
+            assert first.is_file() and last.is_file()
+            return b"MP4", "clip.mp4"
+        def close(self):
+            pass
+
+    def fake_concat(clips, output):
+        output.write_bytes(b"EPISODE")
+        return True
+
+    monkeypatch.setattr(image_mod, "config_from_app", lambda: {"provider": "comfyui", "workflow": "x"})
+    monkeypatch.setattr(image_mod, "configuration_error", lambda cfg: "")
+    monkeypatch.setattr(image_mod, "create_client", lambda cfg: FakeImage())
+    monkeypatch.setattr(video_mod, "config_from_app", lambda: {"provider": "comfyui", "workflow": "x"})
+    monkeypatch.setattr(video_mod, "configuration_error", lambda cfg: "")
+    monkeypatch.setattr(video_mod, "create_client", lambda cfg, *, drama_dir: FakeVideo())
+    monkeypatch.setattr(video_mod, "concat_clips", fake_concat)
+
+    worker.run()
+    assert ok and not failed, failed
+
+    clip = store.episode_clip_dir(1) / "E01-S001.mp4"
+    assert clip.read_bytes() == b"MP4"
+    assert store.episode_video_path(1).read_bytes() == b"EPISODE"

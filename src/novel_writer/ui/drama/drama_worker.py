@@ -6,6 +6,7 @@
 - adapt      重编圣经：小说规划 + 滚动摘要 → 改编圣经
 - storyboard 一键分镜：剧本 → 镜头 JSON
 - assets     提取资产：分镜 → 角色/地点占位（本地规则，不调模型）
+- video_recover 查询并认领未完成的云端视频任务（不调模型）
 """
 from __future__ import annotations
 
@@ -21,17 +22,21 @@ from ...core.drama_context import (
     ADAPT_DOC_BUDGET, STORYBOARD_BUDGET, parse_character_names, slice_bible,
     truncate, compress_script,
 )
+from ...core.drama_records import clear_failures, record_failure
 from ...core.llm.base import BaseLLM
 from ...core.drama_adaptation import AdaptiveDramaRunner
 from ...core.logger import get_logger
+from .production_worker import ProductionWorkerMixin, PRODUCTION_TASKS
 
 logger = get_logger(__name__)
 
 # 需要大模型的任务（assets 是本地规则提取，llm 可为 None）
-NEEDS_LLM_TASKS = ("full", "adapt", "segment", "storyboard")
+NEEDS_LLM_TASKS = ("full", "adapt", "segment", "storyboard", "keyframes", "production",
+                   "story_review", "frame_images", "frame_review", "submit_review",
+                   "reference", "final_review", "retro", "asset_images", "asset_prompt_rewrite")
 
 
-class DramaAIWorker(QThread):
+class DramaAIWorker(ProductionWorkerMixin, QThread):
     """顺序执行短剧任务；每章/每集一次模型调用，支持停止。
 
     各任务方法只返回 summary，由 _run() 统一 emit finished_ok；
@@ -44,6 +49,7 @@ class DramaAIWorker(QThread):
     agent_state = Signal(str, str, str)  # agent key, working/done/error/idle, task
     finished_ok = Signal(str)
     failed = Signal(str)
+    approval_requested = Signal(object)
 
     def __init__(
         self,
@@ -56,6 +62,7 @@ class DramaAIWorker(QThread):
         current_chapter: int = 0,
         current_episode: int = 0,
         parent=None,
+        approval_handler=None,
     ):
         super().__init__(parent)
         self.llm = llm
@@ -71,6 +78,12 @@ class DramaAIWorker(QThread):
         self._task: asyncio.Task | None = None
         self._context_note = ""
         self._total_usage: dict = {}
+        self.approval_handler = approval_handler
+        self._approval_answers = {}
+        self.asset_prompt_failure = None
+
+    def answer_approval(self, request_id: str, approved: bool):
+        self._approval_answers[request_id] = bool(approved)
 
     def request_stop(self):
         self._stop = True
@@ -95,18 +108,28 @@ class DramaAIWorker(QThread):
             else:
                 self.failed.emit("生成被取消")
         except Exception as e:
-            logger.error("短剧 AI 任务失败: %s", e, exc_info=True)
-            self.failed.emit(str(e)[:500])
+            if self._stop:
+                self.finished_ok.emit("已停止，已完成内容与已提交任务记录保留")
+            else:
+                logger.error("短剧 AI 任务失败: %s", e, exc_info=True)
+                self.failed.emit(str(e)[:500])
         finally:
-            self._loop.close()
-            self._loop = None
-            self._task = None
+            try:
+                close = getattr(self.llm, "close_current_loop", None)
+                if close:
+                    self._loop.run_until_complete(close())
+            finally:
+                self._loop.close()
+                self._loop = None
+                self._task = None
 
     # ── 任务分发 ──
 
     async def _run(self):
         try:
-            if self.task == "full":
+            if self.task in PRODUCTION_TASKS:
+                summary = await self._production_task()
+            elif self.task == "full":
                 summary = await self._run_full()
             elif self.task == "adapt":
                 summary = await self._run_adapt()
@@ -114,6 +137,12 @@ class DramaAIWorker(QThread):
                 summary = await self._run_segment()
             elif self.task == "storyboard":
                 summary = await self._run_storyboard()
+            elif self.task == "keyframes":
+                summary = await self._run_keyframes()
+            elif self.task == "video":
+                summary = await self._video_production()
+            elif self.task == "video_recover":
+                summary = await self._video_recover()
             elif self.task == "assets":
                 summary = self._run_assets()
             else:
@@ -214,6 +243,8 @@ class DramaAIWorker(QThread):
                 raise
             self.agent_state.emit(key, "done", "分集规划" if stage == "plan" else "编写剧本")
             self.log.emit(f"{'规划' if stage == 'plan' else '剧本'} · {elapsed:.1f}s · {self._usage(usage)}")
+            if self.task == "production":
+                await self._check_step("分集规划" if stage == "plan" else "分集剧本", text)
             return text
 
         runner = AdaptiveDramaRunner(self.store, ask, log=self.log.emit,
@@ -243,6 +274,8 @@ class DramaAIWorker(QThread):
             raise RuntimeError("模型没有返回内容，请检查模型配置或稍后重试")
         text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
         self.store.save_bible(text + "\n")
+        if self.task == "production":
+            await self._check_step("改编圣经", text)
         self.agent_state.emit("showrunner", "done", "改编圣经")
         self.progress.emit("改编圣经已生成", 100)
         self.log.emit(
@@ -252,8 +285,17 @@ class DramaAIWorker(QThread):
 
     # ── 一键分镜 ──
 
+    def _filter_retry_episodes(self, items: list[dict]) -> list[dict]:
+        """「重试失败项」只处理指定集；没有 retry_episodes 时原样返回。"""
+        raw = (self.project_info or {}).get("retry_episodes") or []
+        numbers = {str(int(str(n))) for n in raw if str(n).strip().isdigit()}
+        if not numbers:
+            return items
+        return [e for e in items if str(int(e["number"])) in numbers]
+
     async def _run_storyboard(self, only_missing_shots: bool = False) -> str:
         items = self._episode_items(only_missing_shots)
+        items = self._filter_retry_episodes(items)
         if not items:
             if only_missing_shots:
                 self.log.emit("③ 所有剧本都已有最新分镜，跳过")
@@ -305,7 +347,11 @@ class DramaAIWorker(QThread):
                 if not shots:
                     raise RuntimeError("模型输出的分镜不是合法 JSON")
                 self.store.save_storyboard(number, {"shots": shots}, update_source=True)
+                # 提交前体检：能在文字里发现的错，不留到生图和视频上
+                for risk in self.store.audit_storyboard(shots):
+                    self.log.emit(f"{risk['shot_id']} ⚠ {risk['issue']}")
                 success += 1
+                clear_failures(self.store, targets=[str(number)])
                 self.agent_state.emit("storyboard", "done", f"第{number}集")
                 self.log.emit(
                     f"第{number}集分镜 · {len(shots)} 镜 · {elapsed:.1f}s · {self._usage(usage)}"
@@ -314,6 +360,8 @@ class DramaAIWorker(QThread):
                 raise
             except Exception as e:
                 failed += 1
+                record_failure(self.store, stage="storyboard", target=str(number),
+                               label=f"第{number}集分镜", message=str(e))
                 self.agent_state.emit("storyboard", "error", f"第{number}集")
                 logger.error("第%s集分镜失败: %s", number, e)
                 self.log.emit(f"第{number}集分镜失败：{str(e)[:200]}")
@@ -323,6 +371,88 @@ class DramaAIWorker(QThread):
         if success == 0:
             raise RuntimeError("所有集分镜都生成失败，请检查模型配置或日志")
         return f"已生成 {success} 集分镜" + (f"，失败 {failed}" if failed else "")
+
+    # ── 首尾帧提示词（LLM）──
+
+    def _asset_hints(self, limit: int = 12) -> str:
+        """把正典人物外观压成一句提示，帮模型写首尾帧时保持长相。"""
+        hints = []
+        for ent in self.store.canon_entities(("character",))[:limit]:
+            summary = str(ent.get("summary") or "").strip()
+            if summary:
+                hints.append(f"{ent['name']}：{summary[:60]}")
+        return "；".join(hints)
+
+    async def _run_keyframes(self) -> str:
+        from ...core.drama_keyframes import (
+            audit_keyframe_briefs, build_keyframe_prompt, parse_keyframe_briefs,
+        )
+
+        episodes = [
+            ep for ep in self.store.load_episodes()
+            if self.store.load_storyboard(int(ep["number"]))["shots"]
+        ]
+        if self.scope == "current" and self.current_episode:
+            episodes = [
+                ep for ep in episodes if int(ep["number"]) == int(self.current_episode)
+            ]
+        episodes = self._filter_retry_episodes(episodes)
+        if not episodes:
+            raise RuntimeError("还没有分镜，先「一键分镜」。")
+        series = self.store.load_series()
+        style = str(series.get("style") or "")
+        palette = str(series.get("palette") or "")
+        hints = self._asset_hints()
+        agent = self._make_agent(
+            "首尾帧师",
+            "你是短剧分镜师。为每个镜头写首帧/尾帧/中间动作，严格只输出 JSON。",
+            temperature=0.4,
+            max_tokens=8192,
+        )
+        done = 0
+        for i, ep in enumerate(episodes, start=1):
+            if self._stop:
+                break
+            number = int(ep["number"])
+            self.progress.emit(
+                f"正在写第{number}集首尾帧（{i}/{len(episodes)}）",
+                int((i - 1) / len(episodes) * 100),
+            )
+            shots = self.store.load_storyboard(number)["shots"]
+            prompt = build_keyframe_prompt(
+                number, shots, style=style, palette=palette, asset_hints=hints
+            )
+            try:
+                text, usage, elapsed = await self._ask(
+                    agent, prompt, thinking="off", max_tokens=8192
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                record_failure(self.store, stage="keyframes", target=str(number),
+                               label=f"第{number}集首尾帧说明", message=str(e))
+                self.log.emit(f"第{number}集首尾帧失败：{str(e)[:200]}")
+                continue
+            briefs = parse_keyframe_briefs(text, shots)
+            if not briefs:
+                record_failure(self.store, stage="keyframes", target=str(number),
+                               label=f"第{number}集首尾帧说明", message="模型输出不是合法 JSON")
+                self.log.emit(f"第{number}集首尾帧不是合法 JSON，跳过")
+                continue
+            self.store.save_keyframes(number, briefs)
+            clear_failures(self.store, targets=[str(number)])
+            done += 1
+            for risk in audit_keyframe_briefs(shots, briefs):
+                self.log.emit(f"{risk['shot_id']} ⚠ {risk['issue']}")
+            self.log.emit(
+                f"第{number}集首尾帧 · {len(briefs)}/{len(shots)} 镜 · "
+                f"{elapsed:.1f}s · {self._usage(usage)}"
+            )
+        if not done:
+            raise RuntimeError("所有集首尾帧都失败，请检查模型输出或日志")
+        return f"已生成 {done} 集首尾帧说明"
+
+    # ── 本集视频：首尾帧图 → 每镜片段 → 合成 ──
 
     # ── 提取资产（本地，不调模型）──
 
@@ -348,6 +478,8 @@ class DramaAIWorker(QThread):
             if self.store.has_script(int(e["number"]))
         ]
         if only_missing_shots:
+            if self.task == "production":
+                items = [e for e in items if int(e["number"]) == self._episode()]
             # 全流程增量模式：缺分镜的补，剧本改过的重拆，已有最新分镜的不动
             need: list[dict] = []
             for ep in items:
@@ -365,6 +497,10 @@ class DramaAIWorker(QThread):
         return items
 
     def _make_agent(self, title: str, system_prompt: str, temperature: float, max_tokens: int) -> BaseAgent:
+        from ...core.drama_agents import DRAMA_AGENT_CONFIGS
+        info = DRAMA_AGENT_CONFIGS.get(title, {})
+        system_prompt = info.get("system_prompt", system_prompt)
+        temperature = info.get("temperature", temperature)
         cfg = AgentConfig(
             name=f"drama_{self.task}",
             role=title,
@@ -470,6 +606,9 @@ class DramaAIWorker(QThread):
             "5. 主要角色视觉锚点（外形/服装/标志物）\n"
             "6. 每集节奏规则：前 3 秒、15 秒、结尾 5 秒分别要什么\n"
             "7. 短剧化红线：不能直接照搬小说章节，必须重新分集\n"
+            "8. 故事质量红线：转折符合现实逻辑；整集能用一句话说清讲什么；开头 3 秒抓人；"
+            "旁人反应有先后；避开 AI 拍不出来的画面（人物交叉、手拿小东西、文字、镜子和倒影、"
+            "一镜内换光、一人连做三个动作、俯拍看不到脸、配角太多）\n"
         )
 
     def _read_planning(self, filename: str) -> str:
@@ -482,19 +621,56 @@ class DramaAIWorker(QThread):
     def _storyboard_prompt(self, episode: dict, script: str, duration: int) -> str:
         compact = compress_script(script, STORYBOARD_BUDGET)
         self._context_note = f"第{episode['number']}集分镜：剧本 {len(script)} 字 → 送入 {len(compact)} 字"
+        series = self.store.load_series()
+        style = str(series.get("style") or self.project_info.get("style") or "").strip()
+        palette = str(series.get("palette") or "").strip()
+        visual = ""
+        from ...core.drama_production import read_state, file_digest
+        from pathlib import Path
+        reference = read_state(self.store.root / "review" / f"reference_ep{int(episode['number']):03d}.json")
+        source = series.get("reference_video")
+        if source and reference.get("source") == source and reference.get("hash") == file_digest(Path(source)):
+            analysis = Path(reference.get("analysis") or "")
+            if analysis.is_file():
+                visual += "【参考片机位/构图分析（抽帧估计，按本剧剧情采用）】\n" + analysis.read_text(encoding="utf-8")[:6000] + "\n"
+        if style or palette:
+            visual += (
+                "【视觉基调（必须一致）】"
+                + (f"风格：{style}；" if style else "")
+                + (f"配色：{palette}；" if palette else "")
+                + "每个镜头的 action 写清画面主色和光线来源。\n\n"
+            )
         return (
             f"把下面第{episode['number']}集剧本拆成 20-40 个镜头。"
             "只输出 JSON 对象，不要 Markdown 代码块、不要解释。\n\n"
             "JSON 结构：\n"
-            '{"shots":[{"scene_id":"SC01","shot_size":"中景","camera":"固定",'
+            '{"shots":[{"scene_id":"SC01","shot_size":"中景","camera":"平视，固定",'
             '"duration_sec":3.0,"location":"地点","time":"日/夜",'
             '"characters":"人物","action":"画面/动作","dialogue":"台词",'
-            '"sfx":"音效","transition":"硬切","status":"draft","notes":""}]}\n\n'
-            "要求：\n"
-            "- 每镜 1-5 秒，总时长接近单集时长；\n"
-            "- 景别用远景/全景/中景/近景/特写，运镜用固定/推近/拉远/摇/跟/手持；\n"
-            "- action 写可拍画面，不写心理活动；\n"
-            "- 关键台词保留在 dialogue，用「角色：台词」；\n"
+            '"blocking":"谁往画面哪边走","emotion":"表情推进","motion":"什么在动",'
+            '"gen_seconds":4,"sfx":"音效","transition":"硬切","status":"draft","notes":""}]}\n\n'
+            + visual
+            + "要求：\n"
+            "- 每镜 1-5 秒，生成秒数按片中时长向上取整、多留 0.5 秒（后期变速要用），"
+            "总时长接近单集时长；\n"
+            "- 景别用远景/全景/中景/近景/特写；camera 写「机位，运镜」："
+            "机位用平视/俯拍/仰拍/背后/过肩/透过东西，运镜用固定/推近/拉远/摇/跟/手持；\n"
+            "- 相邻镜头景别要交替，不要连续三个同景别；平视正面全片最多两次，"
+            "其余用俯拍/仰拍/从背后/过肩/透过东西拍；\n"
+            "- 构图按黄金比例：人的头或眼睛落在画面横向 38% 或 62% 处，不放正中；\n"
+            "- 运镜要有理由：跟人物走、推近给特写、拉远交代环境，不为动而动；\n"
+            "- action 写可拍画面，不写心理活动；动作写清原因（谁推动、为什么动）和手放在哪；"
+            "表情怎么变也写进 action（如「先愣住，再咬牙」）；"
+            "人物走动和递物方向写画面左/右"
+            "（不写「向对方」，只写「朝画面左」）；每镜写清什么在动："
+            "人物动作、镜头、光线变化、前景遮挡至少占一样；"
+            "固定机位更要让人或东西在画面里走动（从远到近、穿过画面）；\n"
+            "- 多人同框时动作要有先后次序，不写「众人同时」；包袱或转折按"
+            "「问题 → 主角怎么解决 → 旁人什么反应」三段写；\n"
+            "- 避开模型必翻车的画面：人物交叉、手拿小东西、画面文字、镜子和倒影、"
+            "左右不对称的特征、一镜内换光、一人连做三个动作、俯拍看不到脸、配角太多；\n"
+            "- 动作用到的道具要在 action 里交代来源（在手/在桌上/递过来），不能凭空出现；\n"
+            "- 关键台词保留在 dialogue，用「角色：台词」；transition 写清怎么接下一镜；\n"
             "- 不新增剧本没有的剧情，不改变人物。\n\n"
             f"【单集目标时长】{duration} 秒\n\n"
             f"【剧本】\n{compact}\n"

@@ -53,7 +53,7 @@ class WorkflowMiniBar(QWidget):
 
         self._usage_label = QLabel("")
         self._usage_label.setStyleSheet("font-size: 10px; color: gray;")
-        self._usage_label.setToolTip("本次运行累计 token（含工具/会审/感知）")
+        self._usage_label.setToolTip("本次运行累计 token（含工具/会审/感知）；悬停看输入/输出/缓存明细")
         self._usage_label.setVisible(False)
         row.addWidget(self._usage_label)
 
@@ -167,16 +167,46 @@ class WorkflowMiniBar(QWidget):
 
     def set_usage(self, usage: dict | None):
         usage = usage or {}
-        total = usage.get("total_tokens")
+        prompt = int(usage.get("prompt_tokens", 0) or 0)
+        completion = int(usage.get("completion_tokens", 0) or 0)
+        # 总量只显式加输入/输出：cached_tokens 等键若参与求和会把命中部分重复计入
+        total = usage.get("total_tokens") or (prompt + completion)
         if not total:
-            total = sum(int(v) for k, v in usage.items() if k.endswith("tokens") and isinstance(v, (int, float)))
+            total = sum(int(v) for k, v in usage.items()
+                        if k.endswith("tokens") and isinstance(v, (int, float)))
         if total:
             text = f"{total/1000:.1f}k tok" if total >= 1000 else f"{int(total)} tok"
+            cached = int(usage.get("cached_tokens", 0) or 0)
+            meta = int(usage.get("cache_meta", 0) or 0)
+            if meta and prompt > 0:
+                text += f" · 缓存 {cached / prompt * 100:.0f}%"
+            elif prompt > 0:
+                # 供应商没回缓存字段（中转网关常见）≠ 真没命中，别显示 0% 误导人
+                text += " · 缓存 —"
             self._usage_label.setText(text)
+            self._usage_label.setToolTip(self._usage_tooltip(usage))
             self._usage_label.setVisible(True)
         else:
             self._usage_label.setText("")
             self._usage_label.setVisible(False)
+
+    @staticmethod
+    def _usage_tooltip(usage: dict) -> str:
+        prompt = int(usage.get("prompt_tokens", 0) or 0)
+        completion = int(usage.get("completion_tokens", 0) or 0)
+        cached = int(usage.get("cached_tokens", 0) or 0)
+        write = int(usage.get("cache_write_tokens", 0) or 0)
+        meta = int(usage.get("cache_meta", 0) or 0)
+        parts = [f"输入 {prompt}", f"输出 {completion}", f"缓存命中 {cached}"]
+        if write:
+            parts.append(f"缓存写入 {write}")
+        calls = int(usage.get("call_count", 0) or 0)
+        changed = int(usage.get("prefix_changed", 0) or 0)
+        if calls:
+            # 前缀稳定性：指纹没变的调用占比。低说明布局在改写前缀（缓存从变点全断）
+            parts.append(f"前缀稳定 {calls - changed}/{calls}")
+        parts.append(f"{meta} 次调用返回缓存字段" if meta else "供应商未返回缓存字段（命中率不可知）")
+        return " · ".join(parts)
 
     def set_current_step(self, step_id: str, agent_title: str, n: int = 0, total: int = 0):
         if total > 0:

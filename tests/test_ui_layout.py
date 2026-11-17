@@ -19,30 +19,12 @@ def qapp():
     yield app
 
 
-def test_main_window_layout_and_focus_mode(qapp):
+def test_main_window_layout_without_focus_mode(qapp):
     w = MainWindow()
-    w.resize(1400, 900)
-    w.show()
-    qapp.processEvents()
-
     assert w.editor.tab_bar.count() == 4
-    assert [w.editor.tab_bar.tabText(i) for i in range(4)] == ["正文", "规划", "世界", "写作台"]
-    assert w.editor.planning_list.count() == 5  # 时间线/主线/支线/伏笔已收进故事线台账
     assert w.splitter.count() == 3
-
-    w._toggle_focus_mode(True)
-    qapp.processEvents()
-    assert w._focus_mode is True
-    assert not w.sidebar.isVisible()
-    assert not w.agent_panel.isVisible()
-    assert w._focus_action.isChecked()
-
-    w._toggle_focus_mode(False)
-    qapp.processEvents()
-    assert w._focus_mode is False
-    assert w.sidebar.isVisible()
-    assert w.agent_panel.isVisible()
-    assert not w._focus_action.isChecked()
+    assert not hasattr(w, "_focus_action")
+    assert not hasattr(w, "_toggle_focus_mode")
     w.close()
 
 
@@ -83,25 +65,12 @@ def test_workflow_bar_usage_label(qapp):
     assert not bar._usage_label.isVisible()
 
 
-def test_chat_db_is_opt_in(qapp, tmp_path):
+def test_workflow_panel_has_no_chat_storage(qapp, tmp_path):
     from src.novel_writer.ui.agent.agent_panel import AgentPanel
-
     panel = AgentPanel()
-    panel.set_config({"save_chat_history": False})
-    panel.set_project_db(tmp_path)
-    assert panel._chat_db is None
-    panel.add_user_message("hello")
-    panel.save_history()
-    assert not (tmp_path / "chat.db").exists()
-
-    panel2 = AgentPanel()
-    panel2.set_config({"save_chat_history": True})
-    panel2.set_project_db(tmp_path)
-    assert panel2._chat_db is not None
-    panel2.add_user_message("hello")
-    panel2.save_history()
-    assert (tmp_path / "chat.db").exists()
-    panel.close(); panel2.close()
+    assert not hasattr(panel, "_chat_db")
+    assert not hasattr(panel, "input_edit")
+    panel.close()
 
 
 def test_character_page_loads_project_roster(qapp, tmp_path):
@@ -118,22 +87,15 @@ def test_character_page_loads_project_roster(qapp, tmp_path):
     page.close()
 
 
-def test_free_chat_is_collapsed_by_default(qapp):
+def test_workflow_panel_keeps_controls_and_log(qapp):
     from src.novel_writer.ui.agent.agent_panel import AgentPanel
-
     panel = AgentPanel()
-    assert panel.scroll_area.isHidden()
-    assert panel._input_area.isHidden()
-    assert not panel.btn_chat_toggle.isChecked()
-
-    panel._set_chat_expanded(True)
-    assert not panel.scroll_area.isHidden()
-    assert not panel._input_area.isHidden()
-    assert panel.btn_chat_toggle.isChecked()
-
-    panel._set_chat_expanded(False)
-    assert panel.scroll_area.isHidden()
-    assert panel._input_area.isHidden()
+    panel.on_workflow_started()
+    panel.on_workflow_step_started("write", 1, "写手")
+    panel.on_workflow_progress(50, "正在写作")
+    panel.on_workflow_finished()
+    assert panel.office.isHidden()
+    assert not hasattr(panel, "btn_chat_toggle")
     panel.close()
 
 
@@ -515,31 +477,15 @@ def test_load_chapter_keeps_current_tab(qapp):
     panel.close()
 
 
-def test_agent_header_removed_and_menu_toggles(qapp):
-    """重复的智能体状态行已隐藏；状态条/自由对话收进「设置」菜单。"""
-    from src.novel_writer.ui.main_window import MainWindow
-
+def test_removed_menus_and_image_entry(qapp):
     window = MainWindow()
-    window.show()
-    qapp.processEvents()
-
-    assert not window.agent_panel._header.isVisible()
-    assert window.agent_panel.office.isVisible()  # 卡片默认展示
-
-    window._agent_strip_action.setChecked(False)
-    qapp.processEvents()
-    assert not window.agent_panel.office.isVisible()
-    window._agent_strip_action.setChecked(True)
-    qapp.processEvents()
-    assert window.agent_panel.office.isVisible()
-
-    window._free_chat_action.setChecked(True)
-    qapp.processEvents()
-    assert window.agent_panel._chat_expanded
-
-    window._free_chat_action.setChecked(False)
-    window._agent_strip_action.setChecked(False)
-    qapp.processEvents()
-    assert not window.agent_panel.office.isVisible()
-    assert not window.agent_panel._chat_expanded
+    settings = [a.text() for a in window._settings_menu.actions()]
+    for label in ("智能体状态条", "自由对话", "清空当前对话", "专注模式"):
+        assert label not in settings
+    model = [a.text() for a in window._model_agent_menu.actions()]
+    assert "图片生成 API" in model
+    assert "角色管理" not in model
+    assert window.agent_panel.office.isHidden()
+    assert window.drama_panel.office.isHidden()
+    window._refresh_ui_texts()
     window.close()

@@ -27,7 +27,14 @@ logger = get_logger(__name__)
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
 DEFAULT_TIMEOUT = 300.0
 POLL_INTERVAL = 1.0
-PLACEHOLDERS = ("positive", "negative", "seed", "prefix", "width", "height")
+# 网络类错误（连不上/读超时）自动重试：只重试传输层，工作流执行错误不重试
+NETWORK_RETRIES = 1
+RETRY_DELAY = 1.5
+PLACEHOLDERS = (
+    "positive", "negative", "seed", "prefix", "width", "height", "reference_image",
+    # 视频工作流：首尾帧、帧率、时长
+    "first_frame", "last_frame", "fps", "length",
+)
 
 
 class ComfyError(RuntimeError):
@@ -58,7 +65,7 @@ def fill_workflow(template: dict, values: dict[str, Any]) -> dict:
         if isinstance(node, str):
             # 整个值就是一个需要数字的占位符时，直接给数字类型：
             # ComfyUI 的 KSampler.seed / EmptyLatentImage 只认 int，字符串会被判非法。
-            for key in ("seed", "width", "height"):
+            for key in ("seed", "width", "height", "fps", "length"):
                 token = "{{" + key + "}}"
                 if node.strip() == token and key in values:
                     return values[key]
@@ -77,29 +84,45 @@ class ComfyUIClient:
     """最小 ComfyUI HTTP 客户端；同步阻塞，调用方放线程里跑。"""
 
     def __init__(self, base_url: str = "", workflow_path: str | Path = "",
-                 timeout: float = DEFAULT_TIMEOUT, seed: int | None = None):
+                 timeout: float = DEFAULT_TIMEOUT, seed: int | None = None,
+                 reference_workflow: str = "", retries: int = NETWORK_RETRIES):
         self.base_url = (base_url or DEFAULT_COMFY_URL).rstrip("/")
         self.workflow_path = str(workflow_path or "")
         self.timeout = float(timeout or DEFAULT_TIMEOUT)
         self.seed = seed
+        self.reference_workflow = reference_workflow
+        self.retries = max(0, int(retries))
         self._client = httpx.Client(base_url=self.base_url, timeout=30.0)
 
     # ── 可被测试替换的三处 I/O ──
 
+    def _retry(self, send):
+        """传输层错误（连不上/超时/中断）自动重试；HTTP 4xx/5xx 属业务结果不重试。"""
+        for attempt in range(self.retries + 1):
+            try:
+                return send()
+            except httpx.TransportError as exc:
+                if attempt >= self.retries:
+                    raise ComfyError(
+                        f"ComfyUI 连接失败（已重试 {self.retries} 次）：{exc.__class__.__name__}"
+                    ) from exc
+                logger.warning("ComfyUI 网络错误，%ss 后重试：%s", RETRY_DELAY, exc)
+                time.sleep(RETRY_DELAY)
+
     def _post_json(self, path: str, payload: dict) -> dict:
-        resp = self._client.post(path, json=payload)
+        resp = self._retry(lambda: self._client.post(path, json=payload))
         if resp.status_code >= 400:
             raise ComfyError(f"ComfyUI {path} 返回 {resp.status_code}：{resp.text[:300]}")
         return resp.json()
 
     def _get_json(self, path: str) -> dict:
-        resp = self._client.get(path)
+        resp = self._retry(lambda: self._client.get(path))
         if resp.status_code >= 400:
             raise ComfyError(f"ComfyUI {path} 返回 {resp.status_code}：{resp.text[:300]}")
         return resp.json()
 
     def _get_bytes(self, path: str, params: dict) -> bytes:
-        resp = self._client.get(path, params=params)
+        resp = self._retry(lambda: self._client.get(path, params=params))
         if resp.status_code >= 400:
             raise ComfyError(f"ComfyUI /view 返回 {resp.status_code}")
         return resp.content
@@ -107,10 +130,14 @@ class ComfyUIClient:
     # ── 主流程 ──
 
     def generate(self, positive: str, negative: str = "", prefix: str = "drama",
-                 width: int = 768, height: int = 1344) -> bytes:
+                 width: int = 512, height: int = 896,
+                 reference_image: str | Path | None = None, seed: int | None = None) -> bytes:
         """按模板生成一张图，返回 PNG/JPEG 字节。"""
-        template = load_workflow(self.workflow_path)
-        seed = self.seed if self.seed is not None else int(time.time() * 1000) % 2_147_483_647
+        use_reference = bool(reference_image and self.reference_workflow)
+        template = load_workflow(self.reference_workflow if use_reference else self.workflow_path)
+        uploaded = self.upload_image(reference_image) if use_reference else ""
+        seed = seed if seed is not None else self.seed
+        seed = seed if seed is not None else int(time.time() * 1000) % 2_147_483_647
         prompt = fill_workflow(template, {
             "positive": positive,
             "negative": negative,
@@ -118,6 +145,7 @@ class ComfyUIClient:
             "prefix": prefix,
             "width": width,
             "height": height,
+            "reference_image": uploaded,
         })
         client_id = uuid.uuid4().hex
         queued = self._post_json("/prompt", {"prompt": prompt, "client_id": client_id})
@@ -133,6 +161,21 @@ class ComfyUIClient:
             "subfolder": first.get("subfolder", ""),
             "type": first.get("type", "output"),
         })
+
+    def upload_image(self, path: str | Path) -> str:
+        """上传到 ComfyUI input，返回 LoadImage 接受的文件名；不覆盖已有文件。"""
+        try:
+            def send():
+                with Path(path).open("rb") as source:
+                    return self._client.post("/upload/image",
+                        files={"image": (Path(path).name, source, "application/octet-stream")},
+                        data={"type": "input", "subfolder": "novel_writer", "overwrite": "false"})
+            resp = self._retry(send)
+            resp.raise_for_status()
+            result = resp.json()
+            return "/".join(part for part in (result.get("subfolder", ""), result["name"]) if part)
+        except (OSError, httpx.HTTPError, ValueError, KeyError) as exc:
+            raise ComfyError("参考图上传失败，请检查图片文件和 ComfyUI 连接") from exc
 
     def _wait_history(self, prompt_id: str) -> list[dict]:
         deadline = time.monotonic() + self.timeout
@@ -172,5 +215,6 @@ def config_from_app(cfg: dict | None = None) -> dict:
     return {
         "base_url": str(section.get("base_url") or DEFAULT_COMFY_URL),
         "workflow": str(section.get("workflow") or ""),
+        "reference_workflow": str(section.get("reference_workflow") or ""),
         "timeout": float(section.get("timeout") or DEFAULT_TIMEOUT),
     }

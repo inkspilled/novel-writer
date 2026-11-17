@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QWidget,
     QLabel, QLineEdit, QComboBox, QPushButton, QFormLayout,
     QGroupBox, QMessageBox, QDoubleSpinBox, QListWidget,
-    QInputDialog, QTextEdit,
+    QInputDialog, QTextEdit, QTabBar,
 )
 
 from ...locales import t
@@ -21,6 +21,8 @@ class AgentDialog(QDialog):
         self.setMinimumSize(640, 560)
         self.config = dict(config)
         self._agents = load_agents()
+        self._novel_agents = self._agents
+        self._is_drama = False
         # 旧配置里的每 Agent 模型字段直接丢弃：所有 Agent 统一用主模型
         for info in self._agents.values():
             info.pop("model", None)
@@ -31,6 +33,14 @@ class AgentDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
 
+        self.domain_tabs = QTabBar()
+        self.domain_tabs.addTab("小说")
+        self.domain_tabs.addTab("短剧")
+        self.domain_tabs.currentChanged.connect(self._switch_domain)
+        layout.addWidget(self.domain_tabs)
+        self.domain_hint = QLabel("内置智能体随应用维护，只读展示；所有智能体共用主模型。")
+        self.domain_hint.setWordWrap(True)
+        layout.addWidget(self.domain_hint)
         body = QHBoxLayout()
         body.setSpacing(14)
 
@@ -122,6 +132,20 @@ class AgentDialog(QDialog):
         btn_row2.addWidget(self._btn_cancel)
         layout.addLayout(btn_row2)
 
+    def _switch_domain(self, index):
+        self._save_current_agent()
+        self._is_drama = index == 1
+        if self._is_drama:
+            from ...core.drama_agents import DRAMA_AGENT_CONFIGS
+            self._agents = DRAMA_AGENT_CONFIGS
+        else:
+            self._agents = self._novel_agents
+        self._btn_reset.setEnabled(not self._is_drama)
+        self.domain_hint.setText("短剧智能体共用主模型。资产提取与提示词整理使用本地规则，图片由独立图片 API 生成。" if self._is_drama else "内置智能体随应用维护，只读展示；所有智能体共用主模型。")
+        self._refresh_agent_list()
+        if self.agent_list.count():
+            self.agent_list.setCurrentRow(0)
+
     def _detail_inputs(self) -> list:
         """右侧详情的全部输入控件（用于整体切只读）。"""
         return [
@@ -134,7 +158,7 @@ class AgentDialog(QDialog):
         for name, info in self._agents.items():
             emoji = info.get("emoji", "🤖")
             title = info.get("title", name)
-            lock = " 🔒" if is_builtin_agent(name) else ""
+            lock = " 🔒" if self._is_drama or is_builtin_agent(name) else ""
             self.agent_list.addItem(f"{emoji} {title}{lock}")
 
     def _on_agent_selected(self, current, _prev):
@@ -146,7 +170,7 @@ class AgentDialog(QDialog):
             return
         name = names[row]
         info = self._agents[name]
-        builtin = is_builtin_agent(name)
+        builtin = self._is_drama or is_builtin_agent(name)
         # 内置智能体只读展示，不允许改
         for w in self._detail_inputs():
             w.setEnabled(not builtin)
@@ -163,6 +187,8 @@ class AgentDialog(QDialog):
         self.agent_prompt_input.setPlainText(info.get("system_prompt", ""))
 
     def _save_current_agent(self):
+        if self._is_drama:
+            return
         name = self.agent_name_input.text().strip()
         if not name:
             return
@@ -178,6 +204,8 @@ class AgentDialog(QDialog):
         self._agents[name]["system_prompt"] = self.agent_prompt_input.toPlainText().strip()
 
     def _add_agent(self):
+        if self._is_drama:
+            return
         name, ok = QInputDialog.getText(self, t("settings_btn_add"), t("settings_ph_agent_id"))
         if ok and name:
             name = name.strip().lower().replace(" ", "_")
@@ -192,6 +220,8 @@ class AgentDialog(QDialog):
             self.agent_list.setCurrentRow(self.agent_list.count() - 1)
 
     def _del_agent(self):
+        if self._is_drama:
+            return
         row = self.agent_list.currentRow()
         if row < 0:
             return
@@ -210,9 +240,12 @@ class AgentDialog(QDialog):
             self._refresh_agent_list()
 
     def _reset_agents(self):
+        if self._is_drama:
+            return
         if QMessageBox.question(self, t("dialog_confirm"),
                                 t("msg_reset_agents")) == QMessageBox.StandardButton.Yes:
             self._agents = reset_agents()
+            self._novel_agents = self._agents
             save_agents(self._agents)
             self._refresh_agent_list()
             if self.agent_list.count() > 0:
@@ -220,13 +253,15 @@ class AgentDialog(QDialog):
 
     def _load_config(self):
         self._refresh_agent_list()
+        if self.agent_list.count():
+            self.agent_list.setCurrentRow(0)
 
     def _save(self):
         self._save_current_agent()
         # 彻底移除旧字段：避免以后又被 load/save 带回来
-        for info in self._agents.values():
+        for info in self._novel_agents.values():
             info.pop("model", None)
-        save_agents(self._agents)
+        save_agents(self._novel_agents)
         self.accept()
 
     def get_config(self) -> dict:

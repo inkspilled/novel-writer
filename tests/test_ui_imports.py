@@ -57,7 +57,7 @@ def test_mainwindow_methods_wired():
     required = [
         "_setup_ui", "_setup_menu", "_apply_theme", "_show_toast",
         "_init_llm", "_init_agents", "_new_project", "_save_project",
-        "_on_agent_run", "_build_context", "_workflow_start", "_export",
+        "_open_image_settings", "_build_context", "_workflow_start", "_export",
         "_open_model_settings", "_open_chapter_number", "closeEvent",
     ]
     for name in required:

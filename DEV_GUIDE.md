@@ -252,7 +252,6 @@ MainWindow (splitter: 240 / 680 / 480)
 - `AgentWorker(QThread)` 后台执行，信号驱动 UI
 - 流式输出按 Agent 隔离
 - 三级导航「正文 / 规划 / 世界」；Agent 区是 104–182px 状态条，不是假 3D 办公室
-- `Ctrl+Shift+F` 专注模式：隐藏左右栏，只留正文
 
 ### 世界页（`ui/character/`）
 

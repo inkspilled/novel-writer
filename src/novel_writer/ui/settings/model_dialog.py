@@ -80,10 +80,10 @@ class ModelDialog(QDialog):
         self._ctx_tokens_spin.setRange(4096, 1_000_000)
         self._ctx_tokens_spin.setSingleStep(4096)
         self._ctx_tokens_spin.setValue(self.config.get("max_context_tokens", 48_000))
-        self._ctx_tokens_spin.setToolTip("写作用的上下文预算（不是模型窗口）。默认 48K；1M 窗口可调高，但 prompt 成本和延迟会上升")
+        self._ctx_tokens_spin.setToolTip("写作用的上下文预算（不是模型窗口）。默认 48K；1M 窗口可调高，但处理时间可能变长")
         ctx_layout.addWidget(self._ctx_tokens_spin)
 
-        ctx_layout.addWidget(QLabel("(默认 48K；大窗口模型可上调，注意 prompt 计费)"))
+        ctx_layout.addWidget(QLabel("(默认 48K；大窗口模型可上调)"))
         ctx_layout.addStretch()
 
         layout.addWidget(ctx_group)
@@ -242,36 +242,6 @@ class ModelDialog(QDialog):
         self._rerank_api_key_input.setPlaceholderText("留空则使用上方 API Key")
         rg.addRow("API Key", self._rerank_api_key_input)
         scroll_layout.addWidget(rerank_group)
-
-        # ── 图像生成（ComfyUI，可选） ──
-        comfy_group = QGroupBox("图像生成（ComfyUI，可选）")
-        cg = QFormLayout(comfy_group)
-        cg.setSpacing(10)
-
-        comfy_hint = QLabel(
-            "短剧「资产」页生成人物/场景参考图用。先在 ComfyUI 里搭好流程，"
-            "用「Save (API Format)」导出 JSON，把提示词输入改成 {{positive}} / "
-            "{{negative}}，seed 改成 {{seed}}，保存文件名前缀改成 {{prefix}}。")
-        comfy_hint.setWordWrap(True)
-        comfy_hint.setStyleSheet("color: gray; font-size: 12px;")
-        cg.addRow(comfy_hint)
-
-        self._comfy_url_input = QLineEdit()
-        self._comfy_url_input.setPlaceholderText("http://127.0.0.1:8188（留空用默认）")
-        cg.addRow("ComfyUI 地址", self._comfy_url_input)
-
-        workflow_row = QWidget()
-        workflow_layout = QHBoxLayout(workflow_row)
-        workflow_layout.setContentsMargins(0, 0, 0, 0)
-        workflow_layout.setSpacing(8)
-        self._comfy_workflow_input = QLineEdit()
-        self._comfy_workflow_input.setPlaceholderText("API 格式的 workflow.json")
-        workflow_layout.addWidget(self._comfy_workflow_input, 1)
-        self._btn_pick_workflow = QPushButton("选择…")
-        self._btn_pick_workflow.clicked.connect(self._pick_comfy_workflow)
-        workflow_layout.addWidget(self._btn_pick_workflow)
-        cg.addRow("工作流模板", workflow_row)
-        scroll_layout.addWidget(comfy_group)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -541,16 +511,6 @@ class ModelDialog(QDialog):
         self._rerank_model_input.setText(rerank.get("model", ""))
         self._rerank_base_url_input.setText(rerank.get("base_url", ""))
         self._rerank_api_key_input.setText(rerank.get("api_key", ""))
-        comfy = self.config.get("comfyui") or {}
-        self._comfy_url_input.setText(comfy.get("base_url", ""))
-        self._comfy_workflow_input.setText(comfy.get("workflow", ""))
-
-    def _pick_comfy_workflow(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择 ComfyUI 工作流（API 格式）", "", "JSON (*.json)"
-        )
-        if path:
-            self._comfy_workflow_input.setText(path)
 
     def _save_config_only(self):
         """仅保存配置到内存，不关闭对话框。"""
@@ -572,10 +532,6 @@ class ModelDialog(QDialog):
             "model": self._rerank_model_input.text().strip(),
             "base_url": self._rerank_base_url_input.text().strip(),
             "api_key": self._rerank_api_key_input.text().strip(),
-        }
-        self.config["comfyui"] = {
-            "base_url": self._comfy_url_input.text().strip(),
-            "workflow": self._comfy_workflow_input.text().strip(),
         }
         default_names = {p["name"] for p in load_default_providers()}
         custom_providers = [p for p in self._providers if p["name"] not in default_names]

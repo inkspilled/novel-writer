@@ -144,8 +144,6 @@ class MainWindow(
         self.sidebar.new_project_requested.connect(self._new_project)
         self.sidebar.open_project_requested.connect(self._open_project)
         self.sidebar.chapter_add_requested.connect(self._add_chapter)
-        self.agent_panel.agent_run_requested.connect(self._on_agent_run)
-        self.agent_panel.chapter_apply_requested.connect(self._on_chapter_apply)
         self.editor.content_changed.connect(self._on_content_changed)
         self.editor.planning_save_requested.connect(self._on_planning_save)
         self.editor.chapter_activate_requested.connect(self._open_chapter_number)
@@ -203,8 +201,7 @@ class MainWindow(
         except Exception as e:
             logger.debug("关闭 LLM 事件循环异常（忽略）: %s", e)
 
-        # 保存聊天记录和项目
-        self.agent_panel.save_history()
+        # 保存项目
         if self.project.title:
             self._save_project()
         event.accept()

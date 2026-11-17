@@ -15,6 +15,22 @@ from ...core.logger import get_logger
 logger = get_logger(__name__)
 
 class SettingsMixin:
+    def _open_image_settings(self):
+        from ..settings.image_dialog import ImageDialog
+        dialog = ImageDialog(self.config, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.config = dialog.get_config()
+            self._save_config()
+            self.statusBar().showMessage("图片生成 API 配置已保存")
+
+    def _open_video_settings(self):
+        from ..settings.video_dialog import VideoDialog
+        dialog = VideoDialog(self.config, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.config = dialog.get_config()
+            self._save_config()
+            self.statusBar().showMessage("视频生成 API 配置已保存")
+
     def _open_model_settings(self):
         """打开模型设置对话框。"""
         dialog = ModelDialog(self.config, self)

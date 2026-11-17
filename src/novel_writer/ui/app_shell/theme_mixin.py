@@ -59,10 +59,12 @@ class ThemeMixin:
         self._manage_action = QAction(t("menu_agent_manage"), self)
         self._manage_action.triggered.connect(self._open_agent_manage)
         self._model_agent_menu.addAction(self._manage_action)
-        self._character_action = QAction(t("menu_character_manage"), self)
-        self._character_action.setShortcut(QKeySequence("Ctrl+Alt+R"))
-        self._character_action.triggered.connect(self._open_character_manager)
-        self._model_agent_menu.addAction(self._character_action)
+        self._image_action = QAction("图片生成 API", self)
+        self._image_action.triggered.connect(self._open_image_settings)
+        self._model_agent_menu.addAction(self._image_action)
+        self._video_action = QAction("视频生成 API", self)
+        self._video_action.triggered.connect(self._open_video_settings)
+        self._model_agent_menu.addAction(self._video_action)
 
         # ── 工作流：面板入口 / 一键载入默认 ──
         self._workflow_menu = menubar.addMenu(t("workflow_menu"))
@@ -90,85 +92,11 @@ class ThemeMixin:
         self._appearance_action.setShortcut(QKeySequence("Ctrl+,"))
         self._appearance_action.triggered.connect(self._open_appearance)
         self._settings_menu.addAction(self._appearance_action)
-        self._settings_menu.addSeparator()
-        self._focus_action = QAction(t("menu_focus_mode"), self)
-        self._focus_action.setCheckable(True)
-        self._focus_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
-        self._focus_action.triggered.connect(self._toggle_focus_mode)
-        self._settings_menu.addAction(self._focus_action)
-
-        # ── 协作栏显示项：原先占右侧面板一整行按钮，收进菜单省一行高度 ──
-        self._settings_menu.addSeparator()
-        self._agent_strip_action = QAction("智能体状态条", self)
-        self._agent_strip_action.setCheckable(True)
-        self._agent_strip_action.setShortcut(QKeySequence("Ctrl+Alt+G"))
-        self._agent_strip_action.toggled.connect(self._toggle_agent_strip)
-        self._settings_menu.addAction(self._agent_strip_action)
-        # 卡片默认展示；把菜单初始勾选对齐（_setup_ui 先于 _setup_menu 执行）
-        panel = getattr(self, "agent_panel", None)
-        self._agent_strip_action.blockSignals(True)
-        self._agent_strip_action.setChecked(bool(panel and not panel.office.isHidden()))
-        self._agent_strip_action.blockSignals(False)
-
-        self._free_chat_action = QAction("自由对话", self)
-        self._free_chat_action.setCheckable(True)
-        self._free_chat_action.setShortcut(QKeySequence("Ctrl+Alt+C"))
-        self._free_chat_action.toggled.connect(self._toggle_free_chat)
-        self._settings_menu.addAction(self._free_chat_action)
-
-        self._clear_chat_action = QAction("清空当前对话", self)
-        self._clear_chat_action.triggered.connect(self._clear_agent_chat)
-        self._settings_menu.addAction(self._clear_chat_action)
-
         # ── 帮助 ──
         self._about_menu = menubar.addMenu(t("menu_help"))
         self._about_action = QAction(t("menu_about_app"), self)
         self._about_action.triggered.connect(self._show_about)
         self._about_menu.addAction(self._about_action)
-
-    def _toggle_agent_strip(self, checked: bool):
-        """菜单：展开/收起右侧智能体状态卡片（替代面板里的「状态条」按钮）。"""
-        panel = getattr(self, "agent_panel", None)
-        if panel is not None:
-            panel.set_office_visible(bool(checked))
-            self._agent_strip_action.blockSignals(True)
-            self._agent_strip_action.setChecked(not panel.office.isHidden())
-            self._agent_strip_action.blockSignals(False)
-
-    def _toggle_free_chat(self, checked: bool):
-        """菜单：展开/收起右侧自由对话区。"""
-        panel = getattr(self, "agent_panel", None)
-        if panel is not None:
-            panel.set_chat_expanded(bool(checked))
-
-    def _clear_agent_chat(self):
-        panel = getattr(self, "agent_panel", None)
-        if panel is not None:
-            panel.clear_current_chat()
-
-    def _toggle_focus_mode(self, checked: bool | None = None):
-        """专注模式：隐藏侧栏与协作栏，只留正文；再按一次恢复。"""
-        if not hasattr(self, "splitter"):
-            return
-        if checked is None:
-            checked = not getattr(self, "_focus_mode", False)
-        self._focus_mode = bool(checked)
-        if checked:
-            self._normal_sizes = self.splitter.sizes()
-            self.sidebar.setVisible(False)
-            self.agent_panel.setVisible(False)
-            self.statusBar().showMessage(t("status_focus_on"), 6000)
-        else:
-            self.sidebar.setVisible(True)
-            self.agent_panel.setVisible(True)
-            sizes = getattr(self, "_normal_sizes", None)
-            if sizes and len(sizes) == 3:
-                self.splitter.setSizes(sizes)
-            self.statusBar().showMessage(t("status_focus_off"), 3000)
-        if hasattr(self, "_focus_action"):
-            self._focus_action.blockSignals(True)
-            self._focus_action.setChecked(self._focus_mode)
-            self._focus_action.blockSignals(False)
 
     def _setup_menubar_icon(self):
         """在状态栏左侧显示应用小图标。"""
@@ -196,11 +124,9 @@ class ThemeMixin:
         self._model_agent_menu.setTitle(t("menu_model_agent"))
         self._model_action.setText(t("menu_model_open"))
         self._manage_action.setText(t("menu_agent_manage"))
-        self._character_action.setText(t("menu_character_manage"))
         self._settings_menu.setTitle(t("menu_settings"))
         self._settings_action.setText(t("menu_project_settings"))
         self._appearance_action.setText(t("menu_appearance_open"))
-        self._focus_action.setText(t("menu_focus_mode"))
         self._about_menu.setTitle(t("menu_help"))
         self._about_action.setText(t("menu_about_app"))
         self._workflow_menu.setTitle(t("workflow_menu"))

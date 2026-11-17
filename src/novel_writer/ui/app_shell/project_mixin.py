@@ -75,6 +75,10 @@ class ProjectMixin:
         if not self._ensure_drama_loaded():
             QMessageBox.information(self, "短剧工作流", "请先新建或打开一个小说项目。")
             return
+        error = self.drama_workspace.series_page.validation_error()
+        if error:
+            QMessageBox.warning(self, "企划配置无效", error)
+            return
         self.drama_workspace.save_all(silent=True)
         store = self.drama_workspace.store
         episodes = store.load_episodes()
@@ -97,7 +101,7 @@ class ProjectMixin:
             f"已有剧本 {len(episodes_with_script)} 集 · 待用正文 {len(pending)} 章 · "
             f"缺分镜 {len(missing_shots)} 集 · 圣经"
             f"{'已有（跳过）' if store.bible_text().strip() else '待生成'}。\n"
-            "全流程只补缺的：已完成的剧本/分镜/资产不动，可随时停止再续。"
+            "继续处理待用正文，补齐缺失或过期的分镜及资产登记。"
         )
         dialog = DramaModeDialog(
             storyboard_all_label=(
@@ -125,7 +129,12 @@ class ProjectMixin:
                 return
         self._start_drama_worker(task, scope)
 
-    def _start_drama_worker(self, task: str, scope: str):
+    def _start_drama_worker(self, task: str, scope: str, *, prompt_rewrite=None, retry_assets=None,
+                            retry_episodes=None, retry_shots=None, current_episode=None):
+        if self._drama_busy():
+            QMessageBox.information(self, "短剧工作流", "已有任务正在运行，请等待完成或停止。")
+            return
+        self.drama_workspace.save_all(silent=True)
         self._flush_content_save()
         store = self.drama_workspace.store
         if store is None:
@@ -135,14 +144,21 @@ class ProjectMixin:
             for c in self.project.chapters
         ]
         current_chapter = getattr(self.editor, "_current_chapter", None)
-        current_episode = self.drama_workspace.script_page._current
+        workspace = self.drama_workspace
+        current_episode = int(current_episode) if current_episode else self._current_drama_episode()
         project_info = {
             "title": self.project.title,
             "genre": self.project.genre,
             "style": self.project.style,
             "theme": self.project.theme,
             "synopsis": self.project.synopsis,
+            "selected_assets": getattr(self.drama_workspace.assets_page, "_production_selection", None) if task in ("asset_images", "library_match") else None,
+            "retry_assets": list(retry_assets) if retry_assets else None,
+            "retry_episodes": list(retry_episodes) if retry_episodes else None,
+            "retry_shots": list(retry_shots) if retry_shots else None,
         }
+        if prompt_rewrite is not None:
+            project_info["prompt_rewrite"] = prompt_rewrite
         worker = DramaAIWorker(
             llm=self.llm,
             store=store,
@@ -153,12 +169,15 @@ class ProjectMixin:
             current_chapter=current_chapter.number if current_chapter else 0,
             current_episode=current_episode,
         )
+        if task in ("asset_images", "library_match"):
+            self.drama_workspace.assets_page._production_selection = None
         worker.progress.connect(self._on_drama_progress)
         worker.log.connect(self.drama_panel.append_log)
         worker.usage_updated.connect(self.drama_panel.set_usage)
         worker.agent_state.connect(self._on_drama_agent_state)
         worker.finished_ok.connect(self._on_drama_done)
         worker.failed.connect(self._on_drama_failed)
+        worker.approval_requested.connect(self._on_drama_approval)
         self._drama_worker = worker
         self.drama_workspace.setEnabled(False)
         self.drama_panel.set_running(True)
@@ -166,6 +185,8 @@ class ProjectMixin:
             ("full", "current"): "下一集", ("full", "all"): "全部待用",
             ("segment", "current"): "下一集", ("segment", "all"): "全部待用",
             ("storyboard", "current"): "当前集", ("storyboard", "all"): "全部集",
+            ("keyframes", "current"): "当前集", ("keyframes", "all"): "全部集",
+            ("video", "all"): "当前集",
         }
         scope_text = scope_labels.get((task, scope), "—")
         model = getattr(self.llm, "model", "") if self.llm else ""
@@ -174,10 +195,32 @@ class ProjectMixin:
             self.drama_panel.append_log(
                 f"开始 {task}：范围={scope_text} · 模型={model} · 会逐章/逐集调用，真实耗时。"
             )
+        elif task == "video":
+            self.drama_panel.set_status(f"正在生成第{self.drama_workspace.script_page._current or 1}集视频…", 2)
+            self.drama_panel.append_log(
+                "开始 video：逐镜生成首尾帧图 → 视频工作流出片段 → ffmpeg 合成；"
+                "长任务，可随时停止，已生成片段保留。"
+            )
         else:
             self.drama_panel.set_status("正在本地提取…", 2)
             self.drama_panel.append_log(f"开始 {task}：范围={scope_text} · 本地规则提取，不调模型。")
         worker.start()
+
+    def _current_drama_episode(self):
+        workspace = self.drama_workspace
+        return (workspace.storyboard_page._current if workspace.nav.currentRow() == 2
+                else workspace.script_page._current)
+
+    def _on_drama_approval(self, request):
+        from ..drama.approval_dialog import ProductionApprovalDialog
+        worker = self._drama_worker
+        if worker is None or worker._stop:
+            if worker:
+                worker.answer_approval(request["id"], False)
+            return
+        dialog = ProductionApprovalDialog(request, self)
+        approved = dialog.exec() == QDialog.DialogCode.Accepted
+        worker.answer_approval(request["id"], approved)
 
     def _on_drama_progress(self, message: str, percent: int):
         self.drama_panel.set_status(message, percent)
@@ -200,16 +243,31 @@ class ProjectMixin:
         self.drama_panel.set_status(summary, 100)
         self.drama_panel.append_log(summary)
         store = self.drama_workspace.store
+        if store is not None and task == "asset_prompt_rewrite":
+            page = self.drama_workspace.assets_page
+            page.reload_images()
+            page.select_asset(worker.project_info["prompt_rewrite"]["asset_id"])
+            page.status.setText(summary + "，可重新生成图片")
+            self._finish_drama_worker()
+            return
         if store is not None:
+            keep = worker.current_episode if worker and worker.current_episode else self.drama_workspace.script_page._current
             self.drama_workspace.series_page.load(store, self.project)
             self.drama_workspace.script_page.load(
-                store, keep=self.drama_workspace.script_page._current
+                store, keep=keep
             )
             self.drama_workspace.storyboard_page.load(
-                store, keep=self.drama_workspace.script_page._current
+                store, keep=keep
             )
             self.drama_workspace.assets_page.load(store)
-            page = {"adapt": 0, "segment": 1, "storyboard": 2, "assets": 3, "full": 2}.get(task, 0)
+            self.drama_workspace.refresh_pipeline()
+            page = {
+                "adapt": 0, "segment": 1, "storyboard": 2, "assets": 3,
+                "full": 2, "keyframes": 2, "video": 2,
+                "production": 2, "frame_images": 2, "frame_review": 2,
+                "submit_review": 2, "post": 2, "repair": 2, "final_review": 2, "asset_images": 3,
+                "library_match": 3,
+            }.get(task, 0)
             self.drama_workspace.nav.setCurrentRow(page)
         self._finish_drama_worker()
 
@@ -218,8 +276,41 @@ class ProjectMixin:
         self.drama_panel.set_running(False)
         self.drama_panel.set_status("生成失败", 0)
         self.drama_panel.append_log(f"生成失败：{error}")
-        QMessageBox.warning(self, "短剧生成失败", error)
+        worker = self._drama_worker
+        failure = worker.asset_prompt_failure if worker else None
+        if worker and (worker.task == "asset_images" or failure is not None):
+            self.drama_workspace.assets_page.reload_images()
+        self.drama_workspace.refresh_pipeline()
         self._finish_drama_worker()
+        if failure is None:
+            QMessageBox.warning(self, "短剧生成失败", error)
+            return
+
+        workspace = self.drama_workspace
+        workspace.nav.setCurrentRow(3)
+        page = workspace.assets_page
+        row = page.select_asset(failure["asset_id"])
+        if row < 0:
+            QMessageBox.warning(self, "短剧生成失败", error)
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("提示词审核未通过")
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(failure["name"])
+        box.setInformativeText("可根据审核意见重写，也可手动修改后再点「生成图片」。")
+        box.setDetailedText(failure["review"])
+        rewrite = box.addButton("根据审核重写", QMessageBox.ButtonRole.ActionRole)
+        edit = box.addButton("查看审核并编辑", QMessageBox.ButtonRole.ActionRole)
+        close = box.addButton(QMessageBox.StandardButton.Close)
+        box.setDefaultButton(edit)
+        box.setEscapeButton(close)
+        rewrite.setEnabled(self.llm is not None)
+        box.exec()
+        if box.clickedButton() is rewrite:
+            self._start_drama_worker("asset_prompt_rewrite", "current", prompt_rewrite=failure)
+        elif box.clickedButton() is edit:
+            page.edit_prompt(row, failure["review"])
 
     def _finish_drama_worker(self):
         worker = self._drama_worker
@@ -302,7 +393,6 @@ class ProjectMixin:
         project_io.write_md(project_dir / "planning" / "立意.md", ideation_content)
 
         self.project.save()
-        self.agent_panel.set_project_db(project_dir)
         self._load_workflow_for_project()
         self.sidebar.set_project_title(title)
         self.sidebar.load_chapters(self.project.chapters)
@@ -340,7 +430,6 @@ class ProjectMixin:
             # 先卸下旧项目的当前章节，避免 clear() 触发 content_changed 把旧章写空
             self.editor.detach_chapter()
             self.project = Project.load(path)
-            self.agent_panel.set_project_db(path)
             self.sidebar.set_project_title(self.project.title)
 
             self._sync_world_state_from_canon(path)

@@ -158,3 +158,17 @@ def test_metadata_failure_rolls_back_template_and_leaves_material_pending(tmp_pa
     assert store.load_script(1) == previous
     assert store.script_path(1).with_suffix(".pending.md").exists()
     assert store.adaptation_state()["pending_chapters"] == [1]
+
+
+def test_script_prompt_carries_story_rules(tmp_path):
+    """文章的故事阶段要求（现实逻辑/开头抓人/反应先后/避开拍不出来）要进编剧提示词。"""
+    store = setup(tmp_path)
+    prompts = []
+    async def ask(stage, prompt):
+        prompts.append((stage, prompt))
+        return json.dumps(plan([1, 2])) if stage == "plan" else SCRIPT
+    asyncio.run(AdaptiveDramaRunner(store, ask).run(chapters(2), one_episode=True))
+    script_prompt = next(prompt for stage, prompt in prompts if stage == "script")
+
+    for needle in ("现实追问", "开头 3 秒抓人", "旁人什么反应", "拍不出来的画面"):
+        assert needle in script_prompt, needle

@@ -40,6 +40,13 @@ def test_drama_workspace_roundtrip(qapp, tmp_path):
     workspace.storyboard_page._add_shot()
     workspace.storyboard_page.save()
     assert workspace.storyboard_page.table.rowCount() == 1
+
+    # 新增资产一行：列必须和 ASSET_COLUMNS 对齐（reference_image 列没填会整行错位）
+    workspace.assets_page._add_asset()
+    workspace.assets_page.save(silent=True)
+    added = workspace.store.load_assets()[-1]
+    assert added["status"] == "draft"
+    assert added["reference_image"] == ""
     workspace.save_all(silent=True)
 
     reopened = DramaWorkspace()
@@ -48,6 +55,105 @@ def test_drama_workspace_roundtrip(qapp, tmp_path):
     assert reopened.storyboard_page.table.item(0, 0).text().startswith("E01-S")
     workspace.close()
     reopened.close()
+
+
+def test_asset_preview_and_episode_dialog(qapp, tmp_path, monkeypatch):
+    """资产表格填满页面，按需弹窗预览；空剧集可打开预览。"""
+    from PySide6.QtGui import QImage
+    from src.novel_writer.ui.drama.drama_workspace import DramaWorkspace
+    from src.novel_writer.ui.drama.preview import (
+        EpisodePreviewDialog, ImagePreviewDialog, thumbnail,
+    )
+
+    project = _novel_project(tmp_path)
+    workspace = DramaWorkspace()
+    workspace.set_project(project)
+    store = workspace.store
+    generated = store.assets_dir / "generated"
+    generated.mkdir(parents=True, exist_ok=True)
+    image_path = generated / "hero.png"
+    image = QImage(8, 8, QImage.Format.Format_RGB32)
+    image.fill(0xFF336699)
+    assert image.save(str(image_path), "PNG")
+    store.save_assets([{
+        "kind": "character", "id": "char_1", "name": "顾言", "source": "manual",
+        "prompt": "", "ref": "", "reference_image": "generated/hero.png",
+        "status": "ready", "notes": "", "entity": "", "image": "generated/hero.png",
+    }])
+    page = workspace.assets_page
+    page.load(store)
+    workspace.nav.setCurrentRow(3)
+    workspace.resize(1500, 800)
+    workspace.show()
+    qapp.processEvents()
+
+    assert page.table.geometry().bottom() == page.rect().bottom() - page.layout().contentsMargins().bottom()
+    assert not page.btn_preview.isEnabled()
+    assert thumbnail(image_path, 40, 40) is not None
+    opened = []
+    monkeypatch.setattr(ImagePreviewDialog, "exec", lambda dialog: opened.append(dialog.path))
+    page.table.setCurrentCell(0, 2)
+    assert page.btn_preview.isEnabled()
+    assert not opened
+    page.btn_preview.click()
+    page.table.cellDoubleClicked.emit(0, 2)
+    assert opened == [image_path, image_path]
+
+    episode = EpisodePreviewDialog(store, 1)
+    assert "还没有视频" in episode.status.text()
+    episode.close()
+    workspace.close()
+
+
+def test_asset_prompt_editor_and_regeneration(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QDialog, QMessageBox, QPlainTextEdit
+    from src.novel_writer.ui.drama.drama_workspace import DramaWorkspace
+
+    workspace = DramaWorkspace()
+    workspace.set_project(_novel_project(tmp_path))
+    store = workspace.store
+    store.save_assets([{"id": "hero", "name": "顾言", "prompt": "待修改"},
+                       {"id": "other", "name": "苏月", "prompt": "保留"}])
+    page = workspace.assets_page
+    page.load(store)
+    row = page.select_asset("hero")
+
+    def edit(dialog):
+        editor = next(edit for edit in dialog.findChildren(QPlainTextEdit) if not edit.isReadOnly())
+        editor.setPlainText("顾言，青色交领长袍")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", edit)
+    page.table.cellDoubleClicked.emit(row, 4)
+    assert store.load_assets()[0]["prompt"] == "顾言，青色交领长袍"
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    page._fill_prompts(regenerate=True)
+    hero, other = store.load_assets()
+    assert "头肩特写" in hero["prompt"]
+    assert other["prompt"] == "保留"
+    workspace.close()
+
+
+def test_storyboard_export_and_check_actions(qapp, tmp_path, monkeypatch):
+    """分镜页两个新入口真的能落文件/弹检查，不是只挂了个按钮。"""
+    from PySide6.QtWidgets import QMessageBox
+    from src.novel_writer.ui.drama.drama_workspace import DramaWorkspace
+
+    workspace = DramaWorkspace()
+    workspace.set_project(_novel_project(tmp_path))
+    page = workspace.storyboard_page
+    page._add_shot()
+    page.save()
+
+    shown = []
+    monkeypatch.setattr(page, "_show_export", lambda path, kind: shown.append((path, kind)))
+    page._export_video_prompts()
+    assert shown and shown[0][1] == "视频提示词"
+    assert shown[0][0].exists()
+
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+    page._check_storyboard()  # 新镜头没写动作，应走告警弹窗而不是崩
+    workspace.close()
 
 
 def test_deleted_episode_number_is_selected_by_identity(qapp, tmp_path):
@@ -110,7 +216,8 @@ def test_drama_workspace_generates_from_script(qapp, tmp_path):
     workspace.script_page.save()
     workspace.storyboard_page._generate_from_script()
     assert workspace.storyboard_page.table.rowCount() == 2
-    assert workspace.storyboard_page.table.item(0, 5).text() == "山门"
+    from src.novel_writer.core.drama import SHOT_KEYS
+    assert workspace.storyboard_page.table.item(0, SHOT_KEYS.index("location")).text() == "山门"
     workspace.close()
 
 
@@ -121,7 +228,9 @@ def test_drama_agent_panel_has_agents_and_actions(qapp, tmp_path):
 
     panel = DramaAgentPanel()
     panel.set_project(_novel_project(tmp_path))
-    assert len(panel.office.iter_slots()) == 4
+    assert {s.name for s in panel.office.iter_slots()} == {
+        "showrunner", "writer", "storyboard", "prompt", "review", "supervisor", "agent",
+    }
     # 工作流条复用小说侧 WorkflowMiniBar：单个「执行模式」入口，不再是一键按钮网格
     assert isinstance(panel.workflow, WorkflowMiniBar)
     assert panel.workflow._btn_start.text() == "执行模式"
@@ -142,8 +251,11 @@ def test_drama_mode_dialog_modes_and_scope(qapp):
     from src.novel_writer.ui.drama.drama_mode_dialog import DramaModeDialog
 
     dialog = DramaModeDialog(storyboard_all_label="全部集（3 集有剧本，逐集调用模型）")
-    tasks = [dialog._mode_combo.itemData(i) for i in range(dialog._mode_combo.count())]
-    assert tasks == ["full", "segment", "adapt", "storyboard", "assets"]
+    combo = dialog._mode_combo
+    assert [combo.itemData(i) for i in range(combo.count())] == ["full", "production"]
+    dialog._advanced.setChecked(True)
+    tasks = [combo.itemData(i) for i in range(combo.count())]
+    assert {"production", "preflight", "story_review", "frame_images", "submit_review", "post", "final_review"} <= set(tasks)
     assert "script" not in tasks  # 逐章转剧本已删除，统一走智能分集
 
     # offscreen 下 dialog 未 show，用 isVisibleTo 断言「假如对话框显示，控件是否可见」
@@ -158,16 +270,24 @@ def test_drama_mode_dialog_modes_and_scope(qapp):
     assert dialog.get_result() == ("full", "all")
 
     # storyboard：范围组文案切到当前集/全部集
-    dialog._mode_combo.setCurrentIndex(3)
+    combo.setCurrentIndex(combo.findData("storyboard"))
     assert scope_visible()
     assert dialog.radio_all.text().startswith("全部集（3")
     assert dialog.get_result() == ("storyboard", "all")
 
-    # adapt/assets：范围组隐藏，scope 固定 all
-    for idx, task in ((2, "adapt"), (4, "assets")):
-        dialog._mode_combo.setCurrentIndex(idx)
+    # keyframes：范围组显示
+    combo.setCurrentIndex(combo.findData("keyframes"))
+    assert scope_visible()
+    assert dialog.get_result()[0] == "keyframes"
+
+    # adapt/video/assets：范围组隐藏，scope 固定 all
+    for task in ("production", "adapt", "video", "assets", "post"):
+        combo.setCurrentIndex(combo.findData(task))
         assert not scope_visible()
         assert dialog.get_result() == (task, "all")
+    dialog._advanced.setChecked(False)
+    assert combo.count() == 2
+    assert dialog.get_result()[0] == "full"
     dialog.close()
 
 
@@ -219,8 +339,8 @@ def test_drama_mode_dialog_defaults_and_scope(qapp):
     dialog.radio_all.setChecked(True)
     assert dialog.get_result() == ("full", "all")
 
-    dialog._mode_combo.setCurrentIndex(2)  # 重编圣经：没有生成范围
-    assert dialog.get_result() == ("adapt", "all")
+    dialog._mode_combo.setCurrentIndex(1)
+    assert dialog.get_result() == ("production", "all")
     dialog.close()
 
 
@@ -235,7 +355,7 @@ def test_drama_mode_dialog_shows_resume_point(qapp):
     dialog.close()
 
 
-def test_drama_panel_workflow_bar_under_agents(qapp):
+def test_drama_panel_workflow_fills_panel_without_status_strip(qapp):
     """工作流条紧跟智能体卡片，日志灰框一直填到面板底部。"""
     from src.novel_writer.ui.drama.drama_panel import DramaAgentPanel
 
@@ -244,7 +364,8 @@ def test_drama_panel_workflow_bar_under_agents(qapp):
     panel.show()
     qapp.processEvents()
 
-    assert panel.workflow.y() >= panel.office.y() + panel.office.height()
+    assert panel.office.isHidden()
+    assert panel.workflow.y() == 0
     assert panel.workflow.y() < panel.height() // 2
     assert panel.workflow.y() + panel.workflow.height() == panel.height()
 
@@ -288,4 +409,63 @@ def test_assets_page_imports_canon_and_builds_prompts(qapp, tmp_path):
     prompts = [page.table.item(r, 4).text() for r in range(page.table.rowCount())]  # 提示词列
     assert any("顾言" in text for text in prompts)
     assert any("仙侠" in text or "快节奏" in text for text in prompts)
+    workspace.close()
+
+
+def test_asset_preview_two_layers_and_prop_views(qapp, tmp_path, monkeypatch):
+    """人物两层参考（头肩+全身）与道具三视图都能预览；标记重做按层清除。"""
+    import io
+
+    from PIL import Image as PILImage
+    from src.novel_writer.ui.drama.drama_workspace import DramaWorkspace
+    from src.novel_writer.ui.drama.preview import MakeupPreviewDialog
+
+    project = _novel_project(tmp_path)
+    workspace = DramaWorkspace()
+    workspace.set_project(project)
+    store = workspace.store
+
+    def png(size, color="blue"):
+        buffer = io.BytesIO()
+        PILImage.new("RGB", size, color).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    store.save_assets([
+        {"kind": "character", "id": "hero", "name": "顾言", "source": "manual",
+         "prompt": "", "ref": "", "status": "draft", "notes": "", "entity": "", "image": ""},
+        {"kind": "prop", "id": "prop_1", "name": "玄铁令", "source": "manual",
+         "prompt": "", "ref": "", "status": "draft", "notes": "", "entity": "", "image": ""},
+    ])
+    store.save_makeup_view("hero", "front", png((96, 128)))
+    store.save_fullbody_view("hero", "front", png((96, 128)))
+    store.save_prop_view("prop_1", "front", png((64, 64)))
+    store.save_prop_view("prop_1", "side", png((64, 64), "green"))
+
+    page = workspace.assets_page
+    page.load(store)
+    shown = []
+
+    def fake_exec(dialog):
+        shown.append(dialog)
+        dialog.redo_view = "fb_front"  # 模拟用户标记全身正面重做
+
+    monkeypatch.setattr(MakeupPreviewDialog, "exec", fake_exec)
+    page._open_asset_image(0)  # character：两行预览（头肩 + 全身）
+    assert len(shown) == 1
+    assert shown[0].angle.count() == 2  # 下拉只列已有图：头肩正面 + 全身正面
+    saved = {a["id"]: a for a in store.load_assets()}
+    assert "front" not in saved["hero"].get("fullbody_views", {})  # 全身正面已清
+    assert "front" in saved["hero"].get("makeup_views", {})  # 头肩正面不受影响
+
+    shown.clear()
+
+    def fake_exec_prop(dialog):
+        shown.append(dialog)
+        dialog.redo_view = "side"
+
+    monkeypatch.setattr(MakeupPreviewDialog, "exec", fake_exec_prop)
+    page._open_asset_image(1)  # prop：三视图预览
+    assert shown[0].windowTitle().endswith("道具三视图")
+    saved = {a["id"]: a for a in store.load_assets()}
+    assert "side" not in saved["prop_1"].get("prop_views", {})
     workspace.close()

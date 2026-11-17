@@ -14,11 +14,13 @@ DRAMA_AGENTS = {
     "writer": {"title": "分集编剧", "emoji": "🧩"},
     "storyboard": {"title": "分镜师", "emoji": "🎥"},
     "prompt": {"title": "视觉提示词", "emoji": "🎨"},
+    "review": {"title": "独立审核", "emoji": "🔍"},
+    "supervisor": {"title": "要求监督", "emoji": "📋"},
+    "agent": {"title": "偏好代理", "emoji": "🤝"},
 }
 
 _FLOW_HINT = (
-    "流程：改编圣经 → 智能分集（写剧本）→ 分镜 → 资产。\n"
-    "点「执行模式」选跑哪一步；进度和日志就显示在这里。"
+    "点「执行模式」准备剧本与分镜，或制作本集视频。"
 )
 
 
@@ -39,7 +41,7 @@ class DramaAgentPanel(AgentDock):
     def on_agent_clicked(self, name: str) -> None:
         info = DRAMA_AGENTS.get(name, {})
         self.append_log(
-            f"{info.get('emoji', '🤖')} {info.get('title', name)}：该智能体的自动执行下一阶段接入。"
+            f"{info.get('emoji', '🤖')} {info.get('title', name)}：在制作本集工作流中按阶段自动执行，判断记录在 review/。"
         )
 
     def set_project(self, project: Project | None) -> None:
